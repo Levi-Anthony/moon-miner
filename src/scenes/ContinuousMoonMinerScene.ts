@@ -1,0 +1,2723 @@
+import Phaser from 'phaser';
+import {
+  createContinuousWorld,
+  DEFAULT_CONTINUOUS_TUNING,
+  findFertileZoneAt,
+  getPreparedCoverage,
+  getReclaimPreview,
+  launchReclaimDrone,
+  resolveContinuousTuning,
+  tickContinuousWorld,
+  type ContinuousInput,
+  type ContinuousPhase,
+  type ContinuousTuning,
+  type ContinuousWorldState,
+  type DroneStatus,
+  type FertileZone,
+  type ReclaimPreview,
+  type SpeedState,
+  type Vec2
+} from '../game/continuous';
+import {
+  CONTINUOUS_ARENAS,
+  DEFAULT_CONTINUOUS_ARENA_ID,
+  type ContinuousArenaId
+} from '../game/continuousArena';
+import {
+  createContinuousLoopTrace,
+  getContinuousLoopSummary,
+  recordContinuousLoopDroneLaunch,
+  recordContinuousLoopTick,
+  type ContinuousLoopSummary,
+  type ContinuousLoopTrace
+} from '../game/continuousTrace';
+import {
+  getContinuousSelfPlayInput,
+  getContinuousSelfPlayRoute,
+  getContinuousSelfPlayTarget,
+  type ContinuousSelfPlayRoute,
+  type ContinuousSelfPlayRouteId,
+  type ContinuousSelfPlayWaypoint
+} from '../game/continuousSelfPlay';
+
+const DESKTOP_HUD_HEIGHT = 86;
+const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
+const DESKTOP_CAMERA_CENTER_Y = 505;
+const MOBILE_CAMERA_CENTER_Y = 475;
+const DESKTOP_CAMERA_LOOK_AHEAD = 92;
+const MOBILE_CAMERA_LOOK_AHEAD = 138;
+const DESKTOP_CAMERA_ZOOM = 1.16;
+const MOBILE_CAMERA_ZOOM = 1.28;
+const DESKTOP_TACTICAL_ZOOM = 0.88;
+const MOBILE_TACTICAL_ZOOM = 0.58;
+const PROJECTED_Y_SCALE = 0.78;
+const PROJECTED_SHEAR = -0.1;
+const CAMERA_TURN_RESPONSE = 1.75;
+const TACTICAL_CAMERA_RESPONSE = 1.4;
+const DRONE_RECLAIM_SECONDS = 0.42;
+const LOW_NANOBOT_RATIO = 0.18;
+const DRONE_URGENCY_RATIO = 0.32;
+const DELIVERY_READOUT_MS = 1260;
+const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v3';
+const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
+
+type ButtonId = 'launch' | 'reset';
+type EffectKind = 'launch' | 'delivery' | 'recovery' | 'sprint' | 'build' | 'crawl' | 'mine' | 'win' | 'loss' | 'blocked';
+type ArmRole = 'building' | 'mining' | 'stabilizing' | 'emergency';
+type LayoutMode = 'desktop' | 'mobilePortrait';
+type ViewMode = 'tactical' | 'chase';
+type TuningKey = keyof ContinuousTuning;
+
+interface SceneRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface SceneLayout {
+  mode: LayoutMode;
+  width: number;
+  height: number;
+  hudHeight: number;
+  controlBandTop?: number;
+  cameraCenterX: number;
+  cameraCenterY: number;
+  cameraLookAhead: number;
+  cameraZoom: number;
+  message: SceneRect & { fontSize: number };
+  vitals: SceneRect[];
+  stateChip: SceneRect;
+  launchButton: SceneRect;
+  resetButton: SceneRect;
+  drive?: SceneRect;
+  yieldReadout: { x: number; y: number; fontSize: number };
+}
+
+interface TuningControlDefinition {
+  key: TuningKey;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  precision?: number;
+}
+
+const TUNING_CONTROLS: TuningControlDefinition[] = [
+  { key: 'preparedSpeed', label: 'Normal speed', min: 60, max: 150, step: 1 },
+  { key: 'fabricatingSpeed', label: 'Raw speed', min: 45, max: 120, step: 1 },
+  { key: 'crawlSpeed', label: 'Crawl speed', min: 8, max: 32, step: 1 },
+  { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 1, max: 4.2, step: 0.1, precision: 1 },
+  { key: 'droneSpeed', label: 'Drone speed', min: 260, max: 620, step: 10 },
+  { key: 'dronePickupRadius', label: 'Drone pickup', min: 70, max: 180, step: 2 },
+  { key: 'crawlRecoveryPerSecond', label: 'Crawl recovery', min: 0.02, max: 0.3, step: 0.01, precision: 2 },
+  { key: 'mineRate', label: 'Mining yield', min: 0.18, max: 0.55, step: 0.01, precision: 2 },
+  { key: 'startingNanobots', label: 'Start stock', min: 6, max: 24, step: 1 },
+  { key: 'startingSolarSeconds', label: 'Sun window', min: 90, max: 220, step: 5 },
+  { key: 'preparedFieldMinAgeSeconds', label: 'Prep delay', min: 0.2, max: 1.4, step: 0.05, precision: 2 }
+];
+
+interface Button {
+  id: ButtonId;
+  rect: Phaser.Geom.Rectangle;
+  label: string;
+}
+
+interface VisualEffect {
+  kind: EffectKind;
+  x: number;
+  y: number;
+  startedAt: number;
+  durationMs: number;
+  amount?: number;
+}
+
+interface ContinuousDebugSnapshot {
+  state: ContinuousWorldState;
+  loopTrace: ContinuousLoopTrace;
+  loopSummary: ContinuousLoopSummary;
+  selfPlay?: ContinuousSelfPlayStatus;
+  arenaId: ContinuousArenaId;
+  pointerTarget?: Vec2;
+  gameSize: Vec2;
+  ui: ContinuousUiSnapshot;
+}
+
+interface ContinuousUiRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface ContinuousUiSnapshot {
+  mode: LayoutMode;
+  viewMode: ViewMode;
+  hudHeight: number;
+  debugOverlayVisible: boolean;
+  vitals: ContinuousUiRect[];
+  stateChip: ContinuousUiRect;
+  buttons: Record<ButtonId, ContinuousUiRect>;
+  controls?: {
+    drive: ContinuousUiRect;
+  };
+  eventFeed: ContinuousUiRect;
+  textBounds: Record<string, ContinuousUiRect>;
+  droneCue: {
+    launchUrgent: boolean;
+    previewTarget?: ContinuousUiRect;
+    previewPayload?: number;
+    previewEtaSeconds?: number;
+    reservedTarget?: ContinuousUiRect;
+    returnPayloadVisible: boolean;
+    deliveryReadoutVisible: boolean;
+    deliveryAmount?: number;
+  };
+}
+
+interface ContinuousSelfPlayStatus {
+  routeId: string;
+  label: string;
+  targetLabel: string;
+  elapsedSeconds: number;
+}
+
+declare global {
+  interface Window {
+    __moonMinerContinuous?: {
+      getState: () => ContinuousWorldState;
+      getPointerTarget: () => Vec2 | undefined;
+      getLoopTrace: () => ContinuousLoopTrace;
+      getLoopSummary: () => ContinuousLoopSummary;
+      getReclaimPreview: () => ReclaimPreview | undefined;
+      getArenaId: () => ContinuousArenaId;
+      setArena: (arenaId: ContinuousArenaId) => void;
+      startSelfPlay: (routeId?: ContinuousSelfPlayRouteId) => void;
+      stopSelfPlay: () => void;
+      getSelfPlayStatus: () => ContinuousSelfPlayStatus | undefined;
+    };
+  }
+}
+
+export class ContinuousMoonMinerScene extends Phaser.Scene {
+  private state!: ContinuousWorldState;
+  private loopTrace!: ContinuousLoopTrace;
+  private graphics!: Phaser.GameObjects.Graphics;
+  private hud!: Phaser.GameObjects.Text;
+  private message!: Phaser.GameObjects.Text;
+  private buttons: Button[] = [];
+  private effects: VisualEffect[] = [];
+  private pointerTarget?: Vec2;
+  private mobileDrive?: { pointerId: number; origin: Vec2; current: Vec2 };
+  private preSelfPlayPointerTarget?: Vec2;
+  private eventMessage?: { text: string; expiresAtMs: number; priority: number };
+  private selfPlay?: {
+    route: ContinuousSelfPlayRoute;
+    launchedAtSeconds: Set<number>;
+  };
+  private viewMode: ViewMode = 'tactical';
+  private tacticalCameraFocus: Vec2 = { x: 420, y: 500 };
+  private cameraHeading = -0.18;
+  private keys?: Record<string, Phaser.Input.Keyboard.Key>;
+  private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
+  private escapeKey?: Phaser.Input.Keyboard.Key;
+  private debugStateElement?: HTMLScriptElement;
+  private tuningPanelElement?: HTMLElement;
+  private arenaSelectElement?: HTMLSelectElement;
+  private tuningControls = new Map<TuningKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
+  private debugOverlayVisible = false;
+  private previousDroneStatus: DroneStatus = 'ready';
+  private previousSpeedState: SpeedState = 'prepared';
+  private previousPhase: ContinuousPhase = 'playing';
+  private previousOre = 0;
+
+  constructor() {
+    super('continuous-moon-miner');
+  }
+
+  create(): void {
+    this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId());
+    this.viewMode = this.readViewMode();
+    this.debugOverlayVisible = this.shouldOpenDebugOverlay();
+    this.cameraHeading = this.state.rover.heading;
+    this.tacticalCameraFocus = this.tacticalCameraTarget();
+    this.loopTrace = createContinuousLoopTrace(this.state);
+    this.previousDroneStatus = this.state.drone.status;
+    this.previousSpeedState = this.state.speedState;
+    this.previousPhase = this.state.phase;
+    this.previousOre = this.state.rover.ore;
+
+    this.graphics = this.add.graphics();
+    this.hud = this.add
+      .text(24, 18, '', {
+        color: '#f6f8fb',
+        fontFamily: 'monospace',
+        fontSize: '17px'
+      })
+      .setName('hud-text');
+    this.message = this.add
+      .text(24, 672, '', {
+        color: '#dce6ef',
+        fontFamily: 'monospace',
+        fontSize: '17px',
+        wordWrap: { width: 930 }
+      })
+      .setName('event-feed');
+
+    this.buttons = this.createButtons();
+
+    this.cursors = this.input.keyboard?.createCursorKeys();
+    this.keys = this.input.keyboard?.addKeys('W,A,S,D,R,SPACE') as Record<string, Phaser.Input.Keyboard.Key>;
+    this.escapeKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+    this.input.keyboard?.on('keydown', (event: KeyboardEvent) => this.handleKeyboardEvent(event));
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => this.handlePointerDown(pointer));
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
+    this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => this.handlePointerUp(pointer));
+    this.input.on('pointerupoutside', (pointer: Phaser.Input.Pointer) => this.handlePointerUp(pointer));
+
+    this.exposeDebugHook();
+    this.createTuningPanel();
+    this.draw();
+  }
+
+  update(timeMs: number, deltaMs: number): void {
+    this.handleKeyboardCommands();
+    this.updateSelfPlayCommands();
+
+    const previousState = this.state;
+    const previousDroneStatus = this.state.drone.status;
+    const previousSpeedState = this.state.speedState;
+    const previousPhase = this.state.phase;
+    const previousOre = this.state.rover.ore;
+    const previousDronePayload = this.state.drone.payload;
+    const previousNanobots = this.state.nanobots;
+    const deltaSeconds = Math.min(deltaMs / 1000, 0.08);
+
+    this.state = tickContinuousWorld(this.state, this.readInput(), deltaSeconds);
+    this.updateCamera(deltaSeconds);
+    recordContinuousLoopTick(this.loopTrace, previousState, this.state, deltaSeconds);
+    this.captureTransitions(
+      timeMs,
+      previousDroneStatus,
+      previousSpeedState,
+      previousPhase,
+      previousOre,
+      previousDronePayload,
+      previousNanobots
+    );
+    this.effects = this.effects.filter((effect) => timeMs - effect.startedAt <= effect.durationMs);
+    this.draw();
+  }
+
+  private createButtons(): Button[] {
+    const layout = this.getLayout();
+    return [
+      { id: 'launch', rect: this.rectFromLayout(layout.launchButton), label: 'Launch Drone' },
+      { id: 'reset', rect: this.rectFromLayout(layout.resetButton), label: 'Reset' }
+    ];
+  }
+
+  private handlePointerDown(pointer: Phaser.Input.Pointer): void {
+    const layout = this.getLayout();
+    const button = this.buttons.find((candidate) => Phaser.Geom.Rectangle.Contains(candidate.rect, pointer.x, pointer.y));
+    if (button) {
+      if (button.id === 'launch') this.launchDrone();
+      if (button.id === 'reset') this.resetRun();
+      return;
+    }
+
+    if (layout.mode === 'mobilePortrait') {
+      if (layout.drive && this.rectContains(layout.drive, pointer.x, pointer.y)) {
+        this.beginMobileDrive(pointer);
+        if (this.selfPlay) this.stopSelfPlay(false);
+      }
+      this.clearPointerTarget();
+      return;
+    }
+
+    if (this.selfPlay) this.stopSelfPlay(false);
+    this.pointerTarget = this.pointerToWorld(pointer);
+  }
+
+  private handlePointerMove(pointer: Phaser.Input.Pointer): void {
+    const layout = this.getLayout();
+    if (layout.mode === 'mobilePortrait') {
+      if (this.mobileDrive?.pointerId === pointer.id) {
+        this.mobileDrive.current = { x: pointer.x, y: pointer.y };
+      }
+      return;
+    }
+
+    if (pointer.isDown) this.pointerTarget = this.pointerToWorld(pointer);
+  }
+
+  private handlePointerUp(pointer: Phaser.Input.Pointer): void {
+    if (this.mobileDrive?.pointerId === pointer.id) {
+      this.mobileDrive = undefined;
+    }
+  }
+
+  private beginMobileDrive(pointer: Phaser.Input.Pointer): void {
+    this.mobileDrive = {
+      pointerId: pointer.id,
+      origin: { x: pointer.x, y: pointer.y },
+      current: { x: pointer.x, y: pointer.y }
+    };
+  }
+
+  private handleKeyboardCommands(): void {
+    if (!this.keys) return;
+
+    if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE)) {
+      this.launchDrone();
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(this.keys.R)) {
+      this.resetRun();
+    }
+
+    if (this.escapeKey && Phaser.Input.Keyboard.JustDown(this.escapeKey)) {
+      this.clearPointerTarget();
+    }
+  }
+
+  private handleKeyboardEvent(event: KeyboardEvent): void {
+    if (!import.meta.env.DEV) return;
+    if (event.key !== '`' && event.key !== '~') return;
+    if (event.repeat) return;
+
+    event.preventDefault();
+    this.debugOverlayVisible = !this.debugOverlayVisible;
+    this.syncDebugOverlayVisibility();
+  }
+
+  private shouldOpenDebugOverlay(): boolean {
+    if (!import.meta.env.DEV) return false;
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('debug') === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  private readViewMode(): ViewMode {
+    if (!import.meta.env.DEV) return 'tactical';
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('view') === 'chase' ? 'chase' : 'tactical';
+    } catch {
+      return 'tactical';
+    }
+  }
+
+  private getLayout(): SceneLayout {
+    const width = this.scale.gameSize.width;
+    const height = this.scale.gameSize.height;
+    const mobilePortrait = height > width && width <= 560;
+
+    if (mobilePortrait) {
+      const gutter = 16;
+      const vitalGap = 18;
+      const vitalWidth = Math.floor((width - gutter * 2 - vitalGap * 2) / 3);
+      const controlBandTop = height - 212;
+      const controlGap = 20;
+      const controlWidth = width - gutter * 2 - controlGap;
+      const driveWidth = Math.floor(controlWidth * 0.51);
+      const launchWidth = controlWidth - driveWidth;
+      return {
+        mode: 'mobilePortrait',
+        width,
+        height,
+        hudHeight: MOBILE_PORTRAIT_HUD_HEIGHT,
+        controlBandTop,
+        cameraCenterX: width / 2,
+        cameraCenterY: this.viewMode === 'tactical' ? Math.floor(MOBILE_PORTRAIT_HUD_HEIGHT + (controlBandTop - MOBILE_PORTRAIT_HUD_HEIGHT) * 0.48) : MOBILE_CAMERA_CENTER_Y,
+        cameraLookAhead: MOBILE_CAMERA_LOOK_AHEAD,
+        cameraZoom: this.viewMode === 'tactical' ? MOBILE_TACTICAL_ZOOM : MOBILE_CAMERA_ZOOM,
+        message: { x: 18, y: controlBandTop - 22, width: width - 36, height: 34, fontSize: 15 },
+        vitals: [
+          { x: gutter, y: 12, width: vitalWidth, height: 58 },
+          { x: gutter + vitalWidth + vitalGap, y: 12, width: vitalWidth, height: 58 },
+          { x: gutter + (vitalWidth + vitalGap) * 2, y: 12, width: vitalWidth, height: 58 }
+        ],
+        stateChip: { x: 16, y: 76, width: 154, height: 46 },
+        launchButton: { x: gutter + driveWidth + controlGap, y: height - 172, width: launchWidth, height: 88 },
+        resetButton: { x: width - 84, y: 80, width: 68, height: 40 },
+        drive: { x: gutter, y: height - 186, width: driveWidth, height: 162 },
+        yieldReadout: { x: 188, y: 104, fontSize: 12 }
+      };
+    }
+
+    return {
+      mode: 'desktop',
+      width,
+      height,
+      hudHeight: DESKTOP_HUD_HEIGHT,
+      cameraCenterX: width / 2,
+      cameraCenterY: this.viewMode === 'tactical' ? Math.floor(DESKTOP_HUD_HEIGHT + (height - DESKTOP_HUD_HEIGHT) * 0.52) : DESKTOP_CAMERA_CENTER_Y,
+      cameraLookAhead: DESKTOP_CAMERA_LOOK_AHEAD,
+      cameraZoom: this.viewMode === 'tactical' ? DESKTOP_TACTICAL_ZOOM : DESKTOP_CAMERA_ZOOM,
+      message: { x: 24, y: height - 48, width: 930, height: 28, fontSize: 17 },
+      vitals: [
+        { x: 24, y: 10, width: 176, height: 58 },
+        { x: 218, y: 10, width: 176, height: 58 },
+        { x: 412, y: 10, width: 156, height: 58 }
+      ],
+      stateChip: { x: 592, y: 14, width: 152, height: 48 },
+      launchButton: { x: 770, y: 14, width: 164, height: 48 },
+      resetButton: { x: 950, y: 18, width: 66, height: 40 },
+      yieldReadout: { x: 24, y: 76, fontSize: 12 }
+    };
+  }
+
+  private rectFromLayout(rect: SceneRect): Phaser.Geom.Rectangle {
+    return new Phaser.Geom.Rectangle(rect.x, rect.y, rect.width, rect.height);
+  }
+
+  private rectContains(rect: SceneRect, x: number, y: number): boolean {
+    return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+  }
+
+  private clampScreenPoint(point: Vec2, marginX = 16, marginY = 16): Vec2 {
+    const layout = this.getLayout();
+    return {
+      x: clamp(point.x, marginX, layout.width - marginX),
+      y: clamp(point.y, layout.hudHeight + marginY, layout.height - marginY)
+    };
+  }
+
+  private readInput(): ContinuousInput {
+    let steer = 0;
+    const layout = this.getLayout();
+    const leftHeld = Boolean(this.keys?.A.isDown || this.cursors?.left.isDown);
+    const rightHeld = Boolean(this.keys?.D.isDown || this.cursors?.right.isDown);
+    const upHeld = Boolean(this.keys?.W.isDown || this.cursors?.up.isDown);
+    const downHeld = Boolean(this.keys?.S.isDown || this.cursors?.down.isDown);
+    const mobileDriveInput = this.getMobileDriveInput();
+    const manualHeld = leftHeld || rightHeld || upHeld || downHeld || Boolean(mobileDriveInput);
+
+    const selfPlayTarget = this.getSelfPlayTarget();
+    if (selfPlayTarget && !manualHeld) {
+      return getContinuousSelfPlayInput(this.state, selfPlayTarget);
+    }
+
+    if (this.selfPlay && manualHeld) {
+      this.stopSelfPlay(true);
+    }
+
+    if (mobileDriveInput) {
+      this.clearPointerTarget();
+      return mobileDriveInput;
+    }
+
+    if (layout.mode === 'mobilePortrait' && !manualHeld) {
+      return {
+        steer: 0,
+        throttle: 0,
+        driveIntent: false
+      };
+    }
+
+    if (leftHeld) steer -= 1;
+    if (rightHeld) steer += 1;
+    if (leftHeld || rightHeld) this.clearPointerTarget();
+
+    if (this.pointerTarget && steer === 0) {
+      const desiredAngle = Math.atan2(this.pointerTarget.y - this.state.rover.y, this.pointerTarget.x - this.state.rover.x);
+      steer = clamp(angleDifference(desiredAngle, this.state.rover.heading) / 0.85, -1, 1);
+    }
+
+    const driveIntent = upHeld || downHeld || Boolean(this.pointerTarget);
+    return {
+      steer,
+      throttle: upHeld ? 1 : this.pointerTarget ? 0.62 : 0,
+      brake: downHeld,
+      driveIntent
+    };
+  }
+
+  private getMobileDriveInput(): ContinuousInput | undefined {
+    const layout = this.getLayout();
+    if (layout.mode !== 'mobilePortrait' || !layout.drive || !this.mobileDrive) return undefined;
+
+    const dx = this.mobileDrive.current.x - this.mobileDrive.origin.x;
+    const dy = this.mobileDrive.current.y - this.mobileDrive.origin.y;
+    const radius = Math.min(layout.drive.width, layout.drive.height) * 0.38;
+    const distance = Math.hypot(dx, dy);
+    const deadzone = radius * 0.18;
+    if (distance < deadzone) {
+      return {
+        steer: 0,
+        throttle: 0,
+        driveIntent: false
+      };
+    }
+
+    const commitment = clamp((distance - deadzone) / (radius - deadzone), 0, 1);
+    const forwardBias = clamp((-dy - deadzone) / (radius - deadzone), 0, 1);
+
+    return {
+      steer: clamp(dx / radius, -1, 1),
+      throttle: clamp(Math.max(commitment, forwardBias), 0, 1),
+      driveIntent: true
+    };
+  }
+
+  private launchDrone(): boolean {
+    const result = launchReclaimDrone(this.state);
+    this.state = result.state;
+    this.state.message = result.message;
+
+    if (result.ok) {
+      recordContinuousLoopDroneLaunch(this.loopTrace, this.state);
+      this.addEffect('launch', this.state.drone.x, this.state.drone.y, 520);
+      this.showEventMessage('Drone launched. Shape the return path.', 1400, this.time.now, 2);
+    } else {
+      this.addEffect('blocked', this.state.rover.x, this.state.rover.y, 320);
+      this.showEventMessage(this.formatPlayerMessage(result.message), 1100, this.time.now, 2);
+    }
+    return result.ok;
+  }
+
+  private resetRun(): void {
+    this.state = createContinuousWorld(this.state.seed, this.state.tuning, this.state.arenaId);
+    this.cameraHeading = this.state.rover.heading;
+    this.tacticalCameraFocus = this.tacticalCameraTarget();
+    this.loopTrace = createContinuousLoopTrace(this.state);
+    this.pointerTarget = undefined;
+    this.mobileDrive = undefined;
+    this.selfPlay = undefined;
+    this.effects = [];
+    this.eventMessage = undefined;
+    this.previousDroneStatus = this.state.drone.status;
+    this.previousSpeedState = this.state.speedState;
+    this.previousPhase = this.state.phase;
+    this.previousOre = this.state.rover.ore;
+    this.syncTuningPanel();
+  }
+
+  private setArena(arenaId: ContinuousArenaId): void {
+    if (!CONTINUOUS_ARENAS[arenaId]) return;
+
+    const tuning = this.state.tuning;
+    const seed = this.state.seed;
+    this.state = createContinuousWorld(seed, tuning, arenaId);
+    this.cameraHeading = this.state.rover.heading;
+    this.tacticalCameraFocus = this.tacticalCameraTarget();
+    this.loopTrace = createContinuousLoopTrace(this.state);
+    this.pointerTarget = undefined;
+    this.mobileDrive = undefined;
+    this.preSelfPlayPointerTarget = undefined;
+    this.selfPlay = undefined;
+    this.effects = [];
+    this.eventMessage = undefined;
+    this.previousDroneStatus = this.state.drone.status;
+    this.previousSpeedState = this.state.speedState;
+    this.previousPhase = this.state.phase;
+    this.previousOre = this.state.rover.ore;
+    this.saveStoredArenaId();
+    this.syncTuningPanel();
+  }
+
+  private startSelfPlay(routeId: ContinuousSelfPlayRouteId = 'firstLoop'): void {
+    const route = getContinuousSelfPlayRoute(routeId);
+    this.preSelfPlayPointerTarget = this.pointerTarget ? { ...this.pointerTarget } : undefined;
+    this.resetRun();
+    this.selfPlay = {
+      route,
+      launchedAtSeconds: new Set()
+    };
+    const target = getContinuousSelfPlayTarget(route, this.state.elapsedSeconds);
+    this.pointerTarget = { x: target.x, y: target.y };
+    this.state.message = `Self-play route: ${route.label}.`;
+  }
+
+  private stopSelfPlay(restoreManualTarget = true): void {
+    this.selfPlay = undefined;
+    this.pointerTarget = restoreManualTarget && this.preSelfPlayPointerTarget ? { ...this.preSelfPlayPointerTarget } : undefined;
+    this.preSelfPlayPointerTarget = undefined;
+    this.state.message = 'Auto route stopped. Manual navigation restored.';
+  }
+
+  private updateSelfPlayCommands(): void {
+    if (!this.selfPlay) return;
+
+    if (this.state.phase !== 'playing' || this.state.elapsedSeconds >= this.selfPlay.route.durationSeconds) {
+      this.stopSelfPlay(false);
+      return;
+    }
+
+    for (const launchSecond of this.selfPlay.route.droneLaunchSeconds) {
+      if (this.selfPlay.launchedAtSeconds.has(launchSecond)) continue;
+      if (this.state.elapsedSeconds < launchSecond) continue;
+      if (this.state.drone.status !== 'ready') continue;
+
+      if (this.launchDrone()) {
+        this.selfPlay.launchedAtSeconds.add(launchSecond);
+      }
+    }
+
+    const target = getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds);
+    this.pointerTarget = { x: target.x, y: target.y };
+  }
+
+  private getSelfPlayTarget(): ContinuousSelfPlayWaypoint | undefined {
+    if (!this.selfPlay) return undefined;
+    return getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds);
+  }
+
+  private getSelfPlayStatus(): ContinuousSelfPlayStatus | undefined {
+    if (!this.selfPlay) return undefined;
+
+    const target = this.getSelfPlayTarget();
+    return {
+      routeId: this.selfPlay.route.id,
+      label: this.selfPlay.route.label,
+      targetLabel: target?.label ?? 'complete',
+      elapsedSeconds: Math.round(this.state.elapsedSeconds * 10) / 10
+    };
+  }
+
+  private createTuningPanel(): void {
+    if (!import.meta.env.DEV) return;
+
+    const existing = document.getElementById('moon-miner-tuning-panel');
+    const panel = existing ?? document.createElement('aside');
+    panel.id = 'moon-miner-tuning-panel';
+    panel.className = 'moon-miner-tuning';
+    panel.textContent = '';
+    this.tuningControls.clear();
+
+    const title = document.createElement('h2');
+    title.textContent = 'Dynamics';
+    panel.appendChild(title);
+
+    const arenaRow = document.createElement('label');
+    arenaRow.className = 'moon-miner-tuning__row moon-miner-tuning__row--select';
+
+    const arenaName = document.createElement('span');
+    arenaName.className = 'moon-miner-tuning__name';
+    arenaName.textContent = 'Arena';
+
+    const arenaSelect = document.createElement('select');
+    arenaSelect.className = 'moon-miner-tuning__select';
+    for (const arena of Object.values(CONTINUOUS_ARENAS)) {
+      const option = document.createElement('option');
+      option.value = arena.id;
+      option.textContent = arena.label;
+      arenaSelect.appendChild(option);
+    }
+    arenaSelect.addEventListener('change', () => this.setArena(arenaSelect.value as ContinuousArenaId));
+
+    arenaRow.append(arenaName, arenaSelect);
+    panel.appendChild(arenaRow);
+    this.arenaSelectElement = arenaSelect;
+
+    for (const definition of TUNING_CONTROLS) {
+      const row = document.createElement('label');
+      row.className = 'moon-miner-tuning__row';
+
+      const name = document.createElement('span');
+      name.className = 'moon-miner-tuning__name';
+      name.textContent = definition.label;
+
+      const range = document.createElement('input');
+      range.type = 'range';
+      range.min = String(definition.min);
+      range.max = String(definition.max);
+      range.step = String(definition.step);
+
+      const number = document.createElement('input');
+      number.type = 'number';
+      number.min = String(definition.min);
+      number.max = String(definition.max);
+      number.step = String(definition.step);
+
+      const value = document.createElement('span');
+      value.className = 'moon-miner-tuning__value';
+
+      range.addEventListener('input', () => this.applyTuningValue(definition.key, Number(range.value)));
+      number.addEventListener('change', () => this.applyTuningValue(definition.key, Number(number.value)));
+
+      row.append(name, range, number, value);
+      panel.appendChild(row);
+      this.tuningControls.set(definition.key, { range, number, value });
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'moon-miner-tuning__actions';
+
+    const resetRunButton = document.createElement('button');
+    resetRunButton.type = 'button';
+    resetRunButton.textContent = 'Reset Run';
+    resetRunButton.addEventListener('click', () => this.resetRun());
+
+    const defaultsButton = document.createElement('button');
+    defaultsButton.type = 'button';
+    defaultsButton.textContent = 'Defaults';
+    defaultsButton.addEventListener('click', () => {
+      this.state.tuning = resolveContinuousTuning(DEFAULT_CONTINUOUS_TUNING);
+      this.saveStoredTuning();
+      this.resetRun();
+    });
+
+    const copyButton = document.createElement('button');
+    copyButton.type = 'button';
+    copyButton.textContent = 'Copy JSON';
+    copyButton.addEventListener('click', () => this.copyTuningJson(copyButton));
+
+    const autoRouteButton = document.createElement('button');
+    autoRouteButton.type = 'button';
+    autoRouteButton.textContent = 'Auto Route';
+    autoRouteButton.addEventListener('click', () => this.startSelfPlay());
+
+    const stopAutoButton = document.createElement('button');
+    stopAutoButton.type = 'button';
+    stopAutoButton.textContent = 'Stop Auto';
+    stopAutoButton.addEventListener('click', () => this.stopSelfPlay());
+
+    actions.append(resetRunButton, defaultsButton, copyButton, autoRouteButton, stopAutoButton);
+    panel.appendChild(actions);
+
+    if (!existing) document.body.appendChild(panel);
+    this.tuningPanelElement = panel;
+    this.syncTuningPanel();
+    this.syncDebugOverlayVisibility();
+  }
+
+  private syncDebugOverlayVisibility(): void {
+    if (!import.meta.env.DEV) return;
+    if (!this.tuningPanelElement) return;
+
+    this.tuningPanelElement.hidden = !this.debugOverlayVisible;
+    this.tuningPanelElement.dataset.open = this.debugOverlayVisible ? 'true' : 'false';
+    this.tuningPanelElement.dataset.layout = this.getLayout().mode;
+    document.body.classList.toggle(
+      'moon-miner-debug-workbench',
+      this.debugOverlayVisible && this.getLayout().mode === 'mobilePortrait'
+    );
+  }
+
+  private applyTuningValue(key: TuningKey, value: number): void {
+    if (!Number.isFinite(value)) return;
+
+    this.state.tuning = resolveContinuousTuning({
+      ...this.state.tuning,
+      [key]: value
+    });
+    this.state.maxNanobots = this.state.tuning.maxNanobots;
+    this.state.targetOre = this.state.tuning.targetOre;
+    this.state.nanobots = clamp(this.state.nanobots, 0, this.state.maxNanobots);
+    this.state.solarSeconds = Math.min(this.state.solarSeconds, this.state.tuning.startingSolarSeconds);
+    this.saveStoredTuning();
+    this.syncTuningPanel();
+  }
+
+  private syncTuningPanel(): void {
+    if (this.arenaSelectElement) {
+      this.arenaSelectElement.value = this.state.arenaId;
+    }
+
+    for (const definition of TUNING_CONTROLS) {
+      const controls = this.tuningControls.get(definition.key);
+      if (!controls) continue;
+
+      const value = this.state.tuning[definition.key];
+      const formatted = this.formatTuningValue(definition, value);
+      controls.range.value = String(value);
+      controls.number.value = formatted;
+      controls.value.textContent = formatted;
+    }
+  }
+
+  private formatTuningValue(definition: TuningControlDefinition, value: number): string {
+    return value.toFixed(definition.precision ?? 0);
+  }
+
+  private loadStoredTuning(): ContinuousTuning {
+    if (!import.meta.env.DEV) return resolveContinuousTuning();
+
+    try {
+      const raw = window.localStorage.getItem(TUNING_STORAGE_KEY);
+      return raw ? resolveContinuousTuning(JSON.parse(raw) as Partial<ContinuousTuning>) : resolveContinuousTuning();
+    } catch {
+      return resolveContinuousTuning();
+    }
+  }
+
+  private loadStoredArenaId(): ContinuousArenaId {
+    if (!import.meta.env.DEV) return DEFAULT_CONTINUOUS_ARENA_ID;
+
+    try {
+      const raw = window.localStorage.getItem(ARENA_STORAGE_KEY) as ContinuousArenaId | null;
+      return raw && CONTINUOUS_ARENAS[raw] ? raw : DEFAULT_CONTINUOUS_ARENA_ID;
+    } catch {
+      return DEFAULT_CONTINUOUS_ARENA_ID;
+    }
+  }
+
+  private saveStoredTuning(): void {
+    if (!import.meta.env.DEV) return;
+
+    try {
+      window.localStorage.setItem(TUNING_STORAGE_KEY, JSON.stringify(this.state.tuning));
+    } catch {
+      // Local storage can be unavailable in hardened browser contexts; live tuning still works.
+    }
+  }
+
+  private saveStoredArenaId(): void {
+    if (!import.meta.env.DEV) return;
+
+    try {
+      window.localStorage.setItem(ARENA_STORAGE_KEY, this.state.arenaId);
+    } catch {
+      // Local storage can be unavailable in hardened browser contexts; live arena switching still works.
+    }
+  }
+
+  private copyTuningJson(button: HTMLButtonElement): void {
+    const original = button.textContent ?? 'Copy JSON';
+    const text = JSON.stringify(this.state.tuning, null, 2);
+
+    if (!navigator.clipboard) {
+      console.info('Moon Miner tuning JSON:', text);
+      button.textContent = 'Logged';
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 900);
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        button.textContent = 'Copied';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 900);
+      })
+      .catch(() => {
+        button.textContent = 'Copy failed';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 900);
+      });
+  }
+
+  private clearPointerTarget(): void {
+    this.pointerTarget = undefined;
+  }
+
+  private updateCamera(deltaSeconds: number): void {
+    if (this.viewMode === 'tactical') {
+      const target = this.tacticalCameraTarget();
+      const blend = 1 - Math.exp(-TACTICAL_CAMERA_RESPONSE * deltaSeconds);
+      this.tacticalCameraFocus = {
+        x: Phaser.Math.Linear(this.tacticalCameraFocus.x, target.x, blend),
+        y: Phaser.Math.Linear(this.tacticalCameraFocus.y, target.y, blend)
+      };
+      return;
+    }
+
+    const response = this.state.speedState === 'crawl' ? CAMERA_TURN_RESPONSE * 1.45 : CAMERA_TURN_RESPONSE;
+    const blend = 1 - Math.exp(-response * deltaSeconds);
+    this.cameraHeading = wrapAngle(
+      this.cameraHeading + angleDifference(this.state.rover.heading, this.cameraHeading) * blend
+    );
+  }
+
+  private captureTransitions(
+    timeMs: number,
+    previousDroneStatus: DroneStatus,
+    previousSpeedState: SpeedState,
+    previousPhase: ContinuousPhase,
+    previousOre: number,
+    previousDronePayload: number,
+    previousNanobots: number
+  ): void {
+    let deliveredPayload = 0;
+    if (previousDroneStatus !== 'ready' && this.state.drone.status === 'ready') {
+      this.addEffect('recovery', this.state.rover.x, this.state.rover.y, 980);
+      if (previousDronePayload > 0) {
+        deliveredPayload = previousDronePayload;
+        this.addEffect('delivery', this.state.rover.x, this.state.rover.y, DELIVERY_READOUT_MS, deliveredPayload);
+      }
+    }
+
+    if (previousSpeedState !== this.state.speedState) {
+      if (this.state.speedState === 'prepared') {
+        this.addEffect('sprint', this.state.rover.x, this.state.rover.y, 620);
+        this.showEventMessage('Prepared field. Mining arms are free.', 1200, timeMs, 1);
+      }
+      if (this.state.speedState === 'fabricating') {
+        this.addEffect('build', this.state.rover.x, this.state.rover.y, 620);
+        this.showEventMessage('Building field. Mining arms constrained.', 1200, timeMs, 1);
+      }
+      if (this.state.speedState === 'crawl') {
+        this.addEffect('crawl', this.state.rover.x, this.state.rover.y, 820);
+        this.showEventMessage(
+          this.state.drone.status === 'ready' ? 'Crawl protocol. Launch drone now.' : 'Crawl protocol. Stay catchable.',
+          1800,
+          timeMs,
+          2
+        );
+      }
+    }
+
+    const crossedIntoLaunchPressure =
+      previousNanobots / this.state.maxNanobots >= DRONE_URGENCY_RATIO &&
+      this.state.nanobots / this.state.maxNanobots < DRONE_URGENCY_RATIO;
+    if (crossedIntoLaunchPressure && this.state.drone.status === 'ready') {
+      this.addEffect('crawl', this.state.rover.x, this.state.rover.y, 620);
+      this.showEventMessage('Low buffer. Drone is ready.', 1450, timeMs, 2);
+    }
+
+    if (deliveredPayload > 0) {
+      this.showEventMessage(`Drone delivered +${deliveredPayload.toFixed(1)}. Field restored.`, 1800, timeMs, 2);
+    }
+
+    if (this.state.rover.ore > previousOre + 0.02) {
+      this.addEffect('mine', this.state.rover.x, this.state.rover.y, 260);
+    }
+
+    if (previousPhase !== this.state.phase) {
+      this.addEffect(this.state.phase === 'won' ? 'win' : 'loss', this.state.rover.x, this.state.rover.y, 1200);
+    }
+
+    this.previousDroneStatus = this.state.drone.status;
+    this.previousSpeedState = this.state.speedState;
+    this.previousPhase = this.state.phase;
+    this.previousOre = this.state.rover.ore;
+  }
+
+  private showEventMessage(text: string, durationMs = 1400, nowMs = this.time.now, priority = 1): void {
+    if (this.eventMessage && nowMs <= this.eventMessage.expiresAtMs && priority < this.eventMessage.priority) return;
+
+    this.eventMessage = {
+      text,
+      expiresAtMs: nowMs + durationMs,
+      priority
+    };
+  }
+
+  private draw(): void {
+    this.graphics.clear();
+    this.drawBackdrop();
+    this.drawFertileZones();
+    this.drawFirstRunAffordances();
+    this.drawBeatMarkers();
+    this.drawRidges();
+    this.drawFields();
+    this.drawReclaimPreview();
+    this.drawDroneReservation();
+    this.drawPointerTarget();
+    this.drawDrone();
+    this.drawRover();
+    this.drawEffects();
+    this.drawHud();
+    this.drawPhaseBanner();
+    this.updateDebugState();
+  }
+
+  private drawBackdrop(): void {
+    const layout = this.getLayout();
+    const visualCalm = this.visualCalm();
+    this.graphics.fillStyle(0x070910, 1);
+    this.graphics.fillRect(0, 0, layout.width, layout.height);
+
+    this.graphics.fillStyle(0x11151e, 1);
+    this.graphics.fillRect(0, layout.hudHeight, layout.width, layout.height - layout.hudHeight);
+
+    if (this.viewMode === 'tactical') {
+      this.drawTacticalBackdrop(layout, visualCalm);
+      return;
+    }
+
+    const planeTopLeft = this.project(this.cameraLocalPoint(-620, 540));
+    const planeTopRight = this.project(this.cameraLocalPoint(620, 540));
+    const planeBottomRight = this.project(this.cameraLocalPoint(620, -360));
+    const planeBottomLeft = this.project(this.cameraLocalPoint(-620, -360));
+    this.graphics.fillStyle(0x141924, 0.9);
+    this.graphics.fillPoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
+    this.graphics.lineStyle(2, 0x303846, 0.85);
+    this.graphics.strokePoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
+
+    for (let index = 0; index < 8; index += 1) {
+      const forward = 500 - index * 120;
+      const from = this.project(this.cameraLocalPoint(-620, forward));
+      const to = this.project(this.cameraLocalPoint(620, forward));
+      this.graphics.lineStyle(1, 0x222a36, 0.2 + 0.18 * visualCalm);
+      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+
+    for (let index = 0; index < 46; index += 1) {
+      if (visualCalm < 0.7 && index % 2 === 1) continue;
+      const point = this.project(
+        this.cameraLocalPoint(-560 + ((index * 173) % 1120), -330 + ((index * 89) % 840))
+      );
+      const radius = 1 + (index % 3);
+      this.graphics.fillStyle(index % 5 === 0 ? 0x465060 : 0x252c38, (0.32 + 0.33 * visualCalm));
+      this.graphics.fillCircle(point.x, point.y, radius);
+    }
+
+    this.graphics.lineStyle(1, 0x262e3b, 0.8);
+    this.graphics.lineBetween(0, layout.hudHeight, layout.width, layout.hudHeight);
+  }
+
+  private drawTacticalBackdrop(layout: SceneLayout, visualCalm: number): void {
+    const topLeft = this.project({ x: 0, y: 0 });
+    const topRight = this.project({ x: this.state.width, y: 0 });
+    const bottomRight = this.project({ x: this.state.width, y: this.state.height });
+    const bottomLeft = this.project({ x: 0, y: this.state.height });
+    const worldLeft = Math.min(topLeft.x, bottomLeft.x);
+    const worldRight = Math.max(topRight.x, bottomRight.x);
+    const worldTop = Math.min(topLeft.y, topRight.y);
+    const worldBottom = Math.max(bottomLeft.y, bottomRight.y);
+
+    this.graphics.fillStyle(0x141924, 0.94);
+    this.graphics.fillRect(worldLeft, worldTop, worldRight - worldLeft, worldBottom - worldTop);
+    this.graphics.lineStyle(2, 0x344052, 0.88);
+    this.graphics.strokeRect(worldLeft, worldTop, worldRight - worldLeft, worldBottom - worldTop);
+
+    this.graphics.lineStyle(1, 0x263040, 0.22 + visualCalm * 0.18);
+    for (let x = 0; x <= this.state.width; x += 120) {
+      const from = this.project({ x, y: 0 });
+      const to = this.project({ x, y: this.state.height });
+      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+    for (let y = 80; y <= this.state.height; y += 120) {
+      const from = this.project({ x: 0, y });
+      const to = this.project({ x: this.state.width, y });
+      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+
+    this.graphics.lineStyle(2, 0x222b39, 0.52);
+    const beats = this.state.arena.beats.map((beat) => this.project(beat));
+    for (let index = 0; index < beats.length - 1; index += 1) {
+      this.graphics.lineBetween(beats[index].x, beats[index].y, beats[index + 1].x, beats[index + 1].y);
+    }
+
+    for (let index = 0; index < 42; index += 1) {
+      const point = this.project({
+        x: 42 + ((index * 173) % Math.max(1, this.state.width - 84)),
+        y: 80 + ((index * 89) % Math.max(1, this.state.height - 118))
+      });
+      const radius = 1.2 + (index % 3);
+      this.graphics.fillStyle(index % 5 === 0 ? 0x465060 : 0x252c38, 0.2 + 0.28 * visualCalm);
+      this.graphics.fillCircle(point.x, point.y, radius);
+    }
+
+    this.graphics.lineStyle(1, 0x262e3b, 0.8);
+    this.graphics.lineBetween(0, layout.hudHeight, layout.width, layout.hudHeight);
+  }
+
+  private drawFertileZones(): void {
+    const visualCalm = this.visualCalm();
+    const activeZone = findFertileZoneAt(this.state, this.state.rover);
+    for (const zone of this.state.fertileZones) {
+      const depletion = clamp(zone.remaining / 70, 0.18, 1);
+      const active = activeZone?.id === zone.id;
+      if (zone.vein) {
+        this.drawFertileVein(zone.vein.from, zone.vein.to, zone.vein.width, depletion, visualCalm, active);
+      } else {
+        const center = this.project(zone);
+        const scale = this.projectedScale(zone);
+        const yScale = this.shapeYScale();
+        const activePulse = active ? 0.14 + Math.sin(this.time.now / 130) * 0.04 : 0;
+        this.graphics.fillStyle(0x8a6837, (0.16 + 0.17 * visualCalm + activePulse) * depletion);
+        this.graphics.fillEllipse(center.x, center.y, zone.radius * 2.1 * scale, zone.radius * 1.36 * yScale * scale);
+        this.graphics.lineStyle(active ? 5 : 3, active ? 0xffe48a : 0xf0bc4f, (0.26 + 0.24 * visualCalm + activePulse) * depletion);
+        this.graphics.strokeEllipse(center.x, center.y, zone.radius * 2.1 * scale, zone.radius * 1.36 * yScale * scale);
+        this.graphics.fillStyle(0xffdc75, (0.08 + 0.1 * visualCalm) * depletion);
+        this.graphics.fillEllipse(
+          center.x + zone.radius * 0.1 * scale,
+          center.y - zone.radius * 0.08 * yScale * scale,
+          zone.radius * 1.1 * scale,
+          zone.radius * 0.52 * yScale * scale
+        );
+      }
+    }
+  }
+
+  private drawFirstRunAffordances(): void {
+    const zone = this.getCurrentAffordanceZone();
+    if (!zone) return;
+
+    const pulse = 0.5 + Math.sin(this.time.now / 190) * 0.5;
+    const urgent = this.shouldShowDroneLaunchUrgency() || this.state.drone.status === 'returning';
+    const color = urgent ? 0x8dffea : 0xffe48a;
+    const bright = urgent ? 0xeafffb : 0xfff0b5;
+    if (zone.vein) {
+      this.drawFertileVeinPulse(zone.vein.from, zone.vein.to, zone.vein.width + (urgent ? 36 : 24), pulse, color, bright);
+      return;
+    }
+
+    const center = this.project(zone);
+    const scale = this.projectedScale(zone);
+    const yScale = this.shapeYScale();
+    this.graphics.lineStyle(2, color, 0.18 + pulse * 0.24);
+    this.graphics.strokeEllipse(center.x, center.y, zone.radius * 2.35 * scale, zone.radius * 1.5 * yScale * scale);
+  }
+
+  private getCurrentAffordanceZone(): FertileZone | undefined {
+    if (this.state.phase !== 'playing') return undefined;
+
+    const urgentRecovery =
+      this.shouldShowDroneLaunchUrgency() ||
+      this.state.drone.status === 'returning' ||
+      (this.state.speedState === 'crawl' && this.state.elapsedSeconds < 34);
+    if (urgentRecovery) return this.findFertileZoneById('recovery-pocket');
+
+    if (this.state.elapsedSeconds <= 10 && this.state.rover.ore <= 1.4) {
+      return this.findFertileZoneById('runway-pocket');
+    }
+
+    if (this.state.elapsedSeconds <= 24 && this.state.rover.ore < this.state.targetOre * 0.56) {
+      return this.findFertileZoneById('temptation-lobe');
+    }
+
+    if (this.state.elapsedSeconds <= 38) {
+      return this.findFertileZoneById('recovery-pocket');
+    }
+
+    return undefined;
+  }
+
+  private findFertileZoneById(id: string): FertileZone | undefined {
+    return this.state.fertileZones.find((zone) => zone.id === id && zone.remaining > 0);
+  }
+
+  private drawBeatMarkers(): void {
+    if (this.viewMode !== 'tactical') {
+      this.clearBeatMarkerText();
+      return;
+    }
+
+    const activeZone = this.getCurrentAffordanceZone();
+    const layout = this.getLayout();
+    const showLabels = layout.mode === 'desktop';
+    for (const beat of this.state.arena.beats) {
+      const screen = this.project(beat);
+      const active =
+        (activeZone?.id === 'runway-pocket' && beat.id === 'runway') ||
+        (activeZone?.id === 'temptation-lobe' && beat.id === 'temptation') ||
+        (activeZone?.id === 'recovery-pocket' && beat.id === 'recovery');
+      const pulse = active ? 0.5 + Math.sin(this.time.now / 180) * 0.5 : 0;
+      const color = active && this.shouldShowDroneLaunchUrgency() ? 0x8dffea : active ? 0xffe48a : 0x647286;
+
+      this.graphics.fillStyle(0x0b1018, active ? 0.78 : 0.56);
+      this.graphics.fillCircle(screen.x, screen.y, active ? 8 + pulse * 2 : 5);
+      this.graphics.lineStyle(active ? 3 : 1, color, active ? 0.76 + pulse * 0.2 : 0.42);
+      this.graphics.strokeCircle(screen.x, screen.y, active ? 15 + pulse * 4 : 10);
+
+      if (showLabels) {
+        this.drawStaticText(
+          `beat-label-${beat.id}`,
+          screen.x + 13,
+          screen.y - 12,
+          beat.label,
+          11,
+          active ? '#fff1bf' : '#8f9caf'
+        );
+      } else {
+        this.drawStaticText(`beat-label-${beat.id}`, 0, 0, '', 1, '#ffffff');
+      }
+    }
+  }
+
+  private clearBeatMarkerText(): void {
+    for (const beat of this.state.arena.beats) {
+      this.drawStaticText(`beat-label-${beat.id}`, 0, 0, '', 1, '#ffffff');
+    }
+  }
+
+  private drawFertileVeinPulse(
+    from: Vec2,
+    to: Vec2,
+    width: number,
+    pulse: number,
+    color = 0xffe48a,
+    bright = 0xfff0b5
+  ): void {
+    const fromScreen = this.project(from);
+    const toScreen = this.project(to);
+    const dx = toScreen.x - fromScreen.x;
+    const dy = toScreen.y - fromScreen.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= 0.01) return;
+
+    const normal = { x: -dy / length, y: dx / length };
+    const fromWidth = (width / 2) * this.projectedScale(from);
+    const toWidth = (width / 2) * this.projectedScale(to);
+    const points = [
+      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
+      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
+      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
+      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
+    ];
+
+    this.graphics.lineStyle(2, color, 0.2 + pulse * 0.28);
+    this.graphics.strokePoints(points, true, true);
+    this.graphics.lineStyle(3, bright, 0.18 + pulse * 0.22);
+    this.graphics.lineBetween(fromScreen.x, fromScreen.y, toScreen.x, toScreen.y);
+  }
+
+  private drawFertileVein(
+    from: Vec2,
+    to: Vec2,
+    width: number,
+    depletion: number,
+    visualCalm: number,
+    active = false
+  ): void {
+    const fromScreen = this.project(from);
+    const toScreen = this.project(to);
+    const dx = toScreen.x - fromScreen.x;
+    const dy = toScreen.y - fromScreen.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= 0.01) return;
+
+    const normal = { x: -dy / length, y: dx / length };
+    const fromWidth = (width / 2) * this.projectedScale(from);
+    const toWidth = (width / 2) * this.projectedScale(to);
+    const points = [
+      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
+      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
+      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
+      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
+    ];
+    const pulse = active ? 0.5 + Math.sin(this.time.now / 145) * 0.5 : 0;
+    const fillAlpha = (0.12 + 0.16 * visualCalm + pulse * 0.08) * depletion;
+    const lineAlpha = (0.26 + 0.24 * visualCalm + pulse * 0.12) * depletion;
+
+    this.graphics.fillStyle(0x8a6837, fillAlpha);
+    this.graphics.fillPoints(points, true, true);
+    this.graphics.lineStyle(active ? 5 : 3, active ? 0xffe48a : 0xf0bc4f, lineAlpha);
+    this.graphics.strokePoints(points, true, true);
+    this.graphics.lineStyle(active ? 4 : 2, 0xffdc75, (0.24 + 0.25 * visualCalm + pulse * 0.22) * depletion);
+    this.graphics.lineBetween(fromScreen.x, fromScreen.y, toScreen.x, toScreen.y);
+
+    if (active) {
+      const markerProgress = (this.time.now / 620) % 1;
+      const marker = {
+        x: Phaser.Math.Linear(fromScreen.x, toScreen.x, markerProgress),
+        y: Phaser.Math.Linear(fromScreen.y, toScreen.y, markerProgress)
+      };
+      this.graphics.fillStyle(0xfff0b5, 0.74);
+      this.graphics.fillCircle(marker.x, marker.y, 5);
+      this.graphics.lineStyle(1, 0xfff7d0, 0.8);
+      this.graphics.strokeCircle(marker.x, marker.y, 10);
+    }
+  }
+
+  private drawRidges(): void {
+    const visualCalm = this.visualCalm();
+
+    for (const ridge of this.state.arena.ridges) {
+      const from = this.project(ridge.from);
+      const to = this.project(ridge.to);
+      const highlightFrom = this.project({ x: ridge.from.x + 5, y: ridge.from.y - 5 });
+      const highlightTo = this.project({ x: ridge.to.x + 5, y: ridge.to.y - 5 });
+      this.graphics.lineStyle(5, 0x333b47, 0.18 + 0.3 * visualCalm);
+      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+      this.graphics.lineStyle(1, 0x697180, 0.12 + 0.2 * visualCalm);
+      this.graphics.lineBetween(highlightFrom.x, highlightFrom.y, highlightTo.x, highlightTo.y);
+    }
+  }
+
+  private drawFields(): void {
+    const fields = [...this.state.fields].sort((a, b) => a.id - b.id);
+    const ordinary = fields.filter((field) => !field.reservedByDrone);
+    const reserved = fields.filter((field) => field.reservedByDrone);
+
+    this.drawFieldRibbon(ordinary, 0x6cf5dd, false);
+    this.drawFieldRibbon(reserved, 0xffa06c, true);
+    this.drawFieldBirthMarkers(ordinary);
+  }
+
+  private drawFieldRibbon(
+    fields: Array<{ x: number; y: number; radius: number; value: number; age: number }>,
+    color: number,
+    reserved: boolean
+  ): void {
+    const sections = this.fieldSections(fields);
+
+    for (const section of sections) {
+      if (section.length === 1) {
+        this.drawFieldCap(section[0], color, reserved, this.fieldAlpha(section[0]));
+        continue;
+      }
+
+      for (let index = 0; index < section.length - 1; index += 1) {
+        const from = section[index];
+        const to = section[index + 1];
+        this.drawFieldSegment(from, to, color, reserved);
+      }
+
+      this.drawFieldCap(section[0], color, reserved, this.fieldAlpha(section[0]));
+      this.drawFieldCap(section[section.length - 1], color, reserved, this.fieldAlpha(section[section.length - 1]));
+      this.drawFieldCenterLine(section, color, reserved);
+    }
+  }
+
+  private fieldSections<T extends Vec2>(fields: T[]): T[][] {
+    const sections: T[][] = [];
+    let current: T[] = [];
+
+    for (const field of fields) {
+      const previous = current[current.length - 1];
+      if (previous && Math.hypot(field.x - previous.x, field.y - previous.y) > 92) {
+        if (current.length > 0) sections.push(current);
+        current = [];
+      }
+      current.push(field);
+    }
+
+    if (current.length > 0) sections.push(current);
+    return sections;
+  }
+
+  private drawFieldSegment(
+    from: { x: number; y: number; radius: number; value: number; age: number },
+    to: { x: number; y: number; radius: number; value: number; age: number },
+    color: number,
+    reserved: boolean
+  ): void {
+    const fromScreen = this.project(from);
+    const toScreen = this.project(to);
+    const dx = toScreen.x - fromScreen.x;
+    const dy = toScreen.y - fromScreen.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= 0.01) return;
+
+    const normal = { x: -dy / length, y: dx / length };
+    const fromWidth = this.fieldRoadWidth(from);
+    const toWidth = this.fieldRoadWidth(to);
+    const points = [
+      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
+      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
+      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
+      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
+    ];
+    const alpha = Math.min(this.fieldAlpha(from), this.fieldAlpha(to));
+    const ordinaryAlpha = alpha * (0.34 + 0.24 * this.visualCalm());
+
+    this.graphics.fillStyle(color, reserved ? alpha * 0.36 : ordinaryAlpha);
+    this.graphics.fillPoints(points, true, true);
+    if (reserved) {
+      this.graphics.lineStyle(4, color, alpha * 0.88);
+      this.graphics.strokePoints(points, true, true);
+      const scanProgress = (this.time.now / 480) % 1;
+      const scan = {
+        x: Phaser.Math.Linear(fromScreen.x, toScreen.x, scanProgress),
+        y: Phaser.Math.Linear(fromScreen.y, toScreen.y, scanProgress)
+      };
+      this.graphics.fillStyle(0xffd2b7, alpha * 0.92);
+      this.graphics.fillCircle(scan.x, scan.y, 5);
+      this.graphics.lineStyle(1, 0xfff0df, alpha * 0.82);
+      this.graphics.strokeCircle(scan.x, scan.y, 10);
+    } else {
+      this.graphics.lineStyle(2, color, alpha * (0.32 + 0.26 * this.visualCalm()));
+      this.graphics.strokePoints(points, true, true);
+    }
+  }
+
+  private drawFieldCap(
+    field: { x: number; y: number; radius: number; value: number; age: number },
+    color: number,
+    reserved: boolean,
+    alpha: number
+  ): void {
+    const center = this.project(field);
+    const width = this.fieldRoadWidth(field);
+    const yScale = this.shapeYScale();
+    const ordinaryAlpha = alpha * (0.24 + 0.18 * this.visualCalm());
+    this.graphics.fillStyle(color, reserved ? alpha * 0.34 : ordinaryAlpha);
+    this.graphics.fillEllipse(center.x, center.y, width * 2.08, width * 1.2 * yScale);
+    this.graphics.lineStyle(reserved ? 4 : 2, color, reserved ? alpha * 0.9 : alpha * (0.34 + 0.24 * this.visualCalm()));
+    this.graphics.strokeEllipse(center.x, center.y, width * 2.08, width * 1.2 * yScale);
+  }
+
+  private drawFieldCenterLine<T extends Vec2>(section: T[], color: number, reserved: boolean): void {
+    if (section.length < 2) return;
+
+    this.graphics.lineStyle(reserved ? 3 : 2, color, reserved ? 0.86 : 0.38 + 0.22 * this.visualCalm());
+    for (let index = 0; index < section.length - 1; index += 1) {
+      const from = this.project(section[index]);
+      const to = this.project(section[index + 1]);
+      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+  }
+
+  private drawFieldBirthMarkers(fields: Array<{ x: number; y: number; radius: number; value: number; age: number }>): void {
+    for (const field of fields) {
+      const readyAge = this.state.tuning.preparedFieldMinAgeSeconds;
+      if (field.age > readyAge) continue;
+
+      const progress = clamp(field.age / readyAge, 0, 1);
+      const alpha = 1 - progress;
+      const center = this.project(field);
+      const scale = this.projectedScale(field);
+      const yScale = this.shapeYScale();
+      const radius = this.fieldRoadWidth(field) * (0.52 + progress * 0.5);
+
+      this.graphics.lineStyle(2, 0x9ffff1, 0.56 * alpha);
+      this.graphics.strokeEllipse(center.x, center.y, radius * 2.18, radius * 1.25 * yScale);
+      this.graphics.fillStyle(0x9ffff1, 0.08 * alpha);
+      this.graphics.fillCircle(center.x, center.y, 26 * scale);
+    }
+  }
+
+  private drawReclaimPreview(): void {
+    const preview = getReclaimPreview(this.state);
+    if (!preview) {
+      this.clearDronePreviewText();
+      return;
+    }
+
+    const targetScreen = this.project(preview.target);
+    const previewFields = this.state.fields.filter((field) => {
+      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius;
+    });
+    const pulse = 0.5 + Math.sin(this.time.now / 260) * 0.5;
+    const radius = this.droneReservationRadius(targetScreen, previewFields);
+
+    this.graphics.fillStyle(0xffb36d, 0.05 + pulse * 0.03);
+    this.graphics.fillCircle(targetScreen.x, targetScreen.y, radius + 10 + pulse * 3);
+    this.graphics.lineStyle(2, 0xffb36d, 0.38 + pulse * 0.18);
+    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + pulse * 4);
+    this.graphics.lineStyle(1, 0xffeddf, 0.28 + pulse * 0.14);
+    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + 12);
+
+    const labelPoint = this.clampScreenPoint({ x: targetScreen.x + radius + 16, y: targetScreen.y - radius - 8 }, 118, 28);
+    this.drawStaticText('drone-preview-readout', labelPoint.x, labelPoint.y, 'NEXT RECLAIM', 11, '#ffd2b7');
+    this.drawStaticText(
+      'drone-preview-detail',
+      labelPoint.x,
+      labelPoint.y + 15,
+      `+${preview.payload.toFixed(1)} in ${preview.etaSeconds.toFixed(1)}s`,
+      10,
+      '#ffeddf'
+    );
+  }
+
+  private clearDronePreviewText(): void {
+    this.drawStaticText('drone-preview-readout', 0, 0, '', 1, '#ffffff');
+    this.drawStaticText('drone-preview-detail', 0, 0, '', 1, '#ffffff');
+  }
+
+  private drawDroneReservation(): void {
+    const target = this.state.drone.target;
+    const reservingTarget = target && (this.state.drone.status === 'outbound' || this.state.drone.status === 'reclaiming');
+    if (!reservingTarget) {
+      this.clearDroneReservationText();
+      return;
+    }
+
+    const targetScreen = this.project(target);
+    const reservedFields = this.state.fields.filter((field) => field.reservedByDrone);
+    const pulse = 0.5 + Math.sin(this.time.now / 150) * 0.5;
+    const radius = this.droneReservationRadius(targetScreen, reservedFields);
+    const reclaiming = this.state.drone.status === 'reclaiming';
+
+    this.graphics.fillStyle(0xff9a68, reclaiming ? 0.12 + pulse * 0.05 : 0.08 + pulse * 0.04);
+    this.graphics.fillCircle(targetScreen.x, targetScreen.y, radius + 14 + pulse * 4);
+    this.graphics.lineStyle(5, 0x5a2a20, 0.54);
+    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + 9);
+    this.graphics.lineStyle(3, reclaiming ? 0xffd2b7 : 0xff9a68, 0.82 + pulse * 0.14);
+    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + pulse * 6);
+
+    const bracket = 13;
+    const outer = radius + 18;
+    this.graphics.lineStyle(3, 0xfff0df, 0.84);
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        const x = targetScreen.x + sx * outer;
+        const y = targetScreen.y + sy * outer;
+        this.graphics.lineBetween(x, y, x - sx * bracket, y);
+        this.graphics.lineBetween(x, y, x, y - sy * bracket);
+      }
+    }
+
+    const droneScreen = this.project(this.state.drone);
+    this.graphics.lineStyle(2, 0xffd2b7, 0.52 + pulse * 0.18);
+    this.graphics.lineBetween(droneScreen.x, droneScreen.y, targetScreen.x, targetScreen.y);
+
+    const label = reclaiming ? 'RECLAIMING' : 'RESERVED FIELD';
+    const detail = reclaiming
+      ? `${Math.ceil(this.state.drone.reclaimSeconds * 10) / 10}s lock`
+      : `${this.state.drone.etaSeconds.toFixed(1)}s outbound`;
+    const labelPoint = this.clampScreenPoint({ x: targetScreen.x + radius + 22, y: targetScreen.y - radius - 10 }, 128, 28);
+    this.drawStaticText('drone-target-readout', labelPoint.x, labelPoint.y, label, 12, '#ffd2b7');
+    this.drawStaticText('drone-target-detail', labelPoint.x, labelPoint.y + 16, detail, 10, '#ffeddf');
+  }
+
+  private clearDroneReservationText(): void {
+    this.drawStaticText('drone-target-readout', 0, 0, '', 1, '#ffffff');
+    this.drawStaticText('drone-target-detail', 0, 0, '', 1, '#ffffff');
+  }
+
+  private droneReservationRadius(targetScreen: Vec2, reservedFields: Array<{ x: number; y: number; radius: number; value: number }>): number {
+    let radius = 34;
+    for (const field of reservedFields) {
+      const fieldScreen = this.project(field);
+      radius = Math.max(radius, Math.hypot(fieldScreen.x - targetScreen.x, fieldScreen.y - targetScreen.y) + this.fieldRoadWidth(field) * 0.72);
+    }
+    return clamp(radius, 34, 78);
+  }
+
+  private fieldRoadWidth(field: { x: number; y: number; radius: number; value: number }): number {
+    return field.radius * this.projectedScale(field) * clamp(0.52 + field.value * 0.12, 0.48, 0.7);
+  }
+
+  private fieldAlpha(field: { value: number; age: number }): number {
+    const maturityAlpha =
+      field.age < this.state.tuning.preparedFieldMinAgeSeconds
+        ? clamp(0.44 + (field.age / this.state.tuning.preparedFieldMinAgeSeconds) * 0.36, 0.44, 0.8)
+        : 1;
+    const ageAlpha = clamp(1 - field.age / 140, 0.44, 0.92);
+    const valueAlpha = clamp(field.value / 0.85, 0.42, 1);
+    return maturityAlpha * ageAlpha * valueAlpha;
+  }
+
+  private drawPointerTarget(): void {
+    if (!this.pointerTarget || this.state.phase !== 'playing') return;
+
+    const rover = this.project(this.state.rover);
+    const target = this.project(this.pointerTarget);
+    const dx = target.x - rover.x;
+    const dy = target.y - rover.y;
+    const length = Math.hypot(dx, dy);
+    const normal = length > 0 ? { x: -dy / length, y: dx / length } : { x: 0, y: 1 };
+    const pulse = 0.5 + Math.sin(this.time.now / 150) * 0.5;
+
+    this.graphics.lineStyle(2, 0x89d8ff, 0.46);
+    this.graphics.lineBetween(rover.x, rover.y, target.x, target.y);
+    if (length > 32) {
+      const lead = {
+        x: target.x - (dx / length) * 20,
+        y: target.y - (dy / length) * 20
+      };
+      this.graphics.fillStyle(0x89d8ff, 0.32);
+      this.graphics.fillTriangle(
+        target.x,
+        target.y,
+        lead.x + normal.x * 8,
+        lead.y + normal.y * 8,
+        lead.x - normal.x * 8,
+        lead.y - normal.y * 8
+      );
+    }
+    this.graphics.lineStyle(3, 0x89d8ff, 0.66 + pulse * 0.18);
+    this.graphics.strokeCircle(target.x, target.y, 12 + pulse * 3);
+    this.graphics.lineStyle(1, 0xd5f4ff, 0.7);
+    this.graphics.strokeCircle(target.x, target.y, 22);
+  }
+
+  private drawDrone(): void {
+    const drone = this.state.drone;
+    const pulse = 0.5 + Math.sin(this.time.now / 140) * 0.5;
+    if (drone.status === 'ready') {
+      const dock = this.pointFromHeading(this.state.rover, this.state.rover.heading + Math.PI * 0.75, 28);
+      const dockScreen = this.project(dock);
+      const urgent = this.shouldShowDroneLaunchUrgency();
+      const deliveryBurstActive = Boolean(this.getActiveDeliveryEffect());
+      if (urgent) {
+        this.graphics.fillStyle(0xff765f, 0.16 + pulse * 0.12);
+        this.graphics.fillCircle(dockScreen.x, dockScreen.y, 38 + pulse * 10);
+        this.graphics.lineStyle(4, 0xff765f, 0.64 + pulse * 0.26);
+        this.graphics.strokeCircle(dockScreen.x, dockScreen.y, 26 + pulse * 8);
+        this.graphics.lineStyle(2, 0xffd2b7, 0.78);
+        this.graphics.strokeCircle(dockScreen.x, dockScreen.y, 42 + pulse * 12);
+        if (deliveryBurstActive) {
+          this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
+        } else {
+          this.drawStaticText('drone-callout', dockScreen.x + 16, dockScreen.y - 22, 'LAUNCH', 13, '#ffc7ba');
+        }
+      } else {
+        this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
+      }
+      this.graphics.fillStyle(urgent ? 0xff765f : 0xff9a68, 1);
+      this.graphics.fillCircle(dockScreen.x, dockScreen.y, urgent ? 8 + pulse * 2 : 6);
+      this.graphics.lineStyle(2, urgent ? 0xfff0df : 0xffd2b7, urgent ? 0.96 : 0.72);
+      this.graphics.strokeCircle(dockScreen.x, dockScreen.y, urgent ? 16 + pulse * 5 : 11);
+      return;
+    }
+
+    if (drone.target && (drone.status === 'outbound' || drone.status === 'reclaiming')) {
+      const droneScreen = this.project(drone);
+      const targetScreen = this.project(drone.target);
+      this.graphics.lineStyle(6, 0x4f2b23, 0.48);
+      this.graphics.lineBetween(droneScreen.x, droneScreen.y, targetScreen.x, targetScreen.y);
+      this.graphics.lineStyle(3, 0xff9a68, 0.82);
+      this.graphics.lineBetween(droneScreen.x, droneScreen.y, targetScreen.x, targetScreen.y);
+      this.graphics.lineStyle(3, 0xffd2b7, 0.95);
+      this.graphics.strokeCircle(targetScreen.x, targetScreen.y, drone.status === 'reclaiming' ? 30 + pulse * 3 : 20 + pulse * 2);
+      this.graphics.lineStyle(1, 0xfff0df, 0.85);
+      this.graphics.strokeCircle(targetScreen.x, targetScreen.y, drone.status === 'reclaiming' ? 42 : 30);
+
+      if (drone.status === 'reclaiming') {
+        const progress = 1 - clamp(drone.reclaimSeconds / DRONE_RECLAIM_SECONDS, 0, 1);
+        this.drawProgressRing(targetScreen, 38, progress, 0xffd2b7);
+        this.drawDroneReclaimFragments(targetScreen, droneScreen);
+      }
+    }
+
+    if (drone.status === 'returning') {
+      const droneScreen = this.project(drone);
+      const roverScreen = this.project(this.state.rover);
+      this.graphics.lineStyle(7, 0x0d423b, 0.45);
+      this.graphics.lineBetween(droneScreen.x, droneScreen.y, roverScreen.x, roverScreen.y);
+      this.graphics.lineStyle(4, 0x79f5dc, 0.86);
+      this.graphics.lineBetween(droneScreen.x, droneScreen.y, roverScreen.x, roverScreen.y);
+      this.graphics.fillStyle(0x79f5dc, 0.22);
+      this.graphics.fillCircle(droneScreen.x, droneScreen.y - 14, clamp(drone.payload * 2.2, 12, 24));
+      this.graphics.fillStyle(0x79f5dc, 0.82);
+      this.graphics.fillCircle(droneScreen.x, droneScreen.y - 14, clamp(drone.payload * 1.7, 7, 17));
+      this.graphics.lineStyle(2, 0xeafffb, 0.86);
+      this.graphics.strokeCircle(droneScreen.x, droneScreen.y - 14, clamp(drone.payload * 1.9, 10, 21));
+    }
+
+    const droneScreen = this.project(drone);
+    this.graphics.fillStyle(0xff9a68, 1);
+    this.graphics.fillCircle(droneScreen.x, droneScreen.y, 9);
+    this.graphics.lineStyle(3, 0xffd2b7, 0.98);
+    this.graphics.strokeCircle(droneScreen.x, droneScreen.y, 15);
+    this.drawDroneCallout(droneScreen);
+  }
+
+  private drawDroneCallout(droneScreen: Vec2): void {
+    let label = 'DRONE';
+    if (this.state.drone.status === 'returning') label = `RETURN +${this.state.drone.payload.toFixed(1)}`;
+    if (this.state.drone.status === 'reclaiming') label = 'RECLAIM';
+    if (this.state.drone.status === 'outbound') label = 'TARGET';
+
+    this.drawStaticText('drone-callout', droneScreen.x + 16, droneScreen.y - 24, label, 12, '#ffd2b7');
+  }
+
+  private drawProgressRing(center: Vec2, radius: number, progress: number, color: number): void {
+    const segments = 18;
+    this.graphics.lineStyle(2, 0x4f2b23, 0.64);
+    this.graphics.strokeCircle(center.x, center.y, radius);
+    this.graphics.lineStyle(4, color, 0.96);
+    for (let index = 0; index < Math.floor(segments * progress); index += 1) {
+      const start = -Math.PI / 2 + (index / segments) * Math.PI * 2;
+      const end = -Math.PI / 2 + ((index + 0.55) / segments) * Math.PI * 2;
+      const from = { x: center.x + Math.cos(start) * radius, y: center.y + Math.sin(start) * radius };
+      const to = { x: center.x + Math.cos(end) * radius, y: center.y + Math.sin(end) * radius };
+      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+  }
+
+  private drawDroneReclaimFragments(targetScreen: Vec2, droneScreen: Vec2): void {
+    for (let index = 0; index < 6; index += 1) {
+      const progress = (this.time.now / 360 + index * 0.19) % 1;
+      const angle = index * 1.7 + this.time.now / 260;
+      const origin = {
+        x: targetScreen.x + Math.cos(angle) * (18 + (index % 3) * 6),
+        y: targetScreen.y + Math.sin(angle) * (10 + (index % 2) * 5)
+      };
+      const x = Phaser.Math.Linear(origin.x, droneScreen.x, progress);
+      const y = Phaser.Math.Linear(origin.y, droneScreen.y, progress);
+      this.graphics.fillStyle(0xffd2b7, 0.85 * (1 - progress * 0.45));
+      this.graphics.fillCircle(x, y, 3);
+    }
+  }
+
+  private drawRover(): void {
+    const rover = this.state.rover;
+    const fertile = findFertileZoneAt(this.state, rover);
+    const preparedCoverage = getPreparedCoverage(this.state, rover);
+
+    this.drawStateAura(rover, preparedCoverage);
+    this.drawStateMotionCues(rover, preparedCoverage);
+    this.drawArms(fertile);
+
+    const nose = this.pointFromHeading(rover, rover.heading, 36);
+    const tailLeft = this.pointFromHeading(rover, rover.heading + Math.PI * 0.78, 30);
+    const tailRight = this.pointFromHeading(rover, rover.heading - Math.PI * 0.78, 30);
+    const sideLeft = this.pointFromHeading(rover, rover.heading + Math.PI * 0.5, 22);
+    const sideRight = this.pointFromHeading(rover, rover.heading - Math.PI * 0.5, 22);
+    const projectedHull = [nose, sideLeft, tailLeft, tailRight, sideRight].map((point) => this.project(point));
+    const roverScreen = this.project(rover);
+    const noseScreen = this.project(nose);
+    const scale = this.projectedScale(rover);
+    const yScale = this.shapeYScale();
+
+    this.graphics.fillStyle(0x02050a, 0.54);
+    this.graphics.fillEllipse(roverScreen.x - 2 * scale, roverScreen.y + 10 * scale, 72 * scale, 36 * yScale * scale);
+    this.graphics.fillStyle(this.roverBodyColor(this.state.speedState), 1);
+    this.graphics.fillPoints(projectedHull, true, true);
+    this.graphics.lineStyle(3, 0xf8fbff, 0.92);
+    this.graphics.strokePoints(projectedHull, true, true);
+
+    this.graphics.lineStyle(2, 0x7b8798, 0.78);
+    this.graphics.lineBetween(this.project(sideLeft).x, this.project(sideLeft).y, noseScreen.x, noseScreen.y);
+    this.graphics.lineBetween(this.project(sideRight).x, this.project(sideRight).y, noseScreen.x, noseScreen.y);
+    this.graphics.fillStyle(0x151b25, 1);
+    this.graphics.fillCircle(roverScreen.x, roverScreen.y, 13 * scale);
+    this.graphics.fillStyle(0xaef8ff, 0.94);
+    this.graphics.fillCircle(noseScreen.x, noseScreen.y, 5 * scale);
+
+    if (preparedCoverage > 0.2) {
+      this.graphics.lineStyle(3, 0x78f7df, 0.4 + preparedCoverage * 0.5);
+      this.graphics.strokeEllipse(roverScreen.x, roverScreen.y + 2, 82 * scale, 46 * yScale * scale);
+    }
+  }
+
+  private drawStateMotionCues(rover: Vec2, preparedCoverage: number): void {
+    const scale = this.projectedScale(rover);
+    const pulse = 0.5 + Math.sin(this.time.now / 120) * 0.5;
+    const heading = this.state.rover.heading;
+
+    if (this.state.speedState === 'prepared') {
+      const alpha = 0.38 + preparedCoverage * 0.34;
+      for (const offset of [-18, 0, 18]) {
+        const start = this.pointFromHeading(
+          this.pointFromHeading(rover, heading + Math.PI / 2, offset),
+          heading + Math.PI,
+          30 + pulse * 7
+        );
+        const end = this.pointFromHeading(start, heading + Math.PI, 28);
+        const from = this.project(start);
+        const to = this.project(end);
+        this.graphics.lineStyle(3, 0x78f7df, alpha);
+        this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+      }
+      return;
+    }
+
+    if (this.state.speedState === 'fabricating') {
+      for (let index = 0; index < 7; index += 1) {
+        const side = (index - 3) * 9;
+        const forward = 34 + ((this.time.now / 42 + index * 7) % 26);
+        const world = this.pointFromHeading(this.pointFromHeading(rover, heading + Math.PI / 2, side), heading, forward);
+        const screen = this.project(world);
+        this.graphics.fillStyle(index % 2 === 0 ? 0x71efff : 0xb8fbff, 0.42 + pulse * 0.28);
+        this.graphics.fillCircle(screen.x, screen.y, (2.5 + (index % 3)) * scale);
+      }
+      return;
+    }
+
+    for (let index = 0; index < 5; index += 1) {
+      const side = (index - 2) * 10;
+      const scrape = this.pointFromHeading(this.pointFromHeading(rover, heading + Math.PI / 2, side), heading + Math.PI, 18);
+      const tip = this.pointFromHeading(scrape, heading + Math.PI, 12 + pulse * 9);
+      const from = this.project(scrape);
+      const to = this.project(tip);
+      this.graphics.lineStyle(2, index % 2 === 0 ? 0xff765f : 0xffb084, 0.42 + pulse * 0.28);
+      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+  }
+
+  private drawStateAura(rover: Vec2, preparedCoverage: number): void {
+    const roverScreen = this.project(rover);
+    const scale = this.projectedScale(rover);
+    const yScale = this.shapeYScale();
+    const pulse = 0.5 + Math.sin(this.time.now / 150) * 0.5;
+    const color =
+      this.state.speedState === 'prepared'
+        ? 0x78f7df
+        : this.state.speedState === 'fabricating'
+          ? 0x5db7ff
+          : 0xff765f;
+    const radius = this.state.speedState === 'crawl' ? 56 : this.state.speedState === 'fabricating' ? 48 : 42;
+    const alpha =
+      this.state.speedState === 'prepared'
+        ? 0.16 + preparedCoverage * 0.16
+        : this.state.speedState === 'fabricating'
+          ? 0.18 + pulse * 0.12
+          : 0.3 + pulse * 0.2;
+
+    this.graphics.fillStyle(color, alpha * 0.18);
+    this.graphics.fillEllipse(roverScreen.x, roverScreen.y + 5, radius * 1.7 * scale, radius * yScale * scale);
+    this.graphics.lineStyle(this.state.speedState === 'crawl' ? 4 : 2, color, alpha);
+    this.graphics.strokeEllipse(roverScreen.x, roverScreen.y + 5, radius * 1.7 * scale, radius * yScale * scale);
+    if (this.state.speedState === 'fabricating') {
+      this.graphics.lineStyle(2, 0xc7eeff, 0.24 + pulse * 0.22);
+      this.graphics.strokeEllipse(roverScreen.x, roverScreen.y + 5, radius * 2.05 * scale, radius * 1.16 * yScale * scale);
+    }
+  }
+
+  private drawArms(fertile: FertileZone | undefined): void {
+    const rover = this.state.rover;
+    const armAngles = [-145, -108, -70, -32, 32, 70, 108, 145].map((degrees) => (degrees * Math.PI) / 180);
+    const roles = this.armRoles();
+
+    armAngles.forEach((angle, index) => {
+      const role = roles[index] ?? 'stabilizing';
+      const anchor = this.pointFromHeading(rover, rover.heading + angle, 18);
+      let target: Vec2;
+      let color = 0xa7b2c3;
+      let width = 2;
+
+      if (role === 'building') {
+        target = this.pointFromHeading(rover, rover.heading + angle * 0.28, this.state.speedState === 'crawl' ? 30 : 54);
+        color = 0x68f3ff;
+        width = 4;
+      } else if (role === 'mining') {
+        const miningTarget = fertile
+          ? this.closestPointOnFertileZone(fertile, this.pointFromHeading(rover, rover.heading + angle * 0.24, 70))
+          : this.pointFromHeading(rover, rover.heading + angle * 0.45, 56);
+        target = {
+          x: Phaser.Math.Linear(anchor.x, miningTarget.x, fertile ? 0.78 : 0.2),
+          y: Phaser.Math.Linear(anchor.y, miningTarget.y, fertile ? 0.78 : 0.2)
+        };
+        color = 0xffd35a;
+        width = 4;
+      } else if (role === 'emergency') {
+        target = this.pointFromHeading(rover, rover.heading + angle, 25 + (index % 2) * 8);
+        target.y += 8;
+        color = 0xff765f;
+        width = 3;
+      } else {
+        target = this.pointFromHeading(rover, rover.heading + angle, 32);
+      }
+
+      const anchorScreen = this.project(anchor);
+      const targetScreen = this.project(target);
+      const scale = this.projectedScale(anchor);
+      this.graphics.lineStyle(width, color, role === 'stabilizing' ? 0.56 : 0.94);
+      this.graphics.lineBetween(anchorScreen.x, anchorScreen.y, targetScreen.x, targetScreen.y);
+      this.graphics.fillStyle(color, role === 'stabilizing' ? 0.62 : 0.98);
+      this.graphics.fillCircle(targetScreen.x, targetScreen.y, (role === 'emergency' ? 3 : 4) * scale);
+
+      if (role === 'mining' && fertile) {
+        const sparkle = 0.5 + Math.sin(this.time.now / 80 + index) * 0.5;
+        this.graphics.fillStyle(0xffed9b, 0.5 + sparkle * 0.45);
+        this.graphics.fillCircle(targetScreen.x, targetScreen.y, (5 + sparkle * 3) * scale);
+        this.graphics.lineStyle(1, 0xfff4c4, 0.55);
+        this.graphics.strokeCircle(targetScreen.x, targetScreen.y, (9 + sparkle * 4) * scale);
+      }
+
+      if (role === 'building') {
+        this.graphics.fillStyle(0x9ffff7, 0.48);
+        this.graphics.fillCircle(targetScreen.x, targetScreen.y, 8 * scale);
+      }
+    });
+  }
+
+  private closestPointOnFertileZone(zone: FertileZone, point: Vec2): Vec2 {
+    if (!zone.vein) return { x: zone.x, y: zone.y };
+    return this.closestPointOnSegment(point, zone.vein.from, zone.vein.to);
+  }
+
+  private closestPointOnSegment(point: Vec2, from: Vec2, to: Vec2): Vec2 {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= 0.0001) return { ...from };
+
+    const progress = clamp(((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSquared, 0, 1);
+    return {
+      x: from.x + dx * progress,
+      y: from.y + dy * progress
+    };
+  }
+
+  private armRoles(): ArmRole[] {
+    const roles: ArmRole[] = [];
+    for (let index = 0; index < this.state.arms.emergency; index += 1) roles.push('emergency');
+    for (let index = 0; index < this.state.arms.building; index += 1) roles.push('building');
+    for (let index = 0; index < this.state.arms.mining; index += 1) roles.push('mining');
+    for (let index = roles.length; index < this.state.arms.total; index += 1) roles.push('stabilizing');
+    return roles.slice(0, this.state.arms.total);
+  }
+
+  private drawEffects(): void {
+    const now = this.time.now;
+    let deliveryReadoutVisible = false;
+    for (const effect of this.effects) {
+      const progress = clamp((now - effect.startedAt) / effect.durationMs, 0, 1);
+      const alpha = 1 - progress;
+      const center = this.project(effect);
+      const scale = this.projectedScale(effect);
+
+      if (effect.kind === 'blocked') {
+        this.graphics.lineStyle(3, 0xff6f78, alpha);
+        this.graphics.strokeCircle(center.x, center.y, (18 + progress * 8) * scale);
+        continue;
+      }
+
+      const color = this.effectColor(effect.kind);
+      if (effect.kind === 'delivery') {
+        deliveryReadoutVisible = true;
+        const pop = Math.sin(progress * Math.PI);
+        const amount = effect.amount ?? 0;
+        this.graphics.fillStyle(0x78f7df, 0.16 * alpha);
+        this.graphics.fillCircle(center.x, center.y, (44 + pop * 18) * scale);
+        this.graphics.lineStyle(6, 0xeafffb, 0.86 * alpha);
+        this.graphics.strokeCircle(center.x, center.y, (18 + progress * 72) * scale);
+        this.graphics.lineStyle(3, 0x78f7df, 0.74 * alpha);
+        this.graphics.strokeCircle(center.x, center.y, (34 + progress * 96) * scale);
+        for (let index = 0; index < 12; index += 1) {
+          const angle = (index / 12) * Math.PI * 2 + progress * 0.7;
+          const inner = (24 + pop * 8) * scale;
+          const outer = (54 + progress * 72) * scale;
+          this.graphics.lineStyle(index % 2 === 0 ? 3 : 2, index % 2 === 0 ? 0xeafffb : 0x78f7df, 0.7 * alpha);
+          this.graphics.lineBetween(
+            center.x + Math.cos(angle) * inner,
+            center.y + Math.sin(angle) * inner,
+            center.x + Math.cos(angle) * outer,
+            center.y + Math.sin(angle) * outer
+          );
+        }
+        const readout = this.clampScreenPoint({ x: center.x, y: center.y - 48 - pop * 12 }, 96, 28);
+        this.drawStaticText('delivery-readout', readout.x, readout.y, `+${amount.toFixed(1)} NANOBOTS`, 18, '#eafffb', 0.5);
+        continue;
+      }
+
+      const radius =
+        effect.kind === 'crawl'
+          ? 28 + progress * 46
+          : effect.kind === 'recovery'
+            ? 18 + progress * 58
+            : effect.kind === 'sprint' || effect.kind === 'build'
+              ? 18 + progress * 38
+              : 12 + progress * 42;
+      const width = effect.kind === 'recovery' ? 5 : effect.kind === 'crawl' ? 4 : 3;
+      this.graphics.lineStyle(width, color, alpha);
+      this.graphics.strokeCircle(center.x, center.y, radius * scale);
+
+      if (effect.kind === 'mine' || effect.kind === 'recovery') {
+        this.graphics.fillStyle(color, 0.12 * alpha);
+        this.graphics.fillCircle(center.x, center.y, 28 * scale);
+      }
+    }
+
+    if (!deliveryReadoutVisible) {
+      this.drawStaticText('delivery-readout', 0, 0, '', 1, '#ffffff');
+    }
+  }
+
+  private drawHud(): void {
+    const layout = this.getLayout();
+    this.graphics.fillStyle(0x0a0f19, 0.96);
+    this.graphics.fillRect(0, 0, layout.width, layout.hudHeight);
+    this.graphics.lineStyle(1, 0x293241, 0.95);
+    this.graphics.lineBetween(0, layout.hudHeight, layout.width, layout.hudHeight);
+
+    this.hud.setText('');
+    this.syncMessageLayout(layout);
+    this.message.setText(this.getEventFeedText());
+
+    const nanobotRatio = this.state.nanobots / this.state.maxNanobots;
+    const oreRatio = this.state.rover.ore / this.state.targetOre;
+    const sunRatio = this.state.solarSeconds / this.state.tuning.startingSolarSeconds;
+
+    this.drawVital(
+      'Nanobots',
+      `${this.state.nanobots.toFixed(1)}/${this.state.maxNanobots}`,
+      layout.vitals[0].x,
+      layout.vitals[0].y + 5,
+      layout.vitals[0].width,
+      nanobotRatio,
+      nanobotRatio < 0.18 ? 0xff765f : 0x78f7df
+    );
+    this.drawVital(
+      'Ore',
+      `${this.state.rover.ore.toFixed(1)}/${this.state.targetOre}`,
+      layout.vitals[1].x,
+      layout.vitals[1].y + 5,
+      layout.vitals[1].width,
+      oreRatio,
+      0xffd35a
+    );
+    this.drawVital(
+      'Sun',
+      `${Math.ceil(this.state.solarSeconds)}s`,
+      layout.vitals[2].x,
+      layout.vitals[2].y + 5,
+      layout.vitals[2].width,
+      sunRatio,
+      this.state.solarSeconds > 28 ? 0xa8c9ff : 0xff7d77
+    );
+
+    this.drawStateChip(layout.stateChip.x, layout.stateChip.y, layout.stateChip.width, layout.stateChip.height);
+    if (layout.mode === 'mobilePortrait') this.drawMobileControls(layout);
+    this.drawDroneHudButton();
+    this.drawResetButton();
+    this.drawLoopDebugPanel();
+    this.drawStaticText(
+      'yield-readout',
+      layout.yieldReadout.x,
+      layout.yieldReadout.y,
+      `Yield ${this.state.lastYieldRate.toFixed(1)}/s`,
+      layout.yieldReadout.fontSize,
+      '#aeb9c8'
+    );
+    if (layout.mode === 'desktop') this.drawArmRoleStrip(128, layout.yieldReadout.y);
+  }
+
+  private syncMessageLayout(layout: SceneLayout): void {
+    this.message.setPosition(layout.message.x, layout.message.y);
+    this.message.setFontSize(layout.message.fontSize);
+    this.message.setWordWrapWidth(layout.message.width);
+  }
+
+  private drawMobileControls(layout: SceneLayout): void {
+    if (!layout.controlBandTop || !layout.drive) return;
+
+    this.graphics.fillStyle(0x0a0f19, 0.9);
+    this.graphics.fillRect(0, layout.controlBandTop, layout.width, layout.height - layout.controlBandTop);
+    this.graphics.lineStyle(1, 0x293241, 0.9);
+    this.graphics.lineBetween(0, layout.controlBandTop, layout.width, layout.controlBandTop);
+
+    const drive = layout.drive;
+    const center = {
+      x: this.mobileDrive?.origin.x ?? drive.x + drive.width * 0.5,
+      y: this.mobileDrive?.origin.y ?? drive.y + drive.height * 0.5
+    };
+    const current = this.mobileDrive?.current ?? center;
+    const radius = Math.min(drive.width, drive.height) * 0.35;
+    const puck = {
+      x: center.x + clamp(current.x - center.x, -radius, radius),
+      y: center.y + clamp(current.y - center.y, -radius, radius)
+    };
+
+    this.graphics.fillStyle(0x111925, 0.96);
+    this.graphics.fillRoundedRect(drive.x, drive.y, drive.width, drive.height, 10);
+    this.graphics.lineStyle(2, 0x3f5667, 0.95);
+    this.graphics.strokeRoundedRect(drive.x, drive.y, drive.width, drive.height, 10);
+    this.graphics.lineStyle(2, 0x78f7df, this.mobileDrive ? 0.72 : 0.34);
+    this.graphics.strokeCircle(center.x, center.y, radius);
+    this.graphics.lineBetween(center.x - radius * 0.58, center.y, center.x + radius * 0.58, center.y);
+    this.graphics.lineBetween(center.x, center.y - radius * 0.58, center.x, center.y + radius * 0.58);
+    this.graphics.fillStyle(this.mobileDrive ? 0x78f7df : 0x445466, this.mobileDrive ? 0.95 : 0.9);
+    this.graphics.fillCircle(puck.x, puck.y, this.mobileDrive ? 22 : 17);
+    this.graphics.lineStyle(2, 0xeafffb, this.mobileDrive ? 0.86 : 0.42);
+    this.graphics.strokeCircle(puck.x, puck.y, this.mobileDrive ? 27 : 22);
+  }
+
+  private drawVital(
+    label: string,
+    value: string,
+    x: number,
+    y: number,
+    width: number,
+    progress: number,
+    color: number
+  ): void {
+    const warningPulse = label === 'Nanobots' && progress < LOW_NANOBOT_RATIO ? 0.5 + Math.sin(this.time.now / 105) * 0.5 : 0;
+    if (warningPulse > 0) {
+      this.graphics.fillStyle(0x451f1a, 0.52 + warningPulse * 0.18);
+      this.graphics.fillRoundedRect(x - 7, y - 3, width + 14, 62, 8);
+      this.graphics.lineStyle(1, 0xff765f, 0.62 + warningPulse * 0.28);
+      this.graphics.strokeRoundedRect(x - 7, y - 3, width + 14, 62, 8);
+      this.drawStaticText(`vital-${label}-tag`, x + width - 28, y + 2, 'LOW', 11, '#ffc7ba');
+    } else if (label === 'Nanobots') {
+      this.drawStaticText(`vital-${label}-tag`, 0, 0, '', 1, '#ffffff');
+    }
+
+    this.drawStaticText(`vital-${label}-label`, x, y + 2, label, 12, '#9eabbc');
+    this.drawStaticText(`vital-${label}-value`, x, y + 23, value, 19, '#f6f8fb');
+    this.drawBar(x, y + 43, width, 10, progress, color);
+    if (label === 'Ore') {
+      this.graphics.lineStyle(2, 0xfff0ba, 0.84);
+      this.graphics.lineBetween(x + width - 2, y + 40, x + width - 2, y + 56);
+    }
+  }
+
+  private drawArmRoleStrip(x: number, y: number): void {
+    const roles: Array<{ label: string; count: number; color: number }> = [
+      { label: 'B', count: this.state.arms.building, color: 0x71efff },
+      { label: 'M', count: this.state.arms.mining, color: 0xffd35a },
+      { label: 'E', count: this.state.arms.emergency, color: 0xff765f }
+    ];
+    let cursor = x;
+    for (const role of roles) {
+      this.graphics.fillStyle(0x121a26, 0.95);
+      this.graphics.fillRoundedRect(cursor, y - 9, 42, 18, 5);
+      this.graphics.fillStyle(role.color, role.count > 0 ? 0.95 : 0.28);
+      this.graphics.fillCircle(cursor + 9, y, 4);
+      this.drawStaticText(`arm-role-${role.label}`, cursor + 17, y, `${role.label}${role.count}`, 11, role.count > 0 ? '#dfe8f2' : '#738093');
+      cursor += 48;
+    }
+  }
+
+  private drawStateChip(x: number, y: number, width: number, height: number): void {
+    const state = this.getSpeedStateDisplay();
+    this.graphics.fillStyle(state.fill, 0.94);
+    this.graphics.fillRoundedRect(x, y, width, height, 8);
+    this.graphics.lineStyle(2, state.color, 0.95);
+    this.graphics.strokeRoundedRect(x, y, width, height, 8);
+    this.drawStaticText('state-chip-label', x + 13, y + 17, state.label, 17, state.text);
+    this.drawStaticText('state-chip-detail', x + 13, y + 36, state.detail, 11, state.subtext);
+  }
+
+  private getSpeedStateDisplay(): { label: string; detail: string; color: number; fill: number; text: string; subtext: string } {
+    if (this.state.speedState === 'prepared') {
+      return {
+        label: 'Sprint',
+        detail: 'field grip',
+        color: 0x78f7df,
+        fill: 0x123a37,
+        text: '#effffb',
+        subtext: '#a8f4e7'
+      };
+    }
+
+    if (this.state.speedState === 'fabricating') {
+      return {
+        label: 'Building',
+        detail: 'arms busy',
+        color: 0x5db7ff,
+        fill: 0x162d4e,
+        text: '#effcff',
+        subtext: '#b8ddff'
+      };
+    }
+
+    return {
+      label: 'Crawl',
+      detail: 'launch drone',
+      color: 0xff765f,
+      fill: 0x4a1f1b,
+      text: '#fff4f0',
+      subtext: '#ffc5b8'
+    };
+  }
+
+  private drawDroneHudButton(): void {
+    const button = this.buttons.find((candidate) => candidate.id === 'launch');
+    if (!button) return;
+
+    const ready = this.state.drone.status === 'ready';
+    const returning = this.state.drone.status === 'returning';
+    const urgent = this.shouldShowDroneLaunchUrgency();
+    const pulse = 0.5 + Math.sin(this.time.now / 130) * 0.5;
+    const fill = urgent ? 0x5a211d : ready ? 0x1d5f58 : returning ? 0x164b44 : 0x252b36;
+    const stroke = urgent ? 0xffd2b7 : ready ? 0x8dffea : returning ? 0x78f7df : 0xffb38b;
+
+    this.graphics.fillStyle(fill, 1);
+    this.graphics.fillRoundedRect(button.rect.x, button.rect.y, button.rect.width, button.rect.height, 8);
+    this.graphics.lineStyle(2, stroke, 1);
+    this.graphics.strokeRoundedRect(button.rect.x, button.rect.y, button.rect.width, button.rect.height, 8);
+    if (urgent) {
+      this.graphics.fillStyle(0xff765f, 0.1 + pulse * 0.1);
+      this.graphics.fillRoundedRect(button.rect.x - 6, button.rect.y - 6, button.rect.width + 12, button.rect.height + 12, 11);
+      this.graphics.lineStyle(3, 0xffd2b7, 0.62 + pulse * 0.34);
+      this.graphics.strokeRoundedRect(button.rect.x - 4, button.rect.y - 4, button.rect.width + 8, button.rect.height + 8, 10);
+      this.graphics.lineStyle(1, 0xfff0df, 0.4 + pulse * 0.26);
+      this.graphics.strokeRoundedRect(button.rect.x - 10, button.rect.y - 10, button.rect.width + 20, button.rect.height + 20, 13);
+    }
+    if (!ready) {
+      this.graphics.lineStyle(1, stroke, 0.28);
+      for (let offset = -button.rect.height; offset < button.rect.width; offset += 24) {
+        this.graphics.lineBetween(
+          button.rect.x + offset,
+          button.rect.y + button.rect.height,
+          button.rect.x + offset + button.rect.height,
+          button.rect.y
+        );
+      }
+    }
+    this.drawStaticText('button-launch-title', button.rect.x + 14, button.rect.y + 17, this.getDroneActionLabel(), 15, ready ? '#ffffff' : '#dfe8f2');
+    this.drawStaticText(
+      'button-launch-status',
+      button.rect.x + 14,
+      button.rect.y + 36,
+      this.getDroneStatusLine(),
+      11,
+      urgent ? '#ffd2b7' : ready ? '#bcfff3' : returning ? '#a8f7e9' : '#ffd2b7'
+    );
+  }
+
+  private drawResetButton(): void {
+    const button = this.buttons.find((candidate) => candidate.id === 'reset');
+    if (!button) return;
+
+    this.graphics.fillStyle(0x202939, 1);
+    this.graphics.fillRoundedRect(button.rect.x, button.rect.y, button.rect.width, button.rect.height, 8);
+    this.graphics.lineStyle(1, 0x6f8094, 1);
+    this.graphics.strokeRoundedRect(button.rect.x, button.rect.y, button.rect.width, button.rect.height, 8);
+    this.drawStaticText('button-reset', button.rect.centerX, button.rect.centerY, button.label, 13, '#eef3f8', 0.5);
+  }
+
+  private drawLoopDebugPanel(): void {
+    if (!import.meta.env.DEV || !this.debugOverlayVisible) {
+      this.clearLoopDebugText();
+      return;
+    }
+
+    const summary = getContinuousLoopSummary(this.loopTrace);
+    const layout = this.getLayout();
+    const width = layout.mode === 'mobilePortrait' ? layout.width - 28 : 210;
+    const x = layout.mode === 'mobilePortrait' ? 14 : 806;
+    const y = layout.mode === 'mobilePortrait' ? layout.hudHeight + 10 : 64;
+    const height = 118;
+
+    this.graphics.fillStyle(0x0c111a, 0.88);
+    this.graphics.fillRoundedRect(x, y, width, height, 6);
+    this.graphics.lineStyle(1, summary.hitLoop ? 0x78f7df : 0x465060, 0.9);
+    this.graphics.strokeRoundedRect(x, y, width, height, 6);
+
+    this.drawStaticText(
+      'loop-trace-title',
+      x + 12,
+      y + 16,
+      summary.hitLoop ? 'LOOP TRACE HIT' : 'LOOP TRACE WAIT',
+      12,
+      summary.hitLoop ? '#78f7df' : '#dce6ef'
+    );
+
+    summary.milestones.forEach((milestone, index) => {
+      this.drawStaticText(
+        `loop-trace-${milestone.id}`,
+        x + 12,
+        y + 38 + index * 17,
+        `${milestone.shortLabel.padEnd(6)} ${milestone.hit ? 'hit' : '--'}`,
+        11,
+        milestone.hit ? '#83f5da' : '#8792a1'
+      );
+    });
+
+    this.drawStaticText(
+      'loop-trace-stats',
+      x + 12,
+      y + 108,
+      `Low ${summary.lowestNanobots.toFixed(1)}  Del +${summary.deliveredNanobotsAfterCrawl.toFixed(1)}`,
+      11,
+      '#aeb9c8'
+    );
+  }
+
+  private clearLoopDebugText(): void {
+    this.drawStaticText('loop-trace-title', 0, 0, '', 1, '#ffffff');
+    for (const milestone of getContinuousLoopSummary(this.loopTrace).milestones) {
+      this.drawStaticText(`loop-trace-${milestone.id}`, 0, 0, '', 1, '#ffffff');
+    }
+    this.drawStaticText('loop-trace-stats', 0, 0, '', 1, '#ffffff');
+  }
+
+  private getDroneActionLabel(): string {
+    if (this.state.drone.status === 'ready') return 'Launch Drone';
+    if (this.state.drone.status === 'returning') return 'Returning';
+    if (this.state.drone.status === 'reclaiming') return 'Reclaiming';
+    return 'Outbound';
+  }
+
+  private shouldShowDroneLaunchUrgency(): boolean {
+    if (this.state.phase !== 'playing') return false;
+    if (this.state.drone.status !== 'ready') return false;
+    return this.state.speedState === 'crawl' || this.state.nanobots / this.state.maxNanobots < DRONE_URGENCY_RATIO;
+  }
+
+  private getDroneStatusLine(): string {
+    if (this.state.drone.status === 'ready') {
+      if (this.state.speedState === 'crawl') return 'CRAWL READY';
+      if (this.shouldShowDroneLaunchUrgency()) return 'LOW BUFFER';
+      const preview = getReclaimPreview(this.state);
+      return preview ? `+${preview.payload.toFixed(1)} in ${preview.etaSeconds.toFixed(1)}s` : 'no old field';
+    }
+    if (this.state.drone.status === 'returning') {
+      return `+${this.state.drone.payload.toFixed(1)} in ${this.state.drone.etaSeconds.toFixed(1)}s`;
+    }
+    return `${this.state.drone.etaSeconds.toFixed(1)}s to field`;
+  }
+
+  private drawBar(x: number, y: number, width: number, height: number, progress: number, color: number): void {
+    this.graphics.fillStyle(0x141a24, 1);
+    this.graphics.fillRoundedRect(x, y, width, height, height / 2);
+    this.graphics.fillStyle(color, 0.9);
+    this.graphics.fillRoundedRect(x, y, Math.max(3, width * clamp(progress, 0, 1)), height, height / 2);
+  }
+
+  private formatPlayerMessage(message: string): string {
+    if (message.startsWith('Arms are fabricating')) return 'Building field. Arms are busy.';
+    if (message.startsWith('Emergency crawl')) return 'Crawl protocol. Launch drone.';
+    if (message.startsWith('Prepared field frees')) return 'Sprint field. Mining arms free.';
+    if (message.startsWith('Mining arms harvesting')) return 'Mining while parked. Solar is ticking.';
+    if (message.startsWith('Drone committed')) return 'Drone launched. Shape the return path.';
+    if (message.startsWith('Drone recovered')) return message.replace(' nanobots. Shape the return.', '. Payload returning.');
+    if (message.startsWith('Drone delivered')) return message.replace(' nanobots. Field buffer restored.', '. Buffer restored.');
+    if (message.startsWith('Prepared field online')) return 'Prepared field online. Keep supplied.';
+    return message;
+  }
+
+  private getEventFeedText(): string {
+    if (this.eventMessage && this.time.now <= this.eventMessage.expiresAtMs) {
+      return this.eventMessage.text;
+    }
+    if (this.eventMessage && this.time.now > this.eventMessage.expiresAtMs) {
+      this.eventMessage = undefined;
+    }
+    return this.formatPlayerMessage(this.state.message);
+  }
+
+  private drawPhaseBanner(): void {
+    const layout = this.getLayout();
+    if (this.state.phase === 'playing') {
+      this.drawStaticText('phase-title', 0, 0, '', 1, '#ffffff');
+      this.drawStaticText('phase-body', 0, 0, '', 1, '#ffffff');
+      return;
+    }
+
+    const won = this.state.phase === 'won';
+    const width = Math.min(layout.width - 48, 524);
+    const height = layout.mode === 'mobilePortrait' ? 132 : 116;
+    const x = (layout.width - width) / 2;
+    const y = layout.mode === 'mobilePortrait' ? layout.hudHeight + 150 : 276;
+    this.graphics.fillStyle(won ? 0x12382f : 0x441d26, 0.94);
+    this.graphics.fillRoundedRect(x, y, width, height, 8);
+    this.graphics.lineStyle(2, won ? 0x77f2ca : 0xff8491, 1);
+    this.graphics.strokeRoundedRect(x, y, width, height, 8);
+    this.drawStaticText('phase-title', layout.width / 2, y + 36, won ? 'EXTRACTION QUOTA MET' : 'RUN FAILED', layout.mode === 'mobilePortrait' ? 20 : 25, '#ffffff', 0.5);
+    this.drawStaticText('phase-body', layout.width / 2, y + 76, this.formatPlayerMessage(this.state.message), layout.mode === 'mobilePortrait' ? 14 : 16, '#dfe8f2', 0.5);
+  }
+
+  private drawStaticText(
+    name: string,
+    x: number,
+    y: number,
+    text: string,
+    fontSize: number,
+    color: string,
+    originX = 0
+  ): void {
+    const existing = this.children.getByName(name) as Phaser.GameObjects.Text | null;
+    if (existing) {
+      existing.setText(text);
+      existing.setPosition(x, y);
+      existing.setFontSize(fontSize);
+      existing.setColor(color);
+      existing.setOrigin(originX, 0.5);
+      return;
+    }
+
+    this.add
+      .text(x, y, text, {
+        color,
+        fontFamily: 'monospace',
+        fontSize: `${fontSize}px`
+      })
+      .setOrigin(originX, 0.5)
+      .setName(name);
+  }
+
+  private exposeDebugHook(): void {
+    if (!import.meta.env.DEV) return;
+
+    window.__moonMinerContinuous = {
+      getState: () => JSON.parse(JSON.stringify(this.state)) as ContinuousWorldState,
+      getPointerTarget: () => (this.pointerTarget ? { ...this.pointerTarget } : undefined),
+      getLoopTrace: () => JSON.parse(JSON.stringify(this.loopTrace)) as ContinuousLoopTrace,
+      getLoopSummary: () => getContinuousLoopSummary(this.loopTrace),
+      getReclaimPreview: () => getReclaimPreview(this.state),
+      getArenaId: () => this.state.arenaId,
+      setArena: (arenaId) => this.setArena(arenaId),
+      startSelfPlay: (routeId = 'firstLoop') => this.startSelfPlay(routeId),
+      stopSelfPlay: () => this.stopSelfPlay(),
+      getSelfPlayStatus: () => this.getSelfPlayStatus()
+    };
+
+    const existing = document.getElementById('moon-miner-continuous-debug-state') as HTMLScriptElement | null;
+    this.debugStateElement = existing ?? document.createElement('script');
+    this.debugStateElement.id = 'moon-miner-continuous-debug-state';
+    this.debugStateElement.type = 'application/json';
+    if (!existing) document.body.appendChild(this.debugStateElement);
+    this.updateDebugState();
+  }
+
+  private updateDebugState(): void {
+    if (!this.debugStateElement) return;
+
+    const snapshot: ContinuousDebugSnapshot = {
+      state: JSON.parse(JSON.stringify(this.state)) as ContinuousWorldState,
+      loopTrace: JSON.parse(JSON.stringify(this.loopTrace)) as ContinuousLoopTrace,
+      loopSummary: getContinuousLoopSummary(this.loopTrace),
+      selfPlay: this.getSelfPlayStatus(),
+      arenaId: this.state.arenaId,
+      pointerTarget: this.pointerTarget ? { ...this.pointerTarget } : undefined,
+      gameSize: { x: this.getLayout().width, y: this.getLayout().height },
+      ui: this.getUiSnapshot()
+    };
+    this.debugStateElement.textContent = JSON.stringify(snapshot);
+  }
+
+  private getUiSnapshot(): ContinuousUiSnapshot {
+    const layout = this.getLayout();
+    const buttons = Object.fromEntries(
+      this.buttons.map((button) => [button.id, this.rectToSnapshot(button.rect)])
+    ) as Record<ButtonId, ContinuousUiRect>;
+
+    return {
+      mode: layout.mode,
+      viewMode: this.viewMode,
+      hudHeight: layout.hudHeight,
+      debugOverlayVisible: this.debugOverlayVisible,
+      vitals: layout.vitals.map((rect) => ({ ...rect })),
+      stateChip: { ...layout.stateChip },
+      buttons,
+      controls: layout.drive ? { drive: { ...layout.drive } } : undefined,
+      eventFeed: { x: layout.message.x, y: layout.message.y - layout.message.height / 2, width: layout.message.width, height: layout.message.height },
+      textBounds: this.getUiTextBounds(),
+      droneCue: this.getDroneCueSnapshot()
+    };
+  }
+
+  private getDroneCueSnapshot(): ContinuousUiSnapshot['droneCue'] {
+    const deliveryEffect = this.getActiveDeliveryEffect();
+    const preview = getReclaimPreview(this.state);
+    return {
+      launchUrgent: this.shouldShowDroneLaunchUrgency(),
+      previewTarget: preview ? this.getDronePreviewTargetSnapshot(preview) : undefined,
+      previewPayload: preview?.payload,
+      previewEtaSeconds: preview?.etaSeconds,
+      reservedTarget: this.getDroneReservedTargetSnapshot(),
+      returnPayloadVisible: this.state.drone.status === 'returning' && this.state.drone.payload > 0,
+      deliveryReadoutVisible: Boolean(deliveryEffect),
+      deliveryAmount: deliveryEffect?.amount
+    };
+  }
+
+  private getDronePreviewTargetSnapshot(preview: ReclaimPreview): ContinuousUiRect {
+    const screen = this.project(preview.target);
+    const previewFields = this.state.fields.filter((field) => {
+      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius;
+    });
+    const radius = this.droneReservationRadius(screen, previewFields) + 18;
+    return {
+      x: screen.x - radius,
+      y: screen.y - radius,
+      width: radius * 2,
+      height: radius * 2
+    };
+  }
+
+  private getActiveDeliveryEffect(): VisualEffect | undefined {
+    return this.effects.find((effect) => {
+      return effect.kind === 'delivery' && this.time.now - effect.startedAt <= effect.durationMs;
+    });
+  }
+
+  private getDroneReservedTargetSnapshot(): ContinuousUiRect | undefined {
+    const target = this.state.drone.target;
+    if (!target || (this.state.drone.status !== 'outbound' && this.state.drone.status !== 'reclaiming')) return undefined;
+
+    const screen = this.project(target);
+    const radius = this.droneReservationRadius(screen, this.state.fields.filter((field) => field.reservedByDrone)) + 22;
+    return {
+      x: screen.x - radius,
+      y: screen.y - radius,
+      width: radius * 2,
+      height: radius * 2
+    };
+  }
+
+  private getUiTextBounds(): Record<string, ContinuousUiRect> {
+    const names = [
+      'vital-Nanobots-label',
+      'vital-Nanobots-value',
+      'vital-Ore-label',
+      'vital-Ore-value',
+      'vital-Sun-label',
+      'vital-Sun-value',
+      'state-chip-label',
+      'state-chip-detail',
+      'button-launch-title',
+      'button-launch-status',
+      'button-reset',
+      'yield-readout'
+    ];
+    const bounds: Record<string, ContinuousUiRect> = {};
+
+    for (const name of names) {
+      const text = this.children.getByName(name) as Phaser.GameObjects.Text | null;
+      if (!text || !text.text) continue;
+
+      bounds[name] = this.rectToSnapshot(text.getBounds());
+    }
+
+    return bounds;
+  }
+
+  private rectToSnapshot(rect: Phaser.Geom.Rectangle): ContinuousUiRect {
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height
+    };
+  }
+
+  private addEffect(kind: EffectKind, x: number, y: number, durationMs: number, amount?: number): void {
+    this.effects.push({ kind, x, y, startedAt: this.time.now, durationMs, amount });
+  }
+
+  private pointerToWorld(pointer: Phaser.Input.Pointer): Vec2 {
+    const world = this.unproject({ x: pointer.x, y: pointer.y });
+    return {
+      x: clamp(world.x, 22, this.state.width - 22),
+      y: clamp(world.y, 56, this.state.height - 22)
+    };
+  }
+
+  private project(point: Vec2): Vec2 {
+    const layout = this.getLayout();
+    const camera = this.cameraFocus();
+    if (this.viewMode === 'tactical') {
+      return {
+        x: layout.cameraCenterX + (point.x - camera.x) * layout.cameraZoom,
+        y: layout.cameraCenterY + (point.y - camera.y) * layout.cameraZoom
+      };
+    }
+
+    const axes = this.cameraAxes();
+    const offset = { x: point.x - camera.x, y: point.y - camera.y };
+    const lateral = offset.x * axes.right.x + offset.y * axes.right.y;
+    const forward = offset.x * axes.forward.x + offset.y * axes.forward.y;
+    return {
+      x: layout.cameraCenterX + (lateral + forward * PROJECTED_SHEAR) * layout.cameraZoom,
+      y: layout.cameraCenterY - forward * PROJECTED_Y_SCALE * layout.cameraZoom
+    };
+  }
+
+  private unproject(point: Vec2): Vec2 {
+    const layout = this.getLayout();
+    const camera = this.cameraFocus();
+    if (this.viewMode === 'tactical') {
+      return {
+        x: camera.x + (point.x - layout.cameraCenterX) / layout.cameraZoom,
+        y: camera.y + (point.y - layout.cameraCenterY) / layout.cameraZoom
+      };
+    }
+
+    const axes = this.cameraAxes();
+    const forward = (layout.cameraCenterY - point.y) / (PROJECTED_Y_SCALE * layout.cameraZoom);
+    const lateral = (point.x - layout.cameraCenterX) / layout.cameraZoom - forward * PROJECTED_SHEAR;
+    return {
+      x: camera.x + axes.right.x * lateral + axes.forward.x * forward,
+      y: camera.y + axes.right.y * lateral + axes.forward.y * forward
+    };
+  }
+
+  private projectedScale(point: Vec2): number {
+    if (this.viewMode === 'tactical') return this.getLayout().cameraZoom;
+
+    const layout = this.getLayout();
+    const screen = this.project(point);
+    return 0.78 + clamp((screen.y - layout.hudHeight) / (layout.height - layout.hudHeight), 0, 1) * 0.28;
+  }
+
+  private shapeYScale(): number {
+    return this.viewMode === 'tactical' ? 1 : PROJECTED_Y_SCALE;
+  }
+
+  private cameraFocus(): Vec2 {
+    const layout = this.getLayout();
+    if (this.viewMode === 'tactical') return this.tacticalCameraFocus;
+
+    return {
+      x: this.state.rover.x + Math.cos(this.cameraHeading) * layout.cameraLookAhead,
+      y: this.state.rover.y + Math.sin(this.cameraHeading) * layout.cameraLookAhead
+    };
+  }
+
+  private tacticalCameraTarget(): Vec2 {
+    const beats = this.state.arena.beats.length > 0 ? this.state.arena.beats : [{ ...this.state.rover, id: 'rover', label: 'rover' }];
+    const beatCenter = beats.reduce(
+      (sum, beat) => ({ x: sum.x + beat.x / beats.length, y: sum.y + beat.y / beats.length }),
+      { x: 0, y: 0 }
+    );
+    const target = {
+      x: Phaser.Math.Linear(this.state.rover.x, beatCenter.x, 0.56),
+      y: Phaser.Math.Linear(this.state.rover.y, beatCenter.y, 0.5)
+    };
+    const layout = this.getLayout();
+    const playTop = layout.hudHeight;
+    const playBottom = layout.controlBandTop ?? layout.height;
+    const halfWidth = layout.width / (2 * layout.cameraZoom);
+    const halfHeight = (playBottom - playTop) / (2 * layout.cameraZoom);
+    const minX = halfWidth - 60;
+    const maxX = this.state.width - halfWidth + 60;
+    const minY = halfHeight - 20;
+    const maxY = this.state.height - halfHeight + 20;
+    return {
+      x: minX <= maxX ? clamp(target.x, minX, maxX) : this.state.width / 2,
+      y: minY <= maxY ? clamp(target.y, minY, maxY) : this.state.height / 2
+    };
+  }
+
+  private cameraAxes(): { forward: Vec2; right: Vec2 } {
+    const forward = {
+      x: Math.cos(this.cameraHeading),
+      y: Math.sin(this.cameraHeading)
+    };
+    return {
+      forward,
+      right: { x: -forward.y, y: forward.x }
+    };
+  }
+
+  private cameraLocalPoint(lateral: number, forwardDistance: number): Vec2 {
+    const camera = this.cameraFocus();
+    const axes = this.cameraAxes();
+    return {
+      x: camera.x + axes.right.x * lateral + axes.forward.x * forwardDistance,
+      y: camera.y + axes.right.y * lateral + axes.forward.y * forwardDistance
+    };
+  }
+
+  private pointFromHeading(origin: Vec2, heading: number, distanceFromOrigin: number): Vec2 {
+    return {
+      x: origin.x + Math.cos(heading) * distanceFromOrigin,
+      y: origin.y + Math.sin(heading) * distanceFromOrigin
+    };
+  }
+
+  private visualCalm(): number {
+    if (this.state.speedState === 'prepared') return 0.58;
+    if (this.state.speedState === 'fabricating') return 0.78;
+    return 1;
+  }
+
+  private roverBodyColor(speedState: SpeedState): number {
+    if (speedState === 'prepared') return 0xf5f7ff;
+    if (speedState === 'fabricating') return 0xdfe8f2;
+    return 0xffc0ad;
+  }
+
+  private effectColor(kind: EffectKind): number {
+    switch (kind) {
+      case 'launch':
+        return 0xff9a68;
+      case 'delivery':
+        return 0x78f7df;
+      case 'recovery':
+        return 0x8dffea;
+      case 'sprint':
+        return 0x78f7df;
+      case 'build':
+        return 0x5db7ff;
+      case 'crawl':
+        return 0xff765f;
+      case 'mine':
+        return 0xf1c65d;
+      case 'win':
+        return 0x77f2ca;
+      case 'loss':
+        return 0xff8491;
+      case 'blocked':
+        return 0xff6f78;
+    }
+  }
+}
+
+function angleDifference(target: number, current: number): number {
+  const twoPi = Math.PI * 2;
+  return ((target - current + Math.PI) % twoPi + twoPi) % twoPi - Math.PI;
+}
+
+function wrapAngle(radians: number): number {
+  const twoPi = Math.PI * 2;
+  return ((radians + Math.PI) % twoPi + twoPi) % twoPi - Math.PI;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}

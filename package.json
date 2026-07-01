@@ -1,0 +1,26 @@
+{
+  "name": "moon-miner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "smoke:continuous": "node --experimental-websocket scripts/continuous-smoke.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm test && npm run build",
+    "verify:known-green": "npm test && npm run build && npm audit",
+    "verify:full": "npm test && npm run build && npm audit && npm run smoke:continuous"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.5",
+    "vitest": "^4.1.9"
+  }
+}
