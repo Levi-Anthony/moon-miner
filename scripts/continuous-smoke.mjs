@@ -15,6 +15,7 @@ const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const LOCAL_STORAGE_KEYS = [
   'moon-miner-continuous-tuning-v3',
   'moon-miner-continuous-tuning-v4',
+  'moon-miner-continuous-tuning-v5',
   'moon-miner-continuous-arena-v1',
   'moon-miner-camera-lab-v1',
   'moon-miner-drone-rail-lab-v1'
@@ -87,6 +88,7 @@ async function main() {
         `drone cues urgent/reserved/return/delivery: ${droneReadability.urgentNanobots.toFixed(1)}nb / ${droneReadability.reservedCount} fields / +${droneReadability.returnPayload.toFixed(1)} / +${droneReadability.deliveryAmount.toFixed(1)}`,
         `view modes default/chase: ${presentation.defaultViewMode} / ${presentation.chaseViewMode}`,
         `camera lab preset/hybrid: ${presentation.defaultCameraPreset} / ${presentation.hybridCameraPreset}`,
+        `dynamics preset: ${presentation.defaultDynamicsPresetName}`,
         `drone rail blocked/tuned: ${presentation.defaultBlockedReason} / ${presentation.tunedCandidateCount} candidates`,
         `dev overlay default/toggle/query: ${presentation.defaultHidden ? 'hidden' : 'visible'} / ${presentation.toggleVisible ? 'visible' : 'hidden'} / ${presentation.queryVisible ? 'visible' : 'hidden'}`,
         `HUD text bounds checked: ${presentation.textBoundsChecked}`,
@@ -125,6 +127,12 @@ async function newHarnessPage(browser, url, options) {
 
 async function verifyPresentation(page, appUrl) {
   const defaultSnapshot = await waitForSnapshot(page, 'clean default playtest view');
+  if (
+    defaultSnapshot.ui?.droneRailLab?.dynamicsPresetId !== 'stable-first-run' ||
+    defaultSnapshot.ui?.droneRailLab?.dynamicsPresetName !== 'Stable First Run'
+  ) {
+    throw new Error(`Expected Stable First Run dynamics preset by default, got ${JSON.stringify(defaultSnapshot.ui?.droneRailLab)}.`);
+  }
   const defaultTextBoundsChecked = assertUiLayout(defaultSnapshot, 'desktop', 'tactical');
 
   const defaultOverlay = await waitForOverlay(page, false, 'default hidden tuning panel');
@@ -179,6 +187,7 @@ async function verifyPresentation(page, appUrl) {
     chaseViewMode: chaseSnapshot.ui.viewMode,
     defaultCameraPreset: defaultSnapshot.ui.cameraLab.preset,
     hybridCameraPreset: hybridCameraSnapshot.ui.cameraLab.preset,
+    defaultDynamicsPresetName: defaultSnapshot.ui.droneRailLab.dynamicsPresetName,
     defaultBlockedReason: defaultSnapshot.ui.droneRailLab.blockedReason ?? 'available',
     tunedCandidateCount: tunedDynamicsSnapshot.ui.droneRailLab.candidateReclaimCount,
     textBoundsChecked: defaultTextBoundsChecked + chaseTextBoundsChecked + debugTextBoundsChecked + cleanTextBoundsChecked
@@ -332,7 +341,7 @@ async function verifyDroneReadability(page) {
     'low-buffer drone urgency cue',
     (snapshot) => {
       if (snapshot.state.drone.status !== 'ready') return undefined;
-      if (snapshot.state.nanobots / snapshot.state.maxNanobots >= 0.32) return undefined;
+      if (snapshot.state.nanobots / snapshot.state.maxNanobots >= snapshot.state.tuning.droneUrgencyRatio) return undefined;
       if (!snapshot.ui?.droneCue?.launchUrgent) {
         throw new Error(`Expected launch urgency cue at ${snapshot.state.nanobots.toFixed(1)} nanobots.`);
       }
@@ -706,6 +715,9 @@ function assertUiLayout(snapshot, expectedMode, expectedViewMode = 'tactical') {
     throw new Error(`Camera Lab snapshot is missing preset/projection metadata: ${JSON.stringify(ui.cameraLab)}.`);
   }
   if (!ui.droneRailLab) throw new Error('Debug snapshot is missing Drone / Rail Lab metadata.');
+  if (!ui.droneRailLab.dynamicsPresetId || !ui.droneRailLab.dynamicsPresetName) {
+    throw new Error(`Drone / Rail Lab snapshot is missing dynamics preset metadata: ${JSON.stringify(ui.droneRailLab)}.`);
+  }
   if (typeof ui.droneRailLab.candidateReclaimCount !== 'number') {
     throw new Error(`Drone / Rail Lab snapshot is missing candidate count: ${JSON.stringify(ui.droneRailLab)}.`);
   }

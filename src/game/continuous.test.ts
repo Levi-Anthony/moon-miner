@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CURRENT_CLASSIC_CONTINUOUS_TUNING,
   createContinuousWorld,
-  DRONE_RECLAIM_SECONDS,
+  DEFAULT_CONTINUOUS_TUNING,
+  DEFAULT_DYNAMICS_PRESET_ID,
+  DYNAMICS_PRESETS,
   getDroneReclaimDiagnostics,
   getReclaimPreview,
   launchReclaimDrone,
@@ -38,7 +41,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(world.nextFieldId).toBe(1);
     expect(world.speedState).toBe('fabricating');
     expect(world.message).toBe('Raw field start. Drive to lay your first line, then reclaim it.');
-    expect(world.nanobots).toBe(6);
+    expect(world.nanobots).toBe(8);
     expect(world.arms.total).toBe(8);
     expect(world.arms.industrialTotal).toBe(7);
     expect(world.arms.utilityTotal).toBe(1);
@@ -63,6 +66,45 @@ describe('continuous Moon Miner spike rules', () => {
     expect(world.arena.beats.length).toBeGreaterThanOrEqual(6);
     expect(world.arena.beats.map((beat) => beat.label)).not.toContain('prepared runway');
     expect(world.arena.ridges.length).toBeLessThanOrEqual(3);
+  });
+
+  it('uses Stable First Run as the named default dynamics preset', () => {
+    const stable = DYNAMICS_PRESETS.find((preset) => preset.id === 'stable-first-run');
+    const classic = DYNAMICS_PRESETS.find((preset) => preset.id === 'current-classic');
+    const playground = DYNAMICS_PRESETS.find((preset) => preset.id === 'drone-playground');
+    const strict = DYNAMICS_PRESETS.find((preset) => preset.id === 'strict-logistics');
+
+    expect(DEFAULT_DYNAMICS_PRESET_ID).toBe('stable-first-run');
+    expect(DYNAMICS_PRESETS.map((preset) => preset.id)).toEqual([
+      'stable-first-run',
+      'current-classic',
+      'drone-playground',
+      'strict-logistics'
+    ]);
+    expect(stable?.name).toBe('Stable First Run');
+    expect(classic?.name).toBe('Current Classic');
+    expect(playground?.name).toBe('Drone Playground');
+    expect(strict?.name).toBe('Strict Logistics');
+    expect(DEFAULT_CONTINUOUS_TUNING).toEqual(stable?.tuning);
+    expect(classic?.tuning).toEqual(CURRENT_CLASSIC_CONTINUOUS_TUNING);
+
+    expect(stable?.tuning.startingNanobots).toBe(8);
+    expect(stable?.tuning.maxNanobots).toBe(24);
+    expect(stable?.tuning.reclaimMinFieldAgeSeconds).toBe(1.35);
+    expect(stable?.tuning.reclaimMinDistanceFromRover).toBe(52);
+    expect(stable?.tuning.reclaimMinFieldValue).toBe(0.06);
+    expect(stable?.tuning.minReclaimClusterPayload).toBe(0.12);
+    expect(stable?.tuning.droneUrgencyRatio).toBe(0.24);
+
+    expect(classic?.tuning.startingNanobots).toBe(6);
+    expect(classic?.tuning.maxNanobots).toBe(32);
+    expect(classic?.tuning.reclaimMinFieldAgeSeconds).toBe(2.2);
+    expect(classic?.tuning.reclaimMinDistanceFromRover).toBe(74);
+    expect(playground?.tuning.allowCloseReclaim).toBe(true);
+    expect(playground?.tuning.dronePickupRadius).toBeGreaterThan(stable?.tuning.dronePickupRadius ?? 0);
+    expect(strict?.tuning.allowCloseReclaim).toBe(false);
+    expect(strict?.tuning.droneTravelScoreMultiplier).toBeGreaterThan(stable?.tuning.droneTravelScoreMultiplier ?? 0);
+    expect(createContinuousWorld().tuning).toEqual(stable?.tuning);
   });
 
   it('can create named arena variants without mixing them into dynamics tuning', () => {
@@ -427,7 +469,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(preview?.fieldCount).toBe(2);
     expect(preview?.payload).toBeCloseTo(9);
     expect(preview?.etaSeconds).toBeCloseTo(
-      (distance(world.rover, launched.drone.target ?? world.rover) * 2) / world.tuning.droneSpeed + DRONE_RECLAIM_SECONDS
+      (distance(world.rover, launched.drone.target ?? world.rover) * 2) / world.tuning.droneSpeed + world.tuning.reclaimLockSeconds
     );
   });
 

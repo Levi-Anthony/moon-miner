@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import {
   createContinuousWorld,
-  DEFAULT_CONTINUOUS_TUNING,
+  DEFAULT_DYNAMICS_PRESET_ID,
+  DYNAMICS_PRESETS,
   findFertileZoneAt,
   getDroneReclaimDiagnostics,
   getPreparedCoverage,
@@ -13,6 +14,8 @@ import {
   type ContinuousPhase,
   type ContinuousTuning,
   type ContinuousWorldState,
+  type DynamicsPresetDefinition,
+  type DynamicsPresetId,
   type DroneReclaimDiagnostics,
   type DroneStatus,
   type FertileZone,
@@ -59,7 +62,7 @@ const TACTICAL_CAMERA_RESPONSE = 1.4;
 const LOW_NANOBOT_RATIO = 0.18;
 const DRONE_URGENCY_RATIO = 0.32;
 const DELIVERY_READOUT_MS = 1260;
-const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v4';
+const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v5';
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
 const DRONE_RAIL_LAB_STORAGE_KEY = 'moon-miner-drone-rail-lab-v1';
@@ -156,6 +159,7 @@ interface TuningBooleanControlDefinition {
 }
 
 interface DroneRailLabSettings {
+  selectedDynamicsPresetId: DynamicsPresetId;
   overlayReclaimEligibility: boolean;
   overlayFieldAge: boolean;
   overlayFieldValue: boolean;
@@ -169,7 +173,9 @@ interface DroneRailLabSettings {
   overlayCrawlEmissionPoints: boolean;
 }
 
-type DroneRailOverlayKey = keyof DroneRailLabSettings;
+type DroneRailOverlayKey = {
+  [Key in keyof DroneRailLabSettings]: DroneRailLabSettings[Key] extends boolean ? Key : never;
+}[keyof DroneRailLabSettings];
 
 interface DroneRailOverlayDefinition {
   key: DroneRailOverlayKey;
@@ -217,7 +223,7 @@ const TUNING_CONTROLS: TuningControlDefinition[] = [
   { key: 'crawlSpeed', label: 'Crawl speed', min: 8, max: 32, step: 1 },
   { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 1, max: 4.2, step: 0.1, precision: 1 },
   { key: 'droneSpeed', label: 'Drone speed', min: 260, max: 620, step: 10 },
-  { key: 'dronePickupRadius', label: 'Drone pickup', min: 70, max: 180, step: 2 },
+  { key: 'dronePickupRadius', label: 'Drone pickup', min: 70, max: 260, step: 2 },
   { key: 'crawlRecoveryPerSecond', label: 'Crawl recovery', min: 0.02, max: 0.3, step: 0.01, precision: 2 },
   { key: 'mineRate', label: 'Mining yield', min: 0.18, max: 0.55, step: 0.01, precision: 2 },
   { key: 'startingNanobots', label: 'Start stock', min: 3, max: 16, step: 1 },
@@ -297,6 +303,7 @@ const DRONE_RAIL_BOOLEAN_CONTROLS: TuningBooleanControlDefinition[] = [
 ];
 
 const DEFAULT_DRONE_RAIL_LAB_SETTINGS: DroneRailLabSettings = {
+  selectedDynamicsPresetId: DEFAULT_DYNAMICS_PRESET_ID,
   overlayReclaimEligibility: false,
   overlayFieldAge: false,
   overlayFieldValue: false,
@@ -594,6 +601,11 @@ interface ContinuousUiSnapshot {
 
 interface DroneRailLabSnapshot {
   settings: DroneRailLabSettings;
+  dynamicsPresetId: DynamicsPresetId;
+  dynamicsPresetName: string;
+  selectedDynamicsPresetId: DynamicsPresetId;
+  selectedDynamicsPresetName: string;
+  matchesSelectedDynamicsPreset: boolean;
   diagnostics: DroneReclaimDiagnostics;
   blockedReason?: string;
   candidateReclaimCount: number;
@@ -641,6 +653,8 @@ declare global {
       getCameraLab: () => CameraLabSnapshot;
       setCameraPreset: (presetId: CameraPresetId) => void;
       setViewMode: (viewMode: ViewMode) => void;
+      getDynamicsPresets: () => DynamicsPresetDefinition[];
+      setDynamicsPreset: (presetId: DynamicsPresetId) => void;
       getDroneRailLab: () => DroneRailLabSnapshot;
       setDynamicsTuning: (tuning: Partial<ContinuousTuning>) => void;
       startSelfPlay: (routeId?: ContinuousSelfPlayRouteId) => void;
@@ -682,6 +696,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private droneRailDiagnosticsElement?: HTMLElement;
   private cameraPresetSelectElement?: HTMLSelectElement;
   private cameraViewModeSelectElement?: HTMLSelectElement;
+  private droneRailPresetSelectElement?: HTMLSelectElement;
   private arenaSelectElement?: HTMLSelectElement;
   private tuningControls = new Map<TuningKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
   private droneRailNumericControls = new Map<NumericTuningKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
@@ -1277,11 +1292,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const defaultsButton = document.createElement('button');
     defaultsButton.type = 'button';
     defaultsButton.textContent = 'Defaults';
-    defaultsButton.addEventListener('click', () => {
-      this.state.tuning = resolveContinuousTuning(DEFAULT_CONTINUOUS_TUNING);
-      this.saveStoredTuning();
-      this.resetRun();
-    });
+    defaultsButton.addEventListener('click', () => this.applyDynamicsPreset(DEFAULT_DYNAMICS_PRESET_ID));
 
     const copyButton = document.createElement('button');
     copyButton.type = 'button';
@@ -1455,6 +1466,24 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     title.textContent = 'Drone / Rail Lab';
     panel.appendChild(title);
 
+    const presetRow = document.createElement('label');
+    presetRow.className = 'moon-miner-tuning__row moon-miner-tuning__row--select';
+    const presetName = document.createElement('span');
+    presetName.className = 'moon-miner-tuning__name';
+    presetName.textContent = 'Dynamics preset';
+    const presetSelect = document.createElement('select');
+    presetSelect.className = 'moon-miner-tuning__select';
+    for (const preset of DYNAMICS_PRESETS) {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = preset.name;
+      presetSelect.appendChild(option);
+    }
+    presetSelect.addEventListener('change', () => this.selectDynamicsPreset(presetSelect.value as DynamicsPresetId));
+    presetRow.append(presetName, presetSelect);
+    panel.appendChild(presetRow);
+    this.droneRailPresetSelectElement = presetSelect;
+
     const diagnostics = document.createElement('pre');
     diagnostics.className = 'moon-miner-tuning__diagnostics';
     panel.appendChild(diagnostics);
@@ -1542,17 +1571,22 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const actions = document.createElement('div');
     actions.className = 'moon-miner-tuning__actions';
 
+    const applyPresetButton = document.createElement('button');
+    applyPresetButton.type = 'button';
+    applyPresetButton.textContent = 'Apply Preset';
+    applyPresetButton.addEventListener('click', () => this.applySelectedDynamicsPreset());
+
     const resetButton = document.createElement('button');
     resetButton.type = 'button';
-    resetButton.textContent = 'Reset Dynamics';
-    resetButton.addEventListener('click', () => this.resetDroneRailDynamics());
+    resetButton.textContent = 'Reset Stable First Run';
+    resetButton.addEventListener('click', () => this.resetStableFirstRunDynamics());
 
     const copyButton = document.createElement('button');
     copyButton.type = 'button';
     copyButton.textContent = 'Copy Dynamics JSON';
     copyButton.addEventListener('click', () => this.copyDroneRailDynamicsJson(copyButton));
 
-    actions.append(resetButton, copyButton);
+    actions.append(applyPresetButton, resetButton, copyButton);
     panel.appendChild(actions);
 
     if (!existing) document.body.appendChild(panel);
@@ -1634,6 +1668,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private syncDroneRailLabPanel(): void {
+    if (this.droneRailPresetSelectElement) {
+      this.droneRailPresetSelectElement.value = this.droneRailLab.selectedDynamicsPresetId;
+    }
+
     for (const group of DRONE_RAIL_NUMERIC_GROUPS) {
       for (const definition of group.controls) {
         const controls = this.droneRailNumericControls.get(definition.key);
@@ -1669,7 +1707,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private formatDroneRailDiagnostics(): string {
     const diagnostics = getDroneReclaimDiagnostics(this.state);
     const best = diagnostics.bestTarget;
+    const preset = this.getDynamicsPresetSnapshot();
     const lines = [
+      `Preset: ${preset.dynamicsPresetName}`,
       `Launch: ${diagnostics.blockedReason ?? 'available'}`,
       `Candidates: ${diagnostics.candidateCount}  Oldest: ${diagnostics.oldestFieldAge.toFixed(1)}s`,
       `Prepared: ${diagnostics.currentPreparedCoverage.toFixed(2)}  Speed: ${diagnostics.currentSpeedState}`
@@ -1745,10 +1785,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     try {
       const raw = window.localStorage.getItem(DRONE_RAIL_LAB_STORAGE_KEY);
-      return {
-        ...DEFAULT_DRONE_RAIL_LAB_SETTINGS,
-        ...(raw ? (JSON.parse(raw) as Partial<DroneRailLabSettings>) : {})
-      };
+      return this.normalizeDroneRailLabSettings(raw ? (JSON.parse(raw) as Partial<DroneRailLabSettings>) : undefined);
     } catch {
       return { ...DEFAULT_DRONE_RAIL_LAB_SETTINGS };
     }
@@ -1773,17 +1810,85 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.syncDroneRailLabPanel();
   }
 
-  private resetDroneRailDynamics(): void {
-    this.setDynamicsTuning(DEFAULT_CONTINUOUS_TUNING);
-    this.droneRailLab = { ...DEFAULT_DRONE_RAIL_LAB_SETTINGS };
+  private selectDynamicsPreset(presetId: DynamicsPresetId): void {
+    const preset = this.getDynamicsPreset(presetId);
+    this.droneRailLab = {
+      ...this.droneRailLab,
+      selectedDynamicsPresetId: preset.id
+    };
     this.saveStoredDroneRailLab();
     this.syncDroneRailLabPanel();
   }
 
+  private applySelectedDynamicsPreset(): void {
+    this.applyDynamicsPreset(this.droneRailLab.selectedDynamicsPresetId);
+  }
+
+  private applyDynamicsPreset(presetId: DynamicsPresetId): void {
+    const preset = this.getDynamicsPreset(presetId);
+    this.droneRailLab = {
+      ...this.droneRailLab,
+      selectedDynamicsPresetId: preset.id
+    };
+    this.saveStoredDroneRailLab();
+    this.setDynamicsTuning(preset.tuning);
+    this.resetRun();
+  }
+
+  private resetStableFirstRunDynamics(): void {
+    this.applyDynamicsPreset(DEFAULT_DYNAMICS_PRESET_ID);
+  }
+
+  private normalizeDroneRailLabSettings(settings?: Partial<DroneRailLabSettings>): DroneRailLabSettings {
+    const candidatePresetId = settings?.selectedDynamicsPresetId;
+    const selectedDynamicsPresetId: DynamicsPresetId = candidatePresetId && DYNAMICS_PRESETS.some((preset) => preset.id === candidatePresetId)
+      ? candidatePresetId
+      : DEFAULT_DYNAMICS_PRESET_ID;
+    return {
+      ...DEFAULT_DRONE_RAIL_LAB_SETTINGS,
+      ...settings,
+      selectedDynamicsPresetId
+    };
+  }
+
+  private getDynamicsPreset(presetId: DynamicsPresetId): DynamicsPresetDefinition {
+    return DYNAMICS_PRESETS.find((preset) => preset.id === presetId) ?? DYNAMICS_PRESETS[0];
+  }
+
+  private tuningMatchesPreset(preset: DynamicsPresetDefinition): boolean {
+    return (Object.keys(preset.tuning) as Array<keyof ContinuousTuning>).every(
+      (key) => this.state.tuning[key] === preset.tuning[key]
+    );
+  }
+
+  private getDynamicsPresetSnapshot(): Pick<
+    DroneRailLabSnapshot,
+    | 'dynamicsPresetId'
+    | 'dynamicsPresetName'
+    | 'selectedDynamicsPresetId'
+    | 'selectedDynamicsPresetName'
+    | 'matchesSelectedDynamicsPreset'
+  > {
+    const selected = this.getDynamicsPreset(this.droneRailLab.selectedDynamicsPresetId);
+    const matching = DYNAMICS_PRESETS.find((preset) => this.tuningMatchesPreset(preset));
+    const current = matching ?? selected;
+    const matchesSelectedDynamicsPreset = Boolean(matching && matching.id === selected.id);
+
+    return {
+      dynamicsPresetId: current.id,
+      dynamicsPresetName: matching ? current.name : `${selected.name} (modified)`,
+      selectedDynamicsPresetId: selected.id,
+      selectedDynamicsPresetName: selected.name,
+      matchesSelectedDynamicsPreset
+    };
+  }
+
   private copyDroneRailDynamicsJson(button: HTMLButtonElement): void {
     const original = button.textContent ?? 'Copy Dynamics JSON';
+    const preset = this.getDynamicsPresetSnapshot();
     const text = JSON.stringify(
       {
+        preset,
         tuning: this.state.tuning,
         overlays: this.droneRailLab,
         diagnostics: getDroneReclaimDiagnostics(this.state)
@@ -3736,12 +3841,29 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       if (this.state.speedState === 'crawl') return 'CRAWL READY';
       if (this.shouldShowDroneLaunchUrgency()) return 'LOW BUFFER';
       const preview = getReclaimPreview(this.state);
-      return preview ? `+${preview.payload.toFixed(1)} in ${preview.etaSeconds.toFixed(1)}s` : getDroneReclaimDiagnostics(this.state).blockedReason ?? 'no target';
+      return preview
+        ? `+${preview.payload.toFixed(1)} in ${preview.etaSeconds.toFixed(1)}s`
+        : this.formatDroneButtonBlockedReason(getDroneReclaimDiagnostics(this.state).blockedReason ?? 'no target');
     }
     if (this.state.drone.status === 'returning') {
       return `+${this.state.drone.payload.toFixed(1)} in ${this.state.drone.etaSeconds.toFixed(1)}s`;
     }
     return `${this.state.drone.etaSeconds.toFixed(1)}s to refill`;
+  }
+
+  private formatDroneButtonBlockedReason(reason: string): string {
+    if (reason === 'No reclaimable field yet') return 'no target yet';
+    if (reason === 'No unreserved reclaim target') return 'no target';
+    if (reason === 'No field meets value gate') return 'field too low';
+    if (reason === 'Cluster payload below launch gate') return 'payload low';
+
+    const age = reason.match(/^Oldest field age ([\d.]+)s \/ need ([\d.]+)s$/);
+    if (age) return `age ${age[1]}/${age[2]}s`;
+
+    const distance = reason.match(/^Nearest old field ([\d.]+) \/ need ([\d.]+)$/);
+    if (distance) return `range ${distance[1]}/${distance[2]}`;
+
+    return reason.length > 18 ? `${reason.slice(0, 17)}...` : reason;
   }
 
   private drawBar(x: number, y: number, width: number, height: number, progress: number, color: number): void {
@@ -3838,6 +3960,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       getCameraLab: () => this.getCameraLabSnapshot(),
       setCameraPreset: (presetId) => this.applyCameraPreset(presetId),
       setViewMode: (viewMode) => this.setCameraViewMode(viewMode),
+      getDynamicsPresets: () =>
+        DYNAMICS_PRESETS.map((preset) => ({
+          ...preset,
+          tuning: { ...preset.tuning }
+        })),
+      setDynamicsPreset: (presetId) => this.applyDynamicsPreset(presetId),
       getDroneRailLab: () => this.getDroneRailLabSnapshot(),
       setDynamicsTuning: (tuning) => this.setDynamicsTuning(tuning),
       startSelfPlay: (routeId = 'firstLoop') => this.startSelfPlay(routeId),
@@ -3915,8 +4043,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private getDroneRailLabSnapshot(): DroneRailLabSnapshot {
     const diagnostics = getDroneReclaimDiagnostics(this.state);
     const best = diagnostics.bestTarget;
+    const preset = this.getDynamicsPresetSnapshot();
     return {
       settings: { ...this.droneRailLab },
+      ...preset,
       diagnostics,
       blockedReason: diagnostics.blockedReason,
       candidateReclaimCount: diagnostics.candidateCount,

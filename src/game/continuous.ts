@@ -183,6 +183,14 @@ export interface ContinuousTuning {
   droneUrgencyRatio: number;
 }
 
+export type DynamicsPresetId = 'stable-first-run' | 'current-classic' | 'drone-playground' | 'strict-logistics';
+
+export interface DynamicsPresetDefinition {
+  id: DynamicsPresetId;
+  name: string;
+  tuning: ContinuousTuning;
+}
+
 export interface ContinuousWorldState {
   seed: string;
   arenaId: ContinuousArenaId;
@@ -224,7 +232,7 @@ const TURN_RATE = 2.25;
 const STATIONARY_MINING_FLOW_MULTIPLIER = 1;
 const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
-export const DEFAULT_CONTINUOUS_TUNING: ContinuousTuning = {
+export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   startingNanobots: 6,
   maxNanobots: 32,
   targetOre: 42,
@@ -269,6 +277,84 @@ export const DEFAULT_CONTINUOUS_TUNING: ContinuousTuning = {
   lowStockWarningRatio: 0.18,
   droneUrgencyRatio: 0.32
 };
+
+export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
+  ...CURRENT_CLASSIC_CONTINUOUS_TUNING,
+  startingNanobots: 8,
+  maxNanobots: 24,
+  fabricateCostPerSecond: 1.35,
+  fieldEmitDistance: 26,
+  fieldRadius: 46,
+  fieldValueMultiplierFromSpentStock: 1.05,
+  reclaimMinFieldAgeSeconds: 1.35,
+  reclaimMinDistanceFromRover: 52,
+  reclaimMinFieldValue: 0.06,
+  minReclaimClusterPayload: 0.12,
+  allowCloseReclaim: false,
+  allowLowPayloadLaunch: false,
+  droneSpeed: 470,
+  dronePickupRadius: 185,
+  reclaimLockSeconds: 0.35,
+  dronePayloadScoreMultiplier: 7.5,
+  droneAgeScoreMultiplier: 0.45,
+  droneTravelScoreMultiplier: 2.2,
+  droneClusterSpreadScoreDivisor: 120,
+  lowStockWarningRatio: 0.14,
+  droneUrgencyRatio: 0.24,
+  preparedCoverageThreshold: 0.22,
+  preparedFieldMinAgeSeconds: 1.0,
+  preparedFieldMinValue: 0.06,
+  preparedMagnetInfluenceMultiplier: 1.25,
+  preparedMagnetCenterPull: 0.72,
+  preparedMagnetPassiveTurnRate: 1.65,
+  preparedMagnetActiveTurnRate: 0.35,
+  preparedMagnetCorrectionRange: 0.85,
+  crawlRecoveryPerSecond: 0.1,
+  crawlSpeed: 16,
+  fabricatingSpeed: 74,
+  preparedSpeed: 88
+};
+
+export const DEFAULT_DYNAMICS_PRESET_ID: DynamicsPresetId = 'stable-first-run';
+
+export const DYNAMICS_PRESETS: DynamicsPresetDefinition[] = [
+  {
+    id: 'stable-first-run',
+    name: 'Stable First Run',
+    tuning: STABLE_FIRST_RUN_CONTINUOUS_TUNING
+  },
+  {
+    id: 'current-classic',
+    name: 'Current Classic',
+    tuning: CURRENT_CLASSIC_CONTINUOUS_TUNING
+  },
+  {
+    id: 'drone-playground',
+    name: 'Drone Playground',
+    tuning: {
+      ...STABLE_FIRST_RUN_CONTINUOUS_TUNING,
+      reclaimMinFieldAgeSeconds: 0.65,
+      reclaimMinDistanceFromRover: 24,
+      allowCloseReclaim: true,
+      droneSpeed: 520,
+      dronePickupRadius: 230
+    }
+  },
+  {
+    id: 'strict-logistics',
+    name: 'Strict Logistics',
+    tuning: {
+      ...STABLE_FIRST_RUN_CONTINUOUS_TUNING,
+      reclaimMinFieldAgeSeconds: 2.4,
+      reclaimMinDistanceFromRover: 92,
+      droneTravelScoreMultiplier: 3.6,
+      dronePickupRadius: 140,
+      allowCloseReclaim: false
+    }
+  }
+];
+
+export const DEFAULT_CONTINUOUS_TUNING: ContinuousTuning = STABLE_FIRST_RUN_CONTINUOUS_TUNING;
 
 export function resolveContinuousTuning(tuning: Partial<ContinuousTuning> = {}): ContinuousTuning {
   return {
