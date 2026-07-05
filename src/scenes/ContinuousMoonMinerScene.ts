@@ -66,7 +66,7 @@ const DRONE_RAIL_LAB_STORAGE_KEY = 'moon-miner-drone-rail-lab-v1';
 
 type ButtonId = 'launch' | 'reset';
 type EffectKind = 'launch' | 'delivery' | 'recovery' | 'sprint' | 'build' | 'crawl' | 'mine' | 'win' | 'loss' | 'blocked';
-type ArmRole = 'building' | 'mining' | 'stabilizing' | 'emergency';
+type ArmRole = 'building' | 'mining' | 'stabilizing' | 'emergency' | 'helper';
 type LayoutMode = 'desktop' | 'mobilePortrait';
 type ViewMode = 'tactical' | 'chase' | 'hybrid';
 type TuningKey = keyof ContinuousTuning;
@@ -574,6 +574,12 @@ interface ContinuousUiSnapshot {
   };
   eventFeed: ContinuousUiRect;
   textBounds: Record<string, ContinuousUiRect>;
+  helperArm: {
+    duty: string;
+    status: string;
+    miningAssistRate: number;
+    lastAssistYield: number;
+  };
   droneCue: {
     launchUrgent: boolean;
     previewTarget?: ContinuousUiRect;
@@ -2971,7 +2977,18 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       let color = 0xa7b2c3;
       let width = 2;
 
-      if (role === 'building') {
+      if (role === 'helper') {
+        target = this.getHelperArmTarget(anchor, angle, fertile);
+        color =
+          this.state.arms.helper.duty === 'miningAssist'
+            ? 0xb7ff7a
+            : this.state.arms.helper.duty === 'droneDocking'
+              ? 0xff94df
+              : this.state.arms.helper.duty === 'emergency'
+                ? 0xff765f
+                : 0xc6b2ff;
+        width = this.state.arms.helper.duty === 'miningAssist' ? 5 : 3;
+      } else if (role === 'building') {
         target = this.pointFromHeading(rover, rover.heading + angle * 0.28, this.state.speedState === 'crawl' ? 30 : 54);
         color = 0x68f3ff;
         width = 4;
@@ -3000,21 +3017,52 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.graphics.lineStyle(width, color, role === 'stabilizing' ? 0.56 : 0.94);
       this.graphics.lineBetween(anchorScreen.x, anchorScreen.y, targetScreen.x, targetScreen.y);
       this.graphics.fillStyle(color, role === 'stabilizing' ? 0.62 : 0.98);
-      this.graphics.fillCircle(targetScreen.x, targetScreen.y, (role === 'emergency' ? 3 : 4) * scale);
+      this.graphics.fillCircle(targetScreen.x, targetScreen.y, (role === 'emergency' ? 3 : role === 'helper' ? 5 : 4) * scale);
 
-      if (role === 'mining' && fertile) {
+      if ((role === 'mining' || (role === 'helper' && this.state.arms.helper.duty === 'miningAssist')) && fertile) {
         const sparkle = 0.5 + Math.sin(this.time.now / 80 + index) * 0.5;
-        this.graphics.fillStyle(0xffed9b, 0.5 + sparkle * 0.45);
-        this.graphics.fillCircle(targetScreen.x, targetScreen.y, (5 + sparkle * 3) * scale);
-        this.graphics.lineStyle(1, 0xfff4c4, 0.55);
-        this.graphics.strokeCircle(targetScreen.x, targetScreen.y, (9 + sparkle * 4) * scale);
+        this.graphics.fillStyle(role === 'helper' ? 0xdfff8f : 0xffed9b, 0.5 + sparkle * 0.45);
+        this.graphics.fillCircle(targetScreen.x, targetScreen.y, (5 + sparkle * (role === 'helper' ? 5 : 3)) * scale);
+        this.graphics.lineStyle(1, role === 'helper' ? 0xf4ffd1 : 0xfff4c4, 0.55);
+        this.graphics.strokeCircle(targetScreen.x, targetScreen.y, (9 + sparkle * (role === 'helper' ? 7 : 4)) * scale);
       }
 
       if (role === 'building') {
         this.graphics.fillStyle(0x9ffff7, 0.48);
         this.graphics.fillCircle(targetScreen.x, targetScreen.y, 8 * scale);
+      } else if (role === 'helper') {
+        this.graphics.lineStyle(1, 0xffffff, 0.42);
+        this.graphics.strokeCircle(targetScreen.x, targetScreen.y, 8 * scale);
       }
     });
+  }
+
+  private getHelperArmTarget(anchor: Vec2, angle: number, fertile: FertileZone | undefined): Vec2 {
+    const rover = this.state.rover;
+    const wiggle = Math.sin(this.time.now / 120) * 0.18;
+
+    if (this.state.arms.helper.duty === 'miningAssist' && fertile) {
+      const miningTarget = this.closestPointOnFertileZone(fertile, this.pointFromHeading(rover, rover.heading + angle * 0.16 + wiggle, 86));
+      return {
+        x: Phaser.Math.Linear(anchor.x, miningTarget.x, 0.88),
+        y: Phaser.Math.Linear(anchor.y, miningTarget.y, 0.88)
+      };
+    }
+
+    if (this.state.arms.helper.duty === 'droneDocking' && this.state.drone.status === 'returning') {
+      return {
+        x: Phaser.Math.Linear(anchor.x, this.state.drone.x, 0.58),
+        y: Phaser.Math.Linear(anchor.y, this.state.drone.y, 0.58)
+      };
+    }
+
+    const reach =
+      this.state.arms.helper.duty === 'emergency'
+        ? 27
+        : this.state.arms.helper.duty === 'fabricationSupport'
+          ? 48
+          : 38;
+    return this.pointFromHeading(rover, rover.heading + angle * 0.36 + wiggle, reach);
   }
 
   private closestPointOnFertileZone(zone: FertileZone, point: Vec2): Vec2 {
@@ -3040,7 +3088,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     for (let index = 0; index < this.state.arms.emergency; index += 1) roles.push('emergency');
     for (let index = 0; index < this.state.arms.building; index += 1) roles.push('building');
     for (let index = 0; index < this.state.arms.mining; index += 1) roles.push('mining');
-    for (let index = roles.length; index < this.state.arms.total; index += 1) roles.push('stabilizing');
+    for (let index = roles.length; index < this.state.arms.industrialTotal; index += 1) roles.push('stabilizing');
+    roles.length = Math.min(roles.length, this.state.arms.industrialTotal);
+    roles.push('helper');
     return roles.slice(0, this.state.arms.total);
   }
 
@@ -3162,7 +3212,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       'yield-readout',
       layout.yieldReadout.x,
       layout.yieldReadout.y,
-      `Yield ${this.state.lastYieldRate.toFixed(1)}/s`,
+      `Yield ${this.state.lastYieldRate.toFixed(1)}/s | U ${this.state.arms.helper.miningAssistRate.toFixed(1)}/s`,
       layout.yieldReadout.fontSize,
       '#aeb9c8'
     );
@@ -3242,7 +3292,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const roles: Array<{ label: string; count: number; color: number }> = [
       { label: 'B', count: this.state.arms.building, color: 0x71efff },
       { label: 'M', count: this.state.arms.mining, color: 0xffd35a },
-      { label: 'E', count: this.state.arms.emergency, color: 0xff765f }
+      { label: 'E', count: this.state.arms.emergency, color: 0xff765f },
+      { label: 'U', count: this.state.arms.helper.count, color: this.getHelperArmHudColor() }
     ];
     let cursor = x;
     for (const role of roles) {
@@ -3253,6 +3304,24 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.drawStaticText(`arm-role-${role.label}`, cursor + 17, y, `${role.label}${role.count}`, 11, role.count > 0 ? '#dfe8f2' : '#738093');
       cursor += 48;
     }
+    this.drawStaticText('arm-role-helper-duty', cursor + 2, y, this.getHelperArmHudLabel(), 11, '#aeb9c8');
+  }
+
+  private getHelperArmHudColor(): number {
+    if (this.state.arms.helper.duty === 'miningAssist') return 0xb7ff7a;
+    if (this.state.arms.helper.duty === 'droneDocking') return 0xff94df;
+    if (this.state.arms.helper.duty === 'emergency') return 0xff765f;
+    if (this.state.arms.helper.duty === 'fabricationSupport') return 0x71efff;
+    return 0xc6b2ff;
+  }
+
+  private getHelperArmHudLabel(): string {
+    if (this.state.arms.helper.duty === 'miningAssist') return 'utility assist';
+    if (this.state.arms.helper.duty === 'droneDocking') return 'utility dock';
+    if (this.state.arms.helper.duty === 'emergency') return 'utility emergency';
+    if (this.state.arms.helper.duty === 'fabricationSupport') return 'utility support';
+    if (this.state.arms.helper.duty === 'scan') return 'utility scan';
+    return 'utility systems';
   }
 
   private drawStateChip(x: number, y: number, width: number, height: number): void {
@@ -3819,6 +3888,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       controls: layout.drive ? { drive: { ...layout.drive } } : undefined,
       eventFeed: { x: layout.message.x, y: layout.message.y - layout.message.height / 2, width: layout.message.width, height: layout.message.height },
       textBounds: this.getUiTextBounds(),
+      helperArm: {
+        duty: this.state.arms.helper.duty,
+        status: this.state.arms.helper.status,
+        miningAssistRate: this.state.arms.helper.miningAssistRate,
+        lastAssistYield: this.state.arms.helper.lastAssistYield
+      },
       droneCue: this.getDroneCueSnapshot()
     };
   }

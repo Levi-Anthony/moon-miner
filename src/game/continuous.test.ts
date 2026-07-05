@@ -39,6 +39,12 @@ describe('continuous Moon Miner spike rules', () => {
     expect(world.speedState).toBe('fabricating');
     expect(world.message).toBe('Raw field start. Drive to lay your first line, then reclaim it.');
     expect(world.nanobots).toBe(6);
+    expect(world.arms.total).toBe(8);
+    expect(world.arms.industrialTotal).toBe(7);
+    expect(world.arms.utilityTotal).toBe(1);
+    expect(world.arms.building + world.arms.mining + world.arms.stabilizing + world.arms.emergency).toBe(7);
+    expect(world.arms.helper.count).toBe(1);
+    expect(world.arms.helper.duty).toBe('scan');
     expect(world.fertileZones.map((zone) => zone.id)).toEqual([
       'runway-pocket',
       'temptation-lobe',
@@ -142,6 +148,7 @@ describe('continuous Moon Miner spike rules', () => {
     const world = placeRoverAtVeinStart(createContinuousWorld(), 0);
     const start = { ...world.rover };
     const fieldCount = world.fields.length;
+    const remaining = world.fertileZones[0].remaining;
 
     const next = tickContinuousWorld(world, { steer: 0, throttle: 0, driveIntent: false }, 0.8);
 
@@ -153,7 +160,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.rover.ore).toBeGreaterThan(start.ore);
     expect(next.lastYieldRate).toBeGreaterThan(0);
     expect(next.arms.building).toBe(0);
-    expect(next.arms.mining).toBeGreaterThanOrEqual(7);
+    expect(next.arms.mining).toBe(7);
+    expect(next.arms.helper.duty).toBe('miningAssist');
+    expect(next.arms.helper.miningAssistRate).toBeGreaterThan(0);
+    expect(next.fertileZones[0].remaining).toBeCloseTo(remaining - (next.rover.ore - start.ore));
     expect(next.message).toBe('Mining arms harvesting while parked on prepared field.');
   });
 
@@ -175,7 +185,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.rover.ore).toBeGreaterThan(start.ore);
     expect(next.lastYieldRate).toBeGreaterThan(0);
     expect(next.arms.building).toBe(0);
-    expect(next.arms.mining).toBeGreaterThanOrEqual(7);
+    expect(next.arms.mining).toBe(7);
+    expect(next.arms.helper.duty).toBe('systems');
+    expect(next.arms.helper.miningAssistRate).toBe(0);
+    expect(next.arms.helper.lastAssistYield).toBe(0);
     expect(next.message).toBe('Mining arms extracting from the seam while parked.');
   });
 
@@ -193,6 +206,41 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.lastYieldRate).toBe(0);
     expect(next.arms.mining).toBe(0);
     expect(next.arms.emergency).toBeGreaterThan(0);
+    expect(next.arms.helper.duty).toBe('emergency');
+    expect(next.arms.helper.miningAssistRate).toBe(0);
+  });
+
+  it('does not charge or trigger helper assist while idling on barren terrain', () => {
+    const world = createContinuousWorld();
+    world.fields = [];
+    world.rover.x = 90;
+    world.rover.y = 130;
+
+    const next = tickContinuousWorld(world, idleInput, 1.2);
+
+    expect(next.rover.ore).toBe(0);
+    expect(next.lastYieldRate).toBe(0);
+    expect(next.arms.mining).toBe(0);
+    expect(next.arms.helper.duty).toBe('scan');
+    expect(next.arms.helper.miningAssistRate).toBe(0);
+    expect(next.arms.helper.lastAssistYield).toBe(0);
+  });
+
+  it('blocks helper mining assist while the utility arm is docking a returning drone', () => {
+    const world = placeRoverAtVeinStart(createContinuousWorld(), 0);
+    world.drone.status = 'returning';
+    world.drone.x = world.rover.x - 120;
+    world.drone.y = world.rover.y;
+    world.drone.payload = 2;
+    world.drone.etaSeconds = 0.4;
+
+    const next = tickContinuousWorld(world, idleInput, 0.02);
+
+    expect(next.lastYieldRate).toBeGreaterThan(0);
+    expect(next.arms.mining).toBe(7);
+    expect(next.arms.helper.duty).toBe('droneDocking');
+    expect(next.arms.helper.miningAssistRate).toBe(0);
+    expect(next.arms.helper.lastAssistYield).toBe(0);
   });
 
   it('rewards fast aligned vein passes more than slow crosswise loitering', () => {

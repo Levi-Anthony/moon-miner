@@ -110,12 +110,31 @@ export interface DroneState extends Vec2 {
   reclaimSeconds: number;
 }
 
+export type HelperArmDuty =
+  | 'systems'
+  | 'scan'
+  | 'miningAssist'
+  | 'fabricationSupport'
+  | 'droneDocking'
+  | 'emergency';
+
+export interface HelperArmState {
+  count: number;
+  duty: HelperArmDuty;
+  status: string;
+  miningAssistRate: number;
+  lastAssistYield: number;
+}
+
 export interface ArmAllocation {
   total: number;
+  industrialTotal: number;
+  utilityTotal: number;
   building: number;
   mining: number;
   stabilizing: number;
   emergency: number;
+  helper: HelperArmState;
 }
 
 export interface ContinuousTuning {
@@ -198,9 +217,12 @@ export interface ContinuousCommandResult {
 
 const WORLD_WIDTH = 1040;
 const WORLD_HEIGHT = 720;
-const TOTAL_ARMS = 8;
+const INDUSTRIAL_ARMS = 7;
+const UTILITY_ARMS = 1;
+const TOTAL_ARMS = INDUSTRIAL_ARMS + UTILITY_ARMS;
 const TURN_RATE = 2.25;
 const STATIONARY_MINING_FLOW_MULTIPLIER = 1;
+const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
 export const DEFAULT_CONTINUOUS_TUNING: ContinuousTuning = {
   startingNanobots: 6,
@@ -295,7 +317,7 @@ export function createContinuousWorld(
     elapsedSeconds: 0,
     phase: 'playing',
     speedState: 'fabricating',
-    arms: allocateArms('fabricating', false, false),
+    arms: allocateArms('fabricating', false, false, 'ready'),
     lastYieldRate: 0,
     message: fields.length > 0 ? 'Prepared field online. Keep the machine supplied before sunset.' : 'Raw field start. Drive to lay your first line, then reclaim it.',
     nextFieldId,
@@ -304,7 +326,7 @@ export function createContinuousWorld(
   };
 
   state.speedState = resolveSpeedState(state);
-  state.arms = allocateArms(state.speedState, Boolean(findFertileZoneAt(state, state.rover)), false);
+  state.arms = allocateArms(state.speedState, Boolean(findFertileZoneAt(state, state.rover)), false, state.drone.status);
   return state;
 }
 
@@ -399,7 +421,10 @@ export function cloneContinuousWorld(state: ContinuousWorldState): ContinuousWor
     },
     fields: state.fields.map((field) => ({ ...field })),
     fertileZones: state.fertileZones.map((zone) => ({ ...zone })),
-    arms: { ...state.arms },
+    arms: {
+      ...state.arms,
+      helper: { ...state.arms.helper }
+    },
     tuning: { ...state.tuning },
     arena: {
       ...state.arena,
@@ -431,7 +456,7 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
   const movedDistance = steerAndMoveRover(state, input, deltaSeconds);
   runFieldSystem(state, driveIntent, movedDistance, deltaSeconds);
   const fertileZone = findFertileZoneAt(state, state.rover);
-  state.arms = allocateArms(state.speedState, Boolean(fertileZone), driveIntent);
+  state.arms = allocateArms(state.speedState, Boolean(fertileZone), driveIntent, state.drone.status);
   runMiningSystem(state, fertileZone, driveIntent, deltaSeconds);
   advanceDrone(state, deltaSeconds);
   preserveFieldPatches(state);
@@ -535,35 +560,55 @@ function runMiningSystem(
   deltaSeconds: number
 ): void {
   state.lastYieldRate = 0;
+  state.arms.helper.miningAssistRate = 0;
+  state.arms.helper.lastAssistYield = 0;
   if (state.speedState === 'crawl') return;
   if (!fertileZone || state.arms.mining <= 0) return;
 
   const preparedMultiplier = state.speedState === 'prepared' ? 1.08 : 1;
-  const yieldRate =
+  const industrialYieldRate =
     fertileZone.richness *
     state.arms.mining *
     state.tuning.mineRate *
     preparedMultiplier *
     getFertileZoneMiningFlowMultiplier(state, fertileZone);
-  const mined = Math.min(fertileZone.remaining, yieldRate * deltaSeconds);
+  const mined = Math.min(fertileZone.remaining, industrialYieldRate * deltaSeconds);
 
   fertileZone.remaining -= mined;
   state.rover.ore += mined;
-  state.lastYieldRate = yieldRate;
 
-  if (mined > 0 && !driveIntent && state.speedState === 'prepared') {
+  const helperYieldRate = getHelperMiningAssistRate(state, mined, deltaSeconds);
+  const helperMined = Math.min(fertileZone.remaining, helperYieldRate * deltaSeconds);
+  if (helperMined > 0) {
+    fertileZone.remaining -= helperMined;
+    state.rover.ore += helperMined;
+    state.arms.helper.miningAssistRate = helperMined / deltaSeconds;
+    state.arms.helper.lastAssistYield = helperMined;
+  }
+
+  state.lastYieldRate = (mined + helperMined) / deltaSeconds;
+
+  if (mined + helperMined > 0 && !driveIntent && state.speedState === 'prepared') {
     state.message = 'Mining arms harvesting while parked on prepared field.';
     return;
   }
 
-  if (mined > 0 && !driveIntent) {
+  if (mined + helperMined > 0 && !driveIntent) {
     state.message = 'Mining arms extracting from the seam while parked.';
     return;
   }
 
-  if (mined > 0 && state.speedState === 'prepared') {
+  if (mined + helperMined > 0 && state.speedState === 'prepared') {
     state.message = 'Prepared field frees the arms. Mining rate is high.';
   }
+}
+
+function getHelperMiningAssistRate(state: ContinuousWorldState, industrialMined: number, deltaSeconds: number): number {
+  if (industrialMined <= 0 || deltaSeconds <= 0) return 0;
+  if (state.arms.helper.duty !== 'miningAssist') return 0;
+  if (state.speedState !== 'prepared') return 0;
+  if (state.drone.status === 'returning') return 0;
+  return (industrialMined / deltaSeconds) * HELPER_ARM_MINE_ASSIST_RATIO;
 }
 
 function advanceDrone(state: ContinuousWorldState, deltaSeconds: number): void {
@@ -767,43 +812,82 @@ function getPreparedFieldTangent(fields: FieldPatch[], index: number): Vec2 | un
   };
 }
 
-function allocateArms(speedState: SpeedState, inFertileZone: boolean, driveIntent: boolean): ArmAllocation {
+function allocateArms(
+  speedState: SpeedState,
+  inFertileZone: boolean,
+  driveIntent: boolean,
+  droneStatus: DroneStatus = 'ready'
+): ArmAllocation {
   if (speedState === 'crawl') {
-    return {
-      total: TOTAL_ARMS,
-      building: 1,
-      mining: 0,
-      stabilizing: 1,
-      emergency: 6
-    };
+    return createArmAllocation(1, 0, 0, 6, 'emergency', 'utility arm is clearing jams and keeping crawl alive');
   }
 
   if (!driveIntent) {
-    return {
-      total: TOTAL_ARMS,
-      building: 0,
-      mining: inFertileZone ? 7 : 0,
-      stabilizing: inFertileZone ? 1 : TOTAL_ARMS,
-      emergency: 0
-    };
+    const helperCanAssist = speedState === 'prepared' && inFertileZone && droneStatus !== 'returning';
+    return createArmAllocation(
+      0,
+      inFertileZone ? INDUSTRIAL_ARMS : 0,
+      inFertileZone ? 0 : INDUSTRIAL_ARMS,
+      0,
+      droneStatus === 'returning' ? 'droneDocking' : helperCanAssist ? 'miningAssist' : inFertileZone ? 'systems' : 'scan',
+      droneStatus === 'returning'
+        ? 'utility arm is braced for drone docking'
+        : helperCanAssist
+          ? 'utility arm has a clean support window'
+          : inFertileZone
+            ? 'utility arm is managing seam systems'
+            : 'utility arm is scanning and stabilizing'
+    );
   }
 
   if (speedState === 'prepared') {
-    return {
-      total: TOTAL_ARMS,
-      building: 1,
-      mining: inFertileZone ? 5 : 2,
-      stabilizing: inFertileZone ? 2 : 5,
-      emergency: 0
-    };
+    return createArmAllocation(
+      1,
+      inFertileZone ? 5 : 2,
+      inFertileZone ? 1 : 4,
+      0,
+      droneStatus === 'returning' ? 'droneDocking' : inFertileZone ? 'miningAssist' : 'scan',
+      droneStatus === 'returning'
+        ? 'utility arm is catching the returning drone'
+        : inFertileZone
+          ? 'utility arm is opportunistically stealing a ridiculous pocket'
+          : 'utility arm is scanning ahead'
+    );
   }
 
+  return createArmAllocation(
+    inFertileZone ? 3 : 4,
+    inFertileZone ? 3 : 1,
+    inFertileZone ? 1 : 2,
+    0,
+    'fabricationSupport',
+    'utility arm is managing fabrication support'
+  );
+}
+
+function createArmAllocation(
+  building: number,
+  mining: number,
+  stabilizing: number,
+  emergency: number,
+  helperDuty: HelperArmDuty,
+  helperStatus: string
+): ArmAllocation {
   return {
     total: TOTAL_ARMS,
-    building: inFertileZone ? 3 : 4,
-    mining: inFertileZone ? 3 : 1,
-    stabilizing: inFertileZone ? 2 : 3,
-    emergency: 0
+    industrialTotal: INDUSTRIAL_ARMS,
+    utilityTotal: UTILITY_ARMS,
+    building,
+    mining,
+    stabilizing,
+    emergency,
+    helper: {
+      count: UTILITY_ARMS,
+      duty: helperDuty,
+      status: helperStatus,
+      miningAssistRate: 0,
+      lastAssistYield: 0
+    }
   };
 }
 
