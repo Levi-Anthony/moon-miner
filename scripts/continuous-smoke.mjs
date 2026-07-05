@@ -12,7 +12,12 @@ const SNAPSHOT_SCRIPT_ID = 'moon-miner-continuous-debug-state';
 const ARENA_ID = 'first-run-readable';
 const DESKTOP_VIEWPORT = { width: 1040, height: 720 };
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
-const LOCAL_STORAGE_KEYS = ['moon-miner-continuous-tuning-v3', 'moon-miner-continuous-tuning-v4', 'moon-miner-continuous-arena-v1'];
+const LOCAL_STORAGE_KEYS = [
+  'moon-miner-continuous-tuning-v3',
+  'moon-miner-continuous-tuning-v4',
+  'moon-miner-continuous-arena-v1',
+  'moon-miner-camera-lab-v1'
+];
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
@@ -80,6 +85,7 @@ async function main() {
         `Space drone status: ${drone.status}, launches: ${drone.launches}`,
         `drone cues urgent/reserved/return/delivery: ${droneReadability.urgentNanobots.toFixed(1)}nb / ${droneReadability.reservedCount} fields / +${droneReadability.returnPayload.toFixed(1)} / +${droneReadability.deliveryAmount.toFixed(1)}`,
         `view modes default/chase: ${presentation.defaultViewMode} / ${presentation.chaseViewMode}`,
+        `camera lab preset/hybrid: ${presentation.defaultCameraPreset} / ${presentation.hybridCameraPreset}`,
         `dev overlay default/toggle/query: ${presentation.defaultHidden ? 'hidden' : 'visible'} / ${presentation.toggleVisible ? 'visible' : 'hidden'} / ${presentation.queryVisible ? 'visible' : 'hidden'}`,
         `HUD text bounds checked: ${presentation.textBoundsChecked}`,
         `mobile idle speed: ${mobile.idleSpeed.toFixed(1)}, deadzone speed: ${mobile.deadzoneSpeed.toFixed(1)}`,
@@ -135,6 +141,18 @@ async function verifyPresentation(page, appUrl) {
   const debugSnapshot = await waitForSnapshot(page, 'debug query snapshot');
   const debugTextBoundsChecked = assertUiLayout(debugSnapshot, 'desktop', 'tactical');
   const queryOverlay = await waitForOverlay(page, true, 'debug query tuning panel');
+  await page.evaluate(() => {
+    window.__moonMinerContinuous?.setCameraPreset('hybridAuto');
+  });
+  const hybridCameraSnapshot = await waitForSnapshot(page, 'hybrid camera preset snapshot', (snapshot) => {
+    return snapshot.ui?.cameraLab?.preset === 'hybridAuto' && snapshot.ui?.viewMode === 'hybrid' ? snapshot : undefined;
+  });
+  await page.evaluate(() => {
+    window.__moonMinerContinuous?.setCameraPreset('tacticalMap');
+  });
+  await waitForSnapshot(page, 'camera lab reset snapshot', (snapshot) => {
+    return snapshot.ui?.cameraLab?.preset === 'tacticalMap' && snapshot.ui?.viewMode === 'tactical' ? snapshot : undefined;
+  });
 
   await page.goto(appUrl);
   const cleanSnapshot = await waitForSnapshot(page, 'clean snapshot after debug query');
@@ -147,6 +165,8 @@ async function verifyPresentation(page, appUrl) {
     queryVisible: queryOverlay.visible,
     defaultViewMode: defaultSnapshot.ui.viewMode,
     chaseViewMode: chaseSnapshot.ui.viewMode,
+    defaultCameraPreset: defaultSnapshot.ui.cameraLab.preset,
+    hybridCameraPreset: hybridCameraSnapshot.ui.cameraLab.preset,
     textBoundsChecked: defaultTextBoundsChecked + chaseTextBoundsChecked + debugTextBoundsChecked + cleanTextBoundsChecked
   };
 }
@@ -400,6 +420,7 @@ async function verifyMobileDebugWorkbench(page) {
 
   const geometry = await page.evaluate(() => {
     const panel = document.getElementById('moon-miner-tuning-panel');
+    const cameraPanel = document.getElementById('moon-miner-camera-lab');
     const game = document.getElementById('game');
     const canvas = document.querySelector('canvas');
     const rect = (element) => {
@@ -410,14 +431,20 @@ async function verifyMobileDebugWorkbench(page) {
     };
     return {
       panel: rect(panel),
+      cameraPanel: rect(cameraPanel),
       game: rect(game),
       canvas: rect(canvas)
     };
   });
-  if (!geometry.panel || !geometry.game || !geometry.canvas) {
+  if (!geometry.panel || !geometry.cameraPanel || !geometry.game || !geometry.canvas) {
     throw new Error('Mobile debug workbench is missing panel, game, or canvas geometry.');
   }
-  if (rectsOverlap(geometry.panel, geometry.game) || rectsOverlap(geometry.panel, geometry.canvas)) {
+  if (
+    rectsOverlap(geometry.panel, geometry.game) ||
+    rectsOverlap(geometry.panel, geometry.canvas) ||
+    rectsOverlap(geometry.cameraPanel, geometry.game) ||
+    rectsOverlap(geometry.cameraPanel, geometry.canvas)
+  ) {
     throw new Error(`Mobile debug panel overlaps the portrait game: ${JSON.stringify(geometry)}.`);
   }
 
@@ -653,6 +680,13 @@ function assertUiLayout(snapshot, expectedMode, expectedViewMode = 'tactical') {
   if (!ui) throw new Error('Debug snapshot is missing UI layout metadata.');
   if (ui.mode !== expectedMode) throw new Error(`Expected ${expectedMode} layout, got ${ui.mode}.`);
   if (ui.viewMode !== expectedViewMode) throw new Error(`Expected ${expectedViewMode} view mode, got ${ui.viewMode}.`);
+  if (!ui.cameraLab) throw new Error('Debug snapshot is missing Camera Lab metadata.');
+  if (ui.cameraLab.viewMode !== ui.viewMode) {
+    throw new Error(`Camera Lab view mode ${ui.cameraLab.viewMode} does not match UI view mode ${ui.viewMode}.`);
+  }
+  if (!ui.cameraLab.preset || !ui.cameraLab.projectionMode) {
+    throw new Error(`Camera Lab snapshot is missing preset/projection metadata: ${JSON.stringify(ui.cameraLab)}.`);
+  }
   if (ui.hudHeight < 80) throw new Error(`HUD height is too small for the readable layout: ${ui.hudHeight}.`);
 
   const controls =

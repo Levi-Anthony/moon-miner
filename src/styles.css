@@ -96,6 +96,15 @@ body.moon-miner-debug-workbench #game {
   letter-spacing: 0;
 }
 
+.moon-miner-tuning h3 {
+  margin: 12px 0 5px;
+  color: #b5d7ef;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .moon-miner-tuning__row {
   display: grid;
   grid-template-columns: 102px minmax(88px, 1fr) 56px 42px;
@@ -142,6 +151,21 @@ body.moon-miner-debug-workbench #game {
   text-align: right;
 }
 
+.moon-miner-tuning__toggle {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 25px;
+  color: #c8d3df;
+}
+
+.moon-miner-tuning__toggle input {
+  width: 14px;
+  height: 14px;
+  accent-color: #78f7df;
+}
+
 .moon-miner-tuning__actions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
@@ -170,6 +194,19 @@ body.moon-miner-debug-workbench #game {
   max-height: calc(100vh - 32px);
 }
 
+.moon-miner-camera-lab {
+  top: 96px;
+  right: 364px;
+  width: min(360px, calc(100vw - 388px));
+}
+
+.moon-miner-camera-lab[data-layout="mobilePortrait"] {
+  top: 476px;
+  right: 12px;
+  width: min(348px, calc(100vw - 462px));
+  max-height: calc(100vh - 492px);
+}
+
 @media (max-width: 820px) {
   body.moon-miner-debug-workbench #app {
     place-items: center;
@@ -181,5 +218,14 @@ body.moon-miner-debug-workbench #game {
     right: 12px;
     width: min(340px, calc(100vw - 24px));
     max-height: calc(100vh - 24px);
+  }
+
+  .moon-miner-camera-lab,
+  .moon-miner-camera-lab[data-layout="mobilePortrait"] {
+    top: auto;
+    right: 12px;
+    bottom: 12px;
+    width: min(340px, calc(100vw - 24px));
+    max-height: min(46vh, 360px);
   }
 }

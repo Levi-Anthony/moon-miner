@@ -60,13 +60,78 @@ const DRONE_URGENCY_RATIO = 0.32;
 const DELIVERY_READOUT_MS = 1260;
 const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v4';
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
+const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
 
 type ButtonId = 'launch' | 'reset';
 type EffectKind = 'launch' | 'delivery' | 'recovery' | 'sprint' | 'build' | 'crawl' | 'mine' | 'win' | 'loss' | 'blocked';
 type ArmRole = 'building' | 'mining' | 'stabilizing' | 'emergency';
 type LayoutMode = 'desktop' | 'mobilePortrait';
-type ViewMode = 'tactical' | 'chase';
+type ViewMode = 'tactical' | 'chase' | 'hybrid';
 type TuningKey = keyof ContinuousTuning;
+type CameraPresetId = 'tacticalMap' | 'threeQuarterTactical' | 'softChase' | 'roverChase' | 'hybridAuto';
+type NumericCameraControlKey = {
+  [Key in keyof CameraLabSettings]: CameraLabSettings[Key] extends number ? Key : never;
+}[keyof CameraLabSettings];
+type BooleanCameraControlKey = {
+  [Key in keyof CameraLabSettings]: CameraLabSettings[Key] extends boolean ? Key : never;
+}[keyof CameraLabSettings];
+
+interface CameraLabSettings {
+  preset: CameraPresetId;
+  viewMode: ViewMode;
+  cameraZoom: number;
+  tacticalZoom: number;
+  cameraCenterX: number;
+  cameraCenterY: number;
+  roverScreenBias: number;
+  lookAheadDistance: number;
+  smoothing: number;
+  turnResponse: number;
+  maxCameraRotation: number;
+  rotationBlendAmount: number;
+  followBlend: number;
+  projectedYScale: number;
+  projectionShear: number;
+  depthScaleStrength: number;
+  projectedScaleStrength: number;
+  gridVisible: boolean;
+  horizonVisible: boolean;
+  zoomOutLowNanobots: boolean;
+  zoomOutDroneReadyWithPreview: boolean;
+  zoomOutDroneActive: boolean;
+  zoomOutDuringCrawl: boolean;
+  temporaryWiderViewOnLaunch: boolean;
+  returnToNormalDelay: number;
+  tacticalPullbackStrength: number;
+  overlayCameraFocus: boolean;
+  overlayRoverHeading: boolean;
+  overlayCameraForward: boolean;
+  overlayScreenBounds: boolean;
+  overlayReclaimPreview: boolean;
+  overlayDroneRoute: boolean;
+  overlayFieldAgeValue: boolean;
+  overlayProjectionLabel: boolean;
+}
+
+interface CameraPresetDefinition {
+  id: CameraPresetId;
+  label: string;
+  settings: CameraLabSettings;
+}
+
+interface CameraControlDefinition {
+  key: NumericCameraControlKey;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  precision?: number;
+}
+
+interface CameraToggleDefinition {
+  key: BooleanCameraControlKey;
+  label: string;
+}
 
 interface SceneRect {
   x: number;
@@ -117,6 +182,208 @@ const TUNING_CONTROLS: TuningControlDefinition[] = [
   { key: 'preparedFieldMinAgeSeconds', label: 'Prep delay', min: 0.2, max: 1.4, step: 0.05, precision: 2 }
 ];
 
+const DEFAULT_CAMERA_LAB_SETTINGS: CameraLabSettings = {
+  preset: 'tacticalMap',
+  viewMode: 'tactical',
+  cameraZoom: DESKTOP_CAMERA_ZOOM,
+  tacticalZoom: DESKTOP_TACTICAL_ZOOM,
+  cameraCenterX: 0,
+  cameraCenterY: 0,
+  roverScreenBias: 0,
+  lookAheadDistance: DESKTOP_CAMERA_LOOK_AHEAD,
+  smoothing: TACTICAL_CAMERA_RESPONSE,
+  turnResponse: CAMERA_TURN_RESPONSE,
+  maxCameraRotation: 42,
+  rotationBlendAmount: 0.2,
+  followBlend: 0,
+  projectedYScale: 1,
+  projectionShear: 0,
+  depthScaleStrength: 0,
+  projectedScaleStrength: 0,
+  gridVisible: true,
+  horizonVisible: false,
+  zoomOutLowNanobots: true,
+  zoomOutDroneReadyWithPreview: true,
+  zoomOutDroneActive: true,
+  zoomOutDuringCrawl: true,
+  temporaryWiderViewOnLaunch: true,
+  returnToNormalDelay: 1.4,
+  tacticalPullbackStrength: 0.55,
+  overlayCameraFocus: false,
+  overlayRoverHeading: false,
+  overlayCameraForward: false,
+  overlayScreenBounds: false,
+  overlayReclaimPreview: false,
+  overlayDroneRoute: false,
+  overlayFieldAgeValue: false,
+  overlayProjectionLabel: true
+};
+
+const CAMERA_PRESETS: CameraPresetDefinition[] = [
+  {
+    id: 'tacticalMap',
+    label: 'Tactical Map',
+    settings: { ...DEFAULT_CAMERA_LAB_SETTINGS }
+  },
+  {
+    id: 'threeQuarterTactical',
+    label: '3/4 Tactical',
+    settings: {
+      ...DEFAULT_CAMERA_LAB_SETTINGS,
+      preset: 'threeQuarterTactical',
+      viewMode: 'tactical',
+      tacticalZoom: 0.78,
+      cameraCenterY: 18,
+      projectedYScale: 0.72,
+      projectionShear: -0.08,
+      depthScaleStrength: 0.16,
+      projectedScaleStrength: 0.14,
+      horizonVisible: true,
+      followBlend: 0.45
+    }
+  },
+  {
+    id: 'softChase',
+    label: 'Soft Chase',
+    settings: {
+      ...DEFAULT_CAMERA_LAB_SETTINGS,
+      preset: 'softChase',
+      viewMode: 'chase',
+      cameraZoom: 1.02,
+      cameraCenterY: 22,
+      roverScreenBias: 34,
+      lookAheadDistance: 96,
+      smoothing: 1.9,
+      turnResponse: 1.2,
+      maxCameraRotation: 38,
+      rotationBlendAmount: 0.28,
+      followBlend: 0.24,
+      projectedYScale: PROJECTED_Y_SCALE,
+      projectionShear: PROJECTED_SHEAR,
+      depthScaleStrength: 0.24,
+      projectedScaleStrength: 0.26,
+      horizonVisible: true
+    }
+  },
+  {
+    id: 'roverChase',
+    label: 'Rover Chase',
+    settings: {
+      ...DEFAULT_CAMERA_LAB_SETTINGS,
+      preset: 'roverChase',
+      viewMode: 'chase',
+      cameraZoom: 1.22,
+      cameraCenterY: 54,
+      roverScreenBias: 84,
+      lookAheadDistance: 152,
+      smoothing: 2.4,
+      turnResponse: 2.55,
+      maxCameraRotation: 70,
+      rotationBlendAmount: 0.72,
+      followBlend: 0.04,
+      projectedYScale: 0.7,
+      projectionShear: -0.13,
+      depthScaleStrength: 0.36,
+      projectedScaleStrength: 0.38,
+      horizonVisible: true
+    }
+  },
+  {
+    id: 'hybridAuto',
+    label: 'Hybrid Auto',
+    settings: {
+      ...DEFAULT_CAMERA_LAB_SETTINGS,
+      preset: 'hybridAuto',
+      viewMode: 'hybrid',
+      cameraZoom: 1,
+      tacticalZoom: 0.7,
+      cameraCenterY: 32,
+      roverScreenBias: 52,
+      lookAheadDistance: 118,
+      smoothing: 1.85,
+      turnResponse: 1.65,
+      maxCameraRotation: 54,
+      rotationBlendAmount: 0.46,
+      followBlend: 0.34,
+      projectedYScale: 0.76,
+      projectionShear: -0.1,
+      depthScaleStrength: 0.28,
+      projectedScaleStrength: 0.28,
+      horizonVisible: true,
+      returnToNormalDelay: 1.8,
+      tacticalPullbackStrength: 0.72
+    }
+  }
+];
+
+const CAMERA_CONTROL_GROUPS: Array<{ label: string; controls: CameraControlDefinition[] }> = [
+  {
+    label: 'Core',
+    controls: [
+      { key: 'cameraZoom', label: 'Camera zoom', min: 0.45, max: 1.8, step: 0.01, precision: 2 },
+      { key: 'tacticalZoom', label: 'Tactical zoom', min: 0.38, max: 1.35, step: 0.01, precision: 2 },
+      { key: 'cameraCenterX', label: 'Camera center X', min: -260, max: 260, step: 1 },
+      { key: 'cameraCenterY', label: 'Camera center Y', min: -180, max: 180, step: 1 },
+      { key: 'roverScreenBias', label: 'Rover screen bias', min: -160, max: 180, step: 1 },
+      { key: 'lookAheadDistance', label: 'Look-ahead', min: 0, max: 240, step: 1 },
+      { key: 'smoothing', label: 'Camera smoothing', min: 0.25, max: 8, step: 0.05, precision: 2 },
+      { key: 'turnResponse', label: 'Turn response', min: 0.15, max: 7, step: 0.05, precision: 2 },
+      { key: 'maxCameraRotation', label: 'Max rotation', min: 0, max: 180, step: 1 },
+      { key: 'rotationBlendAmount', label: 'Rotation blend', min: 0, max: 1, step: 0.01, precision: 2 },
+      { key: 'followBlend', label: 'Follow route blend', min: 0, max: 1, step: 0.01, precision: 2 }
+    ]
+  },
+  {
+    label: 'Perspective',
+    controls: [
+      { key: 'projectedYScale', label: 'Projected Y scale', min: 0.45, max: 1, step: 0.01, precision: 2 },
+      { key: 'projectionShear', label: 'Projection shear', min: -0.38, max: 0.38, step: 0.01, precision: 2 },
+      { key: 'depthScaleStrength', label: 'Depth scale', min: 0, max: 0.7, step: 0.01, precision: 2 },
+      { key: 'projectedScaleStrength', label: 'Field/rover scale', min: 0, max: 0.8, step: 0.01, precision: 2 }
+    ]
+  },
+  {
+    label: 'Hybrid',
+    controls: [
+      { key: 'returnToNormalDelay', label: 'Return delay', min: 0, max: 5, step: 0.1, precision: 1 },
+      { key: 'tacticalPullbackStrength', label: 'Pullback strength', min: 0, max: 1, step: 0.01, precision: 2 }
+    ]
+  }
+];
+
+const CAMERA_TOGGLE_GROUPS: Array<{ label: string; toggles: CameraToggleDefinition[] }> = [
+  {
+    label: 'Perspective',
+    toggles: [
+      { key: 'gridVisible', label: 'Grid visibility' },
+      { key: 'horizonVisible', label: 'Horizon / ground plane' }
+    ]
+  },
+  {
+    label: 'Hybrid',
+    toggles: [
+      { key: 'zoomOutLowNanobots', label: 'Zoom out on low nanobots' },
+      { key: 'zoomOutDroneReadyWithPreview', label: 'Zoom out on ready drone preview' },
+      { key: 'zoomOutDroneActive', label: 'Zoom out while drone flies' },
+      { key: 'zoomOutDuringCrawl', label: 'Zoom out during crawl' },
+      { key: 'temporaryWiderViewOnLaunch', label: 'Wider view on launch' }
+    ]
+  },
+  {
+    label: 'Overlays',
+    toggles: [
+      { key: 'overlayCameraFocus', label: 'Camera focus point' },
+      { key: 'overlayRoverHeading', label: 'Rover heading axis' },
+      { key: 'overlayCameraForward', label: 'Camera forward axis' },
+      { key: 'overlayScreenBounds', label: 'Projected screen bounds' },
+      { key: 'overlayReclaimPreview', label: 'Reclaim preview target' },
+      { key: 'overlayDroneRoute', label: 'Drone route line' },
+      { key: 'overlayFieldAgeValue', label: 'Old field age/value' },
+      { key: 'overlayProjectionLabel', label: 'Projection mode label' }
+    ]
+  }
+];
+
 interface Button {
   id: ButtonId;
   rect: Phaser.Geom.Rectangle;
@@ -153,6 +420,7 @@ interface ContinuousUiRect {
 interface ContinuousUiSnapshot {
   mode: LayoutMode;
   viewMode: ViewMode;
+  cameraLab: CameraLabSnapshot;
   hudHeight: number;
   debugOverlayVisible: boolean;
   vitals: ContinuousUiRect[];
@@ -175,6 +443,18 @@ interface ContinuousUiSnapshot {
   };
 }
 
+interface CameraLabSnapshot {
+  preset: CameraPresetId;
+  presetLabel: string;
+  viewMode: ViewMode;
+  projectionMode: string;
+  settings: CameraLabSettings;
+  focus: Vec2;
+  center: Vec2;
+  zoom: number;
+  heading: number;
+}
+
 interface ContinuousSelfPlayStatus {
   routeId: string;
   label: string;
@@ -192,6 +472,9 @@ declare global {
       getReclaimPreview: () => ReclaimPreview | undefined;
       getArenaId: () => ContinuousArenaId;
       setArena: (arenaId: ContinuousArenaId) => void;
+      getCameraLab: () => CameraLabSnapshot;
+      setCameraPreset: (presetId: CameraPresetId) => void;
+      setViewMode: (viewMode: ViewMode) => void;
       startSelfPlay: (routeId?: ContinuousSelfPlayRouteId) => void;
       stopSelfPlay: () => void;
       getSelfPlayStatus: () => ContinuousSelfPlayStatus | undefined;
@@ -215,16 +498,23 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     route: ContinuousSelfPlayRoute;
     launchedAtSeconds: Set<number>;
   };
+  private cameraLab: CameraLabSettings = { ...DEFAULT_CAMERA_LAB_SETTINGS };
   private viewMode: ViewMode = 'tactical';
   private tacticalCameraFocus: Vec2 = { x: 420, y: 500 };
   private cameraHeading = -0.18;
+  private hybridPullbackUntilMs = 0;
   private keys?: Record<string, Phaser.Input.Keyboard.Key>;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
   private escapeKey?: Phaser.Input.Keyboard.Key;
   private debugStateElement?: HTMLScriptElement;
   private tuningPanelElement?: HTMLElement;
+  private cameraLabElement?: HTMLElement;
+  private cameraPresetSelectElement?: HTMLSelectElement;
+  private cameraViewModeSelectElement?: HTMLSelectElement;
   private arenaSelectElement?: HTMLSelectElement;
   private tuningControls = new Map<TuningKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
+  private cameraNumericControls = new Map<NumericCameraControlKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
+  private cameraToggleControls = new Map<BooleanCameraControlKey, HTMLInputElement>();
   private debugOverlayVisible = false;
   private previousDroneStatus: DroneStatus = 'ready';
   private previousSpeedState: SpeedState = 'prepared';
@@ -237,7 +527,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
   create(): void {
     this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId());
-    this.viewMode = this.readViewMode();
+    this.cameraLab = this.loadStoredCameraLab();
+    this.viewMode = this.readViewMode(this.cameraLab.viewMode);
+    this.cameraLab.viewMode = this.viewMode;
     this.debugOverlayVisible = this.shouldOpenDebugOverlay();
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
@@ -277,6 +569,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     this.exposeDebugHook();
     this.createTuningPanel();
+    this.createCameraLabPanel();
     this.draw();
   }
 
@@ -383,12 +676,45 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
   private handleKeyboardEvent(event: KeyboardEvent): void {
     if (!import.meta.env.DEV) return;
-    if (event.key !== '`' && event.key !== '~') return;
     if (event.repeat) return;
 
-    event.preventDefault();
-    this.debugOverlayVisible = !this.debugOverlayVisible;
-    this.syncDebugOverlayVisibility();
+    if (event.key === '`' || event.key === '~') {
+      event.preventDefault();
+      this.debugOverlayVisible = !this.debugOverlayVisible;
+      this.syncDebugOverlayVisibility();
+      return;
+    }
+
+    if (this.isTypingInForm(event.target)) return;
+
+    if (event.key.toLowerCase() === 'v') {
+      event.preventDefault();
+      this.cycleCameraPreset();
+      return;
+    }
+
+    if (event.key.toLowerCase() === 'c') {
+      event.preventDefault();
+      this.cycleViewMode();
+      return;
+    }
+
+    if (event.key === '[' || event.key === ']') {
+      event.preventDefault();
+      const direction = event.key === ']' ? 1 : -1;
+      if (event.shiftKey) {
+        this.applyCameraNumericValue('lookAheadDistance', this.cameraLab.lookAheadDistance + direction * 8);
+      } else {
+        const key: NumericCameraControlKey = this.viewMode === 'tactical' ? 'tacticalZoom' : 'cameraZoom';
+        this.applyCameraNumericValue(key, this.cameraLab[key] + direction * 0.04);
+      }
+      return;
+    }
+
+    if (event.key === '\\') {
+      event.preventDefault();
+      this.resetCameraLab();
+    }
   }
 
   private shouldOpenDebugOverlay(): boolean {
@@ -402,15 +728,22 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  private readViewMode(): ViewMode {
+  private readViewMode(fallback: ViewMode): ViewMode {
     if (!import.meta.env.DEV) return 'tactical';
 
     try {
       const params = new URLSearchParams(window.location.search);
-      return params.get('view') === 'chase' ? 'chase' : 'tactical';
+      const view = params.get('view');
+      if (view === 'chase' || view === 'hybrid' || view === 'tactical') return view;
+      return fallback;
     } catch {
-      return 'tactical';
+      return fallback;
     }
+  }
+
+  private isTypingInForm(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    return ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName) || target.isContentEditable;
   }
 
   private getLayout(): SceneLayout {
@@ -574,6 +907,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (result.ok) {
       recordContinuousLoopDroneLaunch(this.loopTrace, this.state);
       this.addEffect('launch', this.state.drone.x, this.state.drone.y, 520);
+      if (this.cameraLab.temporaryWiderViewOnLaunch) {
+        this.hybridPullbackUntilMs = Math.max(
+          this.hybridPullbackUntilMs,
+          this.time.now + this.cameraLab.returnToNormalDelay * 1000
+        );
+      }
       this.showEventMessage('Drone launched. Shape the return path.', 1400, this.time.now, 2);
     } else {
       this.addEffect('blocked', this.state.rover.x, this.state.rover.y, 320);
@@ -597,6 +936,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.previousPhase = this.state.phase;
     this.previousOre = this.state.rover.ore;
     this.syncTuningPanel();
+    this.syncCameraLabPanel();
   }
 
   private setArena(arenaId: ContinuousArenaId): void {
@@ -620,6 +960,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.previousOre = this.state.rover.ore;
     this.saveStoredArenaId();
     this.syncTuningPanel();
+    this.syncCameraLabPanel();
   }
 
   private startSelfPlay(routeId: ContinuousSelfPlayRouteId = 'firstLoop'): void {
@@ -788,13 +1129,148 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.syncDebugOverlayVisibility();
   }
 
+  private createCameraLabPanel(): void {
+    if (!import.meta.env.DEV) return;
+
+    const existing = document.getElementById('moon-miner-camera-lab');
+    const panel = existing ?? document.createElement('aside');
+    panel.id = 'moon-miner-camera-lab';
+    panel.className = 'moon-miner-tuning moon-miner-camera-lab';
+    panel.textContent = '';
+    this.cameraNumericControls.clear();
+    this.cameraToggleControls.clear();
+
+    const title = document.createElement('h2');
+    title.textContent = 'Camera Lab';
+    panel.appendChild(title);
+
+    const presetRow = document.createElement('label');
+    presetRow.className = 'moon-miner-tuning__row moon-miner-tuning__row--select';
+    const presetName = document.createElement('span');
+    presetName.className = 'moon-miner-tuning__name';
+    presetName.textContent = 'Preset';
+    const presetSelect = document.createElement('select');
+    presetSelect.className = 'moon-miner-tuning__select';
+    for (const preset of CAMERA_PRESETS) {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = preset.label;
+      presetSelect.appendChild(option);
+    }
+    presetSelect.addEventListener('change', () => this.applyCameraPreset(presetSelect.value as CameraPresetId));
+    presetRow.append(presetName, presetSelect);
+    panel.appendChild(presetRow);
+    this.cameraPresetSelectElement = presetSelect;
+
+    const viewRow = document.createElement('label');
+    viewRow.className = 'moon-miner-tuning__row moon-miner-tuning__row--select';
+    const viewName = document.createElement('span');
+    viewName.className = 'moon-miner-tuning__name';
+    viewName.textContent = 'View mode';
+    const viewSelect = document.createElement('select');
+    viewSelect.className = 'moon-miner-tuning__select';
+    for (const mode of ['tactical', 'chase', 'hybrid'] satisfies ViewMode[]) {
+      const option = document.createElement('option');
+      option.value = mode;
+      option.textContent = mode;
+      viewSelect.appendChild(option);
+    }
+    viewSelect.addEventListener('change', () => this.setCameraViewMode(viewSelect.value as ViewMode));
+    viewRow.append(viewName, viewSelect);
+    panel.appendChild(viewRow);
+    this.cameraViewModeSelectElement = viewSelect;
+
+    for (const group of CAMERA_CONTROL_GROUPS) {
+      const heading = document.createElement('h3');
+      heading.textContent = group.label;
+      panel.appendChild(heading);
+
+      for (const definition of group.controls) {
+        const row = document.createElement('label');
+        row.className = 'moon-miner-tuning__row';
+
+        const name = document.createElement('span');
+        name.className = 'moon-miner-tuning__name';
+        name.textContent = definition.label;
+
+        const range = document.createElement('input');
+        range.type = 'range';
+        range.min = String(definition.min);
+        range.max = String(definition.max);
+        range.step = String(definition.step);
+
+        const number = document.createElement('input');
+        number.type = 'number';
+        number.min = String(definition.min);
+        number.max = String(definition.max);
+        number.step = String(definition.step);
+
+        const value = document.createElement('span');
+        value.className = 'moon-miner-tuning__value';
+
+        range.addEventListener('input', () => this.applyCameraNumericValue(definition.key, Number(range.value)));
+        number.addEventListener('change', () => this.applyCameraNumericValue(definition.key, Number(number.value)));
+
+        row.append(name, range, number, value);
+        panel.appendChild(row);
+        this.cameraNumericControls.set(definition.key, { range, number, value });
+      }
+    }
+
+    for (const group of CAMERA_TOGGLE_GROUPS) {
+      const heading = document.createElement('h3');
+      heading.textContent = group.label;
+      panel.appendChild(heading);
+
+      for (const definition of group.toggles) {
+        const row = document.createElement('label');
+        row.className = 'moon-miner-tuning__toggle';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.addEventListener('change', () => this.applyCameraToggleValue(definition.key, checkbox.checked));
+
+        const name = document.createElement('span');
+        name.textContent = definition.label;
+
+        row.append(checkbox, name);
+        panel.appendChild(row);
+        this.cameraToggleControls.set(definition.key, checkbox);
+      }
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'moon-miner-tuning__actions';
+
+    const copyButton = document.createElement('button');
+    copyButton.type = 'button';
+    copyButton.textContent = 'Copy JSON';
+    copyButton.addEventListener('click', () => this.copyCameraLabJson(copyButton));
+
+    const resetButton = document.createElement('button');
+    resetButton.type = 'button';
+    resetButton.textContent = 'Defaults';
+    resetButton.addEventListener('click', () => this.resetCameraLab());
+
+    actions.append(copyButton, resetButton);
+    panel.appendChild(actions);
+
+    if (!existing) document.body.appendChild(panel);
+    this.cameraLabElement = panel;
+    this.syncCameraLabPanel();
+    this.syncDebugOverlayVisibility();
+  }
+
   private syncDebugOverlayVisibility(): void {
     if (!import.meta.env.DEV) return;
-    if (!this.tuningPanelElement) return;
+    if (!this.tuningPanelElement && !this.cameraLabElement) return;
 
-    this.tuningPanelElement.hidden = !this.debugOverlayVisible;
-    this.tuningPanelElement.dataset.open = this.debugOverlayVisible ? 'true' : 'false';
-    this.tuningPanelElement.dataset.layout = this.getLayout().mode;
+    for (const panel of [this.tuningPanelElement, this.cameraLabElement]) {
+      if (!panel) continue;
+      panel.hidden = !this.debugOverlayVisible;
+      panel.dataset.open = this.debugOverlayVisible ? 'true' : 'false';
+      panel.dataset.layout = this.getLayout().mode;
+    }
     document.body.classList.toggle(
       'moon-miner-debug-workbench',
       this.debugOverlayVisible && this.getLayout().mode === 'mobilePortrait'
@@ -908,25 +1384,194 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       });
   }
 
+  private applyCameraPreset(presetId: CameraPresetId): void {
+    const preset = this.getCameraPreset(presetId);
+    this.cameraLab = this.normalizeCameraLabSettings({ ...preset.settings });
+    this.viewMode = this.cameraLab.viewMode;
+    this.cameraHeading = this.state.rover.heading;
+    this.tacticalCameraFocus = this.tacticalCameraTarget();
+    this.hybridPullbackUntilMs = 0;
+    this.saveStoredCameraLab();
+    this.syncCameraLabPanel();
+  }
+
+  private cycleCameraPreset(): void {
+    const index = CAMERA_PRESETS.findIndex((preset) => preset.id === this.cameraLab.preset);
+    const next = CAMERA_PRESETS[(index + 1) % CAMERA_PRESETS.length] ?? CAMERA_PRESETS[0];
+    this.applyCameraPreset(next.id);
+  }
+
+  private cycleViewMode(): void {
+    const modes: ViewMode[] = ['tactical', 'chase', 'hybrid'];
+    const index = modes.indexOf(this.viewMode);
+    this.setCameraViewMode(modes[(index + 1) % modes.length] ?? 'tactical');
+  }
+
+  private setCameraViewMode(viewMode: ViewMode): void {
+    this.viewMode = viewMode;
+    this.cameraLab = this.normalizeCameraLabSettings({
+      ...this.cameraLab,
+      viewMode
+    });
+    this.saveStoredCameraLab();
+    this.syncCameraLabPanel();
+  }
+
+  private applyCameraNumericValue(key: NumericCameraControlKey, value: number): void {
+    if (!Number.isFinite(value)) return;
+
+    const definition = CAMERA_CONTROL_GROUPS.flatMap((group) => group.controls).find((control) => control.key === key);
+    const nextValue = definition ? clamp(value, definition.min, definition.max) : value;
+    this.cameraLab = this.normalizeCameraLabSettings({
+      ...this.cameraLab,
+      [key]: nextValue
+    });
+    this.viewMode = this.cameraLab.viewMode;
+    this.saveStoredCameraLab();
+    this.syncCameraLabPanel();
+  }
+
+  private applyCameraToggleValue(key: BooleanCameraControlKey, value: boolean): void {
+    this.cameraLab = this.normalizeCameraLabSettings({
+      ...this.cameraLab,
+      [key]: value
+    });
+    this.saveStoredCameraLab();
+    this.syncCameraLabPanel();
+  }
+
+  private resetCameraLab(): void {
+    this.applyCameraPreset('tacticalMap');
+  }
+
+  private syncCameraLabPanel(): void {
+    if (this.cameraPresetSelectElement) this.cameraPresetSelectElement.value = this.cameraLab.preset;
+    if (this.cameraViewModeSelectElement) this.cameraViewModeSelectElement.value = this.viewMode;
+
+    for (const group of CAMERA_CONTROL_GROUPS) {
+      for (const definition of group.controls) {
+        const controls = this.cameraNumericControls.get(definition.key);
+        if (!controls) continue;
+
+        const value = this.cameraLab[definition.key];
+        const formatted = this.formatCameraValue(definition, value);
+        controls.range.value = String(value);
+        controls.number.value = formatted;
+        controls.value.textContent = formatted;
+      }
+    }
+
+    for (const group of CAMERA_TOGGLE_GROUPS) {
+      for (const definition of group.toggles) {
+        const checkbox = this.cameraToggleControls.get(definition.key);
+        if (checkbox) checkbox.checked = this.cameraLab[definition.key];
+      }
+    }
+  }
+
+  private formatCameraValue(definition: CameraControlDefinition, value: number): string {
+    return value.toFixed(definition.precision ?? 0);
+  }
+
+  private loadStoredCameraLab(): CameraLabSettings {
+    if (!import.meta.env.DEV) return { ...DEFAULT_CAMERA_LAB_SETTINGS };
+
+    try {
+      const raw = window.localStorage.getItem(CAMERA_LAB_STORAGE_KEY);
+      return this.normalizeCameraLabSettings(raw ? (JSON.parse(raw) as Partial<CameraLabSettings>) : undefined);
+    } catch {
+      return { ...DEFAULT_CAMERA_LAB_SETTINGS };
+    }
+  }
+
+  private saveStoredCameraLab(): void {
+    if (!import.meta.env.DEV) return;
+
+    try {
+      window.localStorage.setItem(CAMERA_LAB_STORAGE_KEY, JSON.stringify(this.cameraLab));
+    } catch {
+      // Local storage can be unavailable in hardened browser contexts; live camera tuning still works.
+    }
+  }
+
+  private normalizeCameraLabSettings(settings?: Partial<CameraLabSettings>): CameraLabSettings {
+    const merged = {
+      ...DEFAULT_CAMERA_LAB_SETTINGS,
+      ...settings
+    };
+    const preset = CAMERA_PRESETS.some((candidate) => candidate.id === merged.preset) ? merged.preset : 'tacticalMap';
+    const viewMode: ViewMode =
+      merged.viewMode === 'chase' || merged.viewMode === 'hybrid' || merged.viewMode === 'tactical' ? merged.viewMode : 'tactical';
+    const normalized: CameraLabSettings = {
+      ...merged,
+      preset,
+      viewMode
+    };
+
+    for (const group of CAMERA_CONTROL_GROUPS) {
+      for (const definition of group.controls) {
+        const value = normalized[definition.key];
+        normalized[definition.key] = clamp(Number.isFinite(value) ? value : DEFAULT_CAMERA_LAB_SETTINGS[definition.key], definition.min, definition.max);
+      }
+    }
+
+    return normalized;
+  }
+
+  private getCameraPreset(presetId: CameraPresetId): CameraPresetDefinition {
+    return CAMERA_PRESETS.find((preset) => preset.id === presetId) ?? CAMERA_PRESETS[0];
+  }
+
+  private copyCameraLabJson(button: HTMLButtonElement): void {
+    const original = button.textContent ?? 'Copy JSON';
+    const text = JSON.stringify(this.cameraLab, null, 2);
+
+    if (!navigator.clipboard) {
+      console.info('Moon Miner camera lab JSON:', text);
+      button.textContent = 'Logged';
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 900);
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        button.textContent = 'Copied';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 900);
+      })
+      .catch(() => {
+        button.textContent = 'Copy failed';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 900);
+      });
+  }
+
   private clearPointerTarget(): void {
     this.pointerTarget = undefined;
   }
 
   private updateCamera(deltaSeconds: number): void {
+    const target = this.tacticalCameraTarget();
+    const tacticalBlend = 1 - Math.exp(-this.cameraLab.smoothing * deltaSeconds);
+    this.tacticalCameraFocus = {
+      x: Phaser.Math.Linear(this.tacticalCameraFocus.x, target.x, tacticalBlend),
+      y: Phaser.Math.Linear(this.tacticalCameraFocus.y, target.y, tacticalBlend)
+    };
+
     if (this.viewMode === 'tactical') {
-      const target = this.tacticalCameraTarget();
-      const blend = 1 - Math.exp(-TACTICAL_CAMERA_RESPONSE * deltaSeconds);
-      this.tacticalCameraFocus = {
-        x: Phaser.Math.Linear(this.tacticalCameraFocus.x, target.x, blend),
-        y: Phaser.Math.Linear(this.tacticalCameraFocus.y, target.y, blend)
-      };
       return;
     }
 
-    const response = this.state.speedState === 'crawl' ? CAMERA_TURN_RESPONSE * 1.45 : CAMERA_TURN_RESPONSE;
+    const response = this.state.speedState === 'crawl' ? this.cameraLab.turnResponse * 1.45 : this.cameraLab.turnResponse;
     const blend = 1 - Math.exp(-response * deltaSeconds);
+    const targetHeading = this.cameraHeadingTarget();
     this.cameraHeading = wrapAngle(
-      this.cameraHeading + angleDifference(this.state.rover.heading, this.cameraHeading) * blend
+      this.cameraHeading + angleDifference(targetHeading, this.cameraHeading) * blend
     );
   }
 
@@ -1018,6 +1663,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawDrone();
     this.drawRover();
     this.drawEffects();
+    this.drawCameraDebugOverlays();
     this.drawHud();
     this.drawPhaseBanner();
     this.updateDebugState();
@@ -1037,31 +1683,35 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       return;
     }
 
-    const planeTopLeft = this.project(this.cameraLocalPoint(-620, 540));
-    const planeTopRight = this.project(this.cameraLocalPoint(620, 540));
-    const planeBottomRight = this.project(this.cameraLocalPoint(620, -360));
-    const planeBottomLeft = this.project(this.cameraLocalPoint(-620, -360));
-    this.graphics.fillStyle(0x141924, 0.9);
-    this.graphics.fillPoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
-    this.graphics.lineStyle(2, 0x303846, 0.85);
-    this.graphics.strokePoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
-
-    for (let index = 0; index < 8; index += 1) {
-      const forward = 500 - index * 120;
-      const from = this.project(this.cameraLocalPoint(-620, forward));
-      const to = this.project(this.cameraLocalPoint(620, forward));
-      this.graphics.lineStyle(1, 0x222a36, 0.2 + 0.18 * visualCalm);
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    if (this.cameraLab.horizonVisible) {
+      const planeTopLeft = this.project(this.cameraLocalPoint(-620, 540));
+      const planeTopRight = this.project(this.cameraLocalPoint(620, 540));
+      const planeBottomRight = this.project(this.cameraLocalPoint(620, -360));
+      const planeBottomLeft = this.project(this.cameraLocalPoint(-620, -360));
+      this.graphics.fillStyle(0x141924, 0.9);
+      this.graphics.fillPoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
+      this.graphics.lineStyle(2, 0x303846, 0.85);
+      this.graphics.strokePoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
     }
 
-    for (let index = 0; index < 46; index += 1) {
-      if (visualCalm < 0.7 && index % 2 === 1) continue;
-      const point = this.project(
-        this.cameraLocalPoint(-560 + ((index * 173) % 1120), -330 + ((index * 89) % 840))
-      );
-      const radius = 1 + (index % 3);
-      this.graphics.fillStyle(index % 5 === 0 ? 0x465060 : 0x252c38, (0.32 + 0.33 * visualCalm));
-      this.graphics.fillCircle(point.x, point.y, radius);
+    if (this.cameraLab.gridVisible) {
+      for (let index = 0; index < 8; index += 1) {
+        const forward = 500 - index * 120;
+        const from = this.project(this.cameraLocalPoint(-620, forward));
+        const to = this.project(this.cameraLocalPoint(620, forward));
+        this.graphics.lineStyle(1, 0x222a36, 0.2 + 0.18 * visualCalm);
+        this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+      }
+
+      for (let index = 0; index < 46; index += 1) {
+        if (visualCalm < 0.7 && index % 2 === 1) continue;
+        const point = this.project(
+          this.cameraLocalPoint(-560 + ((index * 173) % 1120), -330 + ((index * 89) % 840))
+        );
+        const radius = 1 + (index % 3);
+        this.graphics.fillStyle(index % 5 === 0 ? 0x465060 : 0x252c38, (0.32 + 0.33 * visualCalm));
+        this.graphics.fillCircle(point.x, point.y, radius);
+      }
     }
 
     this.graphics.lineStyle(1, 0x262e3b, 0.8);
@@ -1083,16 +1733,18 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineStyle(2, 0x344052, 0.88);
     this.graphics.strokeRect(worldLeft, worldTop, worldRight - worldLeft, worldBottom - worldTop);
 
-    this.graphics.lineStyle(1, 0x263040, 0.22 + visualCalm * 0.18);
-    for (let x = 0; x <= this.state.width; x += 120) {
-      const from = this.project({ x, y: 0 });
-      const to = this.project({ x, y: this.state.height });
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
-    }
-    for (let y = 80; y <= this.state.height; y += 120) {
-      const from = this.project({ x: 0, y });
-      const to = this.project({ x: this.state.width, y });
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    if (this.cameraLab.gridVisible) {
+      this.graphics.lineStyle(1, 0x263040, 0.22 + visualCalm * 0.18);
+      for (let x = 0; x <= this.state.width; x += 120) {
+        const from = this.project({ x, y: 0 });
+        const to = this.project({ x, y: this.state.height });
+        this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+      }
+      for (let y = 80; y <= this.state.height; y += 120) {
+        const from = this.project({ x: 0, y });
+        const to = this.project({ x: this.state.width, y });
+        this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+      }
     }
 
     this.graphics.lineStyle(2, 0x222b39, 0.52);
@@ -2295,6 +2947,103 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStaticText('loop-trace-stats', 0, 0, '', 1, '#ffffff');
   }
 
+  private drawCameraDebugOverlays(): void {
+    if (!import.meta.env.DEV || !this.debugOverlayVisible) {
+      this.clearCameraDebugOverlayText();
+      return;
+    }
+
+    const focus = this.cameraFocus();
+    const focusScreen = this.project(focus);
+    const roverScreen = this.project(this.state.rover);
+    const axes = this.cameraAxes();
+
+    if (this.cameraLab.overlayCameraFocus) {
+      this.graphics.lineStyle(2, 0xf7f08c, 0.92);
+      this.graphics.strokeCircle(focusScreen.x, focusScreen.y, 12);
+      this.graphics.lineBetween(focusScreen.x - 18, focusScreen.y, focusScreen.x + 18, focusScreen.y);
+      this.graphics.lineBetween(focusScreen.x, focusScreen.y - 18, focusScreen.x, focusScreen.y + 18);
+    }
+
+    if (this.cameraLab.overlayRoverHeading) {
+      const heading = this.project(this.pointFromHeading(this.state.rover, this.state.rover.heading, 120));
+      this.graphics.lineStyle(3, 0x83f5da, 0.88);
+      this.graphics.lineBetween(roverScreen.x, roverScreen.y, heading.x, heading.y);
+      this.graphics.fillStyle(0x83f5da, 0.95);
+      this.graphics.fillCircle(heading.x, heading.y, 5);
+    }
+
+    if (this.cameraLab.overlayCameraForward) {
+      const forward = this.project({ x: focus.x + axes.forward.x * 150, y: focus.y + axes.forward.y * 150 });
+      this.graphics.lineStyle(3, 0x8ab7ff, 0.88);
+      this.graphics.lineBetween(focusScreen.x, focusScreen.y, forward.x, forward.y);
+      this.graphics.fillStyle(0x8ab7ff, 0.95);
+      this.graphics.fillCircle(forward.x, forward.y, 5);
+    }
+
+    if (this.cameraLab.overlayScreenBounds) {
+      const bounds = this.projectedWorldScreenBounds();
+      this.graphics.lineStyle(2, 0xf4b86a, 0.75);
+      this.graphics.strokePoints(bounds, true, true);
+    }
+
+    if (this.cameraLab.overlayReclaimPreview) {
+      const preview = getReclaimPreview(this.state);
+      if (preview) {
+        const target = this.project(preview.target);
+        this.graphics.lineStyle(3, 0xffd2b7, 0.95);
+        this.graphics.strokeCircle(target.x, target.y, 30);
+        this.graphics.lineBetween(target.x - 38, target.y, target.x + 38, target.y);
+        this.graphics.lineBetween(target.x, target.y - 38, target.x, target.y + 38);
+      }
+    }
+
+    if (this.cameraLab.overlayDroneRoute) {
+      const drone = this.state.drone;
+      const target = drone.target ?? getReclaimPreview(this.state)?.target;
+      if (target) {
+        const droneScreen = this.project(drone.status === 'ready' ? this.state.rover : drone);
+        const targetScreen = this.project(target);
+        this.graphics.lineStyle(2, 0xffa06c, 0.82);
+        this.graphics.lineBetween(droneScreen.x, droneScreen.y, targetScreen.x, targetScreen.y);
+      }
+      if (drone.status === 'returning') {
+        const droneScreen = this.project(drone);
+        this.graphics.lineStyle(2, 0x78f7df, 0.82);
+        this.graphics.lineBetween(droneScreen.x, droneScreen.y, roverScreen.x, roverScreen.y);
+      }
+    }
+
+    if (this.cameraLab.overlayFieldAgeValue) {
+      this.state.fields.forEach((field, index) => {
+        if (index % 3 !== 0 && field.age < this.state.tuning.preparedFieldMinAgeSeconds * 2) return;
+        const screen = this.project(field);
+        const alpha = clamp(field.age / 120, 0.22, 0.9);
+        const color = field.value > 0.75 ? 0xffd35a : field.age > 75 ? 0x8dffea : 0x6f8094;
+        this.graphics.lineStyle(1, color, alpha);
+        this.graphics.strokeCircle(screen.x, screen.y, 7 + field.value * 8);
+      });
+    }
+
+    if (this.cameraLab.overlayProjectionLabel) {
+      const layout = this.getLayout();
+      this.drawStaticText(
+        'camera-projection-label',
+        18,
+        layout.hudHeight + 18,
+        `CAM ${this.getCameraPreset(this.cameraLab.preset).label} / ${this.getProjectionModeLabel()} / ${this.getCameraZoom().toFixed(2)}x`,
+        11,
+        '#b9c7d8'
+      );
+    } else {
+      this.drawStaticText('camera-projection-label', 0, 0, '', 1, '#ffffff');
+    }
+  }
+
+  private clearCameraDebugOverlayText(): void {
+    this.drawStaticText('camera-projection-label', 0, 0, '', 1, '#ffffff');
+  }
+
   private getDroneActionLabel(): string {
     if (this.state.drone.status === 'ready') return 'Launch Drone';
     if (this.state.drone.status === 'returning') return 'Returning';
@@ -2412,6 +3161,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       getReclaimPreview: () => getReclaimPreview(this.state),
       getArenaId: () => this.state.arenaId,
       setArena: (arenaId) => this.setArena(arenaId),
+      getCameraLab: () => this.getCameraLabSnapshot(),
+      setCameraPreset: (presetId) => this.applyCameraPreset(presetId),
+      setViewMode: (viewMode) => this.setCameraViewMode(viewMode),
       startSelfPlay: (routeId = 'firstLoop') => this.startSelfPlay(routeId),
       stopSelfPlay: () => this.stopSelfPlay(),
       getSelfPlayStatus: () => this.getSelfPlayStatus()
@@ -2450,6 +3202,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return {
       mode: layout.mode,
       viewMode: this.viewMode,
+      cameraLab: this.getCameraLabSnapshot(),
       hudHeight: layout.hudHeight,
       debugOverlayVisible: this.debugOverlayVisible,
       vitals: layout.vitals.map((rect) => ({ ...rect })),
@@ -2459,6 +3212,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       eventFeed: { x: layout.message.x, y: layout.message.y - layout.message.height / 2, width: layout.message.width, height: layout.message.height },
       textBounds: this.getUiTextBounds(),
       droneCue: this.getDroneCueSnapshot()
+    };
+  }
+
+  private getCameraLabSnapshot(): CameraLabSnapshot {
+    return {
+      preset: this.cameraLab.preset,
+      presetLabel: this.getCameraPreset(this.cameraLab.preset).label,
+      viewMode: this.viewMode,
+      projectionMode: this.getProjectionModeLabel(),
+      settings: { ...this.cameraLab },
+      focus: this.cameraFocus(),
+      center: this.getCameraCenter(),
+      zoom: this.getCameraZoom(),
+      heading: this.cameraHeading
     };
   }
 
@@ -2560,12 +3327,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private project(point: Vec2): Vec2 {
-    const layout = this.getLayout();
+    const center = this.getCameraCenter();
+    const zoom = this.getCameraZoom();
     const camera = this.cameraFocus();
-    if (this.viewMode === 'tactical') {
+    if (this.usesTacticalProjection()) {
+      const offset = { x: point.x - camera.x, y: point.y - camera.y };
+      const yScale = this.tacticalPerspectiveEnabled() ? this.cameraLab.projectedYScale : 1;
+      const shear = this.tacticalPerspectiveEnabled() ? this.cameraLab.projectionShear : 0;
       return {
-        x: layout.cameraCenterX + (point.x - camera.x) * layout.cameraZoom,
-        y: layout.cameraCenterY + (point.y - camera.y) * layout.cameraZoom
+        x: center.x + (offset.x + offset.y * shear) * zoom,
+        y: center.y + offset.y * yScale * zoom
       };
     }
 
@@ -2574,24 +3345,28 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const lateral = offset.x * axes.right.x + offset.y * axes.right.y;
     const forward = offset.x * axes.forward.x + offset.y * axes.forward.y;
     return {
-      x: layout.cameraCenterX + (lateral + forward * PROJECTED_SHEAR) * layout.cameraZoom,
-      y: layout.cameraCenterY - forward * PROJECTED_Y_SCALE * layout.cameraZoom
+      x: center.x + (lateral + forward * this.cameraLab.projectionShear) * zoom,
+      y: center.y - forward * this.cameraLab.projectedYScale * zoom
     };
   }
 
   private unproject(point: Vec2): Vec2 {
-    const layout = this.getLayout();
+    const center = this.getCameraCenter();
+    const zoom = this.getCameraZoom();
     const camera = this.cameraFocus();
-    if (this.viewMode === 'tactical') {
+    if (this.usesTacticalProjection()) {
+      const yScale = this.tacticalPerspectiveEnabled() ? this.cameraLab.projectedYScale : 1;
+      const shear = this.tacticalPerspectiveEnabled() ? this.cameraLab.projectionShear : 0;
+      const dy = (point.y - center.y) / (yScale * zoom);
       return {
-        x: camera.x + (point.x - layout.cameraCenterX) / layout.cameraZoom,
-        y: camera.y + (point.y - layout.cameraCenterY) / layout.cameraZoom
+        x: camera.x + (point.x - center.x) / zoom - dy * shear,
+        y: camera.y + dy
       };
     }
 
     const axes = this.cameraAxes();
-    const forward = (layout.cameraCenterY - point.y) / (PROJECTED_Y_SCALE * layout.cameraZoom);
-    const lateral = (point.x - layout.cameraCenterX) / layout.cameraZoom - forward * PROJECTED_SHEAR;
+    const forward = (center.y - point.y) / (this.cameraLab.projectedYScale * zoom);
+    const lateral = (point.x - center.x) / zoom - forward * this.cameraLab.projectionShear;
     return {
       x: camera.x + axes.right.x * lateral + axes.forward.x * forward,
       y: camera.y + axes.right.y * lateral + axes.forward.y * forward
@@ -2599,24 +3374,31 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private projectedScale(point: Vec2): number {
-    if (this.viewMode === 'tactical') return this.getLayout().cameraZoom;
-
+    const zoom = this.getCameraZoom();
+    if (this.usesTacticalProjection() && !this.tacticalPerspectiveEnabled()) return zoom;
     const layout = this.getLayout();
     const screen = this.project(point);
-    return 0.78 + clamp((screen.y - layout.hudHeight) / (layout.height - layout.hudHeight), 0, 1) * 0.28;
+    const normalizedDepth = clamp((screen.y - layout.hudHeight) / (layout.height - layout.hudHeight), 0, 1);
+    const perspective = 1 - this.cameraLab.projectedScaleStrength * 0.5 + normalizedDepth * this.cameraLab.projectedScaleStrength;
+    return zoom * clamp(perspective, 0.45, 1.8);
   }
 
   private shapeYScale(): number {
-    return this.viewMode === 'tactical' ? 1 : PROJECTED_Y_SCALE;
+    return this.usesTacticalProjection() && !this.tacticalPerspectiveEnabled() ? 1 : this.cameraLab.projectedYScale;
   }
 
   private cameraFocus(): Vec2 {
-    const layout = this.getLayout();
     if (this.viewMode === 'tactical') return this.tacticalCameraFocus;
 
+    const chaseFocus = {
+      x: this.state.rover.x + Math.cos(this.cameraHeading) * this.cameraLab.lookAheadDistance,
+      y: this.state.rover.y + Math.sin(this.cameraHeading) * this.cameraLab.lookAheadDistance
+    };
+    const pullback = this.getHybridPullbackAmount() * this.cameraLab.tacticalPullbackStrength;
+    const blend = clamp(this.cameraLab.followBlend + pullback, 0, 1);
     return {
-      x: this.state.rover.x + Math.cos(this.cameraHeading) * layout.cameraLookAhead,
-      y: this.state.rover.y + Math.sin(this.cameraHeading) * layout.cameraLookAhead
+      x: Phaser.Math.Linear(chaseFocus.x, this.tacticalCameraFocus.x, blend),
+      y: Phaser.Math.Linear(chaseFocus.y, this.tacticalCameraFocus.y, blend)
     };
   }
 
@@ -2633,8 +3415,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const layout = this.getLayout();
     const playTop = layout.hudHeight;
     const playBottom = layout.controlBandTop ?? layout.height;
-    const halfWidth = layout.width / (2 * layout.cameraZoom);
-    const halfHeight = (playBottom - playTop) / (2 * layout.cameraZoom);
+    const zoom = Math.max(this.getCameraZoom('tactical'), 0.1);
+    const halfWidth = layout.width / (2 * zoom);
+    const halfHeight = (playBottom - playTop) / (2 * zoom);
     const minX = halfWidth - 60;
     const maxX = this.state.width - halfWidth + 60;
     const minY = halfHeight - 20;
@@ -2643,6 +3426,95 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       x: minX <= maxX ? clamp(target.x, minX, maxX) : this.state.width / 2,
       y: minY <= maxY ? clamp(target.y, minY, maxY) : this.state.height / 2
     };
+  }
+
+  private getCameraCenter(): Vec2 {
+    const layout = this.getLayout();
+    const mobileCenterY =
+      this.viewMode === 'tactical'
+        ? Math.floor(layout.hudHeight + ((layout.controlBandTop ?? layout.height) - layout.hudHeight) * 0.48)
+        : MOBILE_CAMERA_CENTER_Y;
+    const desktopCenterY =
+      this.viewMode === 'tactical'
+        ? Math.floor(DESKTOP_HUD_HEIGHT + (layout.height - DESKTOP_HUD_HEIGHT) * 0.52)
+        : DESKTOP_CAMERA_CENTER_Y;
+    const baseCenterY = layout.mode === 'mobilePortrait' ? mobileCenterY : desktopCenterY;
+    const bias = this.viewMode === 'tactical' ? 0 : this.cameraLab.roverScreenBias;
+
+    return {
+      x: layout.width / 2 + this.cameraLab.cameraCenterX,
+      y: baseCenterY + this.cameraLab.cameraCenterY + bias
+    };
+  }
+
+  private getCameraZoom(forceMode?: ViewMode): number {
+    const mode = forceMode ?? this.viewMode;
+    const layout = this.getLayout();
+    const mobileMultiplier = layout.mode === 'mobilePortrait' ? 1.12 : 1;
+    if (mode === 'tactical') return this.cameraLab.tacticalZoom * mobileMultiplier;
+
+    const pullback = mode === 'hybrid' ? this.getHybridPullbackAmount() * this.cameraLab.tacticalPullbackStrength : 0;
+    const pulledZoom = Math.min(this.cameraLab.cameraZoom, this.cameraLab.tacticalZoom);
+    return Phaser.Math.Linear(this.cameraLab.cameraZoom, pulledZoom, clamp(pullback, 0, 1)) * mobileMultiplier;
+  }
+
+  private usesTacticalProjection(): boolean {
+    return this.viewMode === 'tactical';
+  }
+
+  private tacticalPerspectiveEnabled(): boolean {
+    return (
+      this.viewMode === 'tactical' &&
+      (this.cameraLab.preset === 'threeQuarterTactical' ||
+        Math.abs(this.cameraLab.projectedYScale - 1) > 0.001 ||
+        Math.abs(this.cameraLab.projectionShear) > 0.001)
+    );
+  }
+
+  private getHybridPullbackAmount(): number {
+    if (this.viewMode !== 'hybrid') return 0;
+
+    const active =
+      (this.cameraLab.zoomOutLowNanobots && this.state.nanobots / this.state.maxNanobots < DRONE_URGENCY_RATIO) ||
+      (this.cameraLab.zoomOutDroneReadyWithPreview && this.state.drone.status === 'ready' && Boolean(getReclaimPreview(this.state))) ||
+      (this.cameraLab.zoomOutDroneActive && this.state.drone.status !== 'ready') ||
+      (this.cameraLab.zoomOutDuringCrawl && this.state.speedState === 'crawl');
+
+    if (active) {
+      this.hybridPullbackUntilMs = Math.max(
+        this.hybridPullbackUntilMs,
+        this.time.now + this.cameraLab.returnToNormalDelay * 1000
+      );
+    }
+
+    return this.time.now <= this.hybridPullbackUntilMs ? 1 : 0;
+  }
+
+  private cameraHeadingTarget(): number {
+    const routeTarget = this.pointerTarget ?? this.getSelfPlayTarget() ?? this.tacticalCameraFocus;
+    const routeHeading = Math.atan2(routeTarget.y - this.state.rover.y, routeTarget.x - this.state.rover.x);
+    const maxRotation = (this.cameraLab.maxCameraRotation * Math.PI) / 180;
+    const desiredOffset = clamp(
+      angleDifference(routeHeading, this.state.rover.heading) * this.cameraLab.rotationBlendAmount,
+      -maxRotation,
+      maxRotation
+    );
+    return wrapAngle(this.state.rover.heading + desiredOffset);
+  }
+
+  private getProjectionModeLabel(): string {
+    if (this.viewMode === 'hybrid') return this.getHybridPullbackAmount() > 0 ? 'hybrid pullback' : 'hybrid chase';
+    if (this.viewMode === 'chase') return 'chase perspective';
+    return this.tacticalPerspectiveEnabled() ? '3/4 tactical' : 'tactical map';
+  }
+
+  private projectedWorldScreenBounds(): Vec2[] {
+    return [
+      this.project({ x: 0, y: 0 }),
+      this.project({ x: this.state.width, y: 0 }),
+      this.project({ x: this.state.width, y: this.state.height }),
+      this.project({ x: 0, y: this.state.height })
+    ];
   }
 
   private cameraAxes(): { forward: Vec2; right: Vec2 } {
