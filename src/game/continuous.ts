@@ -10,6 +10,8 @@ export type ContinuousPhase = 'playing' | 'won' | 'lost';
 export type SpeedState = 'prepared' | 'fabricating' | 'crawl';
 export type DroneStatus = 'ready' | 'outbound' | 'reclaiming' | 'returning';
 
+export const DRONE_RECLAIM_SECONDS = 0.42;
+
 export interface Vec2 {
   x: number;
   y: number;
@@ -138,7 +140,11 @@ const PREPARED_MAGNET_CENTER_PULL = 0.92;
 const PREPARED_MAGNET_PASSIVE_TURN_RATE = 2.25;
 const PREPARED_MAGNET_ACTIVE_TURN_RATE = 0.45;
 const PREPARED_MAGNET_CORRECTION_RANGE = 0.7;
-const STATIONARY_MINING_FLOW_MULTIPLIER = 0.55;
+const STATIONARY_MINING_FLOW_MULTIPLIER = 1;
+const DRONE_PAYLOAD_SCORE_MULTIPLIER = 6;
+const DRONE_AGE_SCORE_MULTIPLIER = 0.6;
+const DRONE_TRAVEL_SCORE_MULTIPLIER = 1.8;
+const DRONE_CLUSTER_SPREAD_SCORE_DIVISOR = 100;
 
 export const DEFAULT_CONTINUOUS_TUNING: ContinuousTuning = {
   startingNanobots: 6,
@@ -204,7 +210,7 @@ export function createContinuousWorld(
     elapsedSeconds: 0,
     phase: 'playing',
     speedState: 'fabricating',
-    arms: allocateArms('fabricating', false),
+    arms: allocateArms('fabricating', false, false),
     lastYieldRate: 0,
     message: fields.length > 0 ? 'Prepared field online. Keep the machine supplied before sunset.' : 'Raw field start. Drive to lay your first line, then reclaim it.',
     nextFieldId,
@@ -213,7 +219,7 @@ export function createContinuousWorld(
   };
 
   state.speedState = resolveSpeedState(state);
-  state.arms = allocateArms(state.speedState, Boolean(findFertileZoneAt(state, state.rover)));
+  state.arms = allocateArms(state.speedState, Boolean(findFertileZoneAt(state, state.rover)), false);
   return state;
 }
 
@@ -277,7 +283,7 @@ export function getReclaimPreview(state: ContinuousWorldState): ReclaimPreview |
     targetPatchId: target.id,
     payload,
     fieldCount: cluster.length,
-    etaSeconds: distance(state.rover, target) / state.tuning.droneSpeed
+    etaSeconds: estimateReclaimRefillEta(state, target)
   };
 }
 
@@ -343,7 +349,7 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
   const movedDistance = steerAndMoveRover(state, input, deltaSeconds);
   runFieldSystem(state, driveIntent, movedDistance, deltaSeconds);
   const fertileZone = findFertileZoneAt(state, state.rover);
-  state.arms = allocateArms(state.speedState, Boolean(fertileZone));
+  state.arms = allocateArms(state.speedState, Boolean(fertileZone), driveIntent);
   runMiningSystem(state, fertileZone, driveIntent, deltaSeconds);
   advanceDrone(state, deltaSeconds);
   preserveFieldPatches(state);
@@ -444,16 +450,15 @@ function runMiningSystem(
   deltaSeconds: number
 ): void {
   state.lastYieldRate = 0;
+  if (state.speedState === 'crawl') return;
   if (!fertileZone || state.arms.mining <= 0) return;
 
-  const preparedMultiplier = state.speedState === 'prepared' ? 1.08 : state.speedState === 'fabricating' ? 1 : 0.12;
-  const speedMultiplier = state.speedState === 'crawl' ? 0.35 : 1;
+  const preparedMultiplier = state.speedState === 'prepared' ? 1.08 : 1;
   const yieldRate =
     fertileZone.richness *
     state.arms.mining *
     state.tuning.mineRate *
     preparedMultiplier *
-    speedMultiplier *
     getFertileZoneMiningFlowMultiplier(state, fertileZone);
   const mined = Math.min(fertileZone.remaining, yieldRate * deltaSeconds);
 
@@ -486,10 +491,10 @@ function advanceDrone(state: ContinuousWorldState, deltaSeconds: number): void {
 
   if (state.drone.status === 'outbound' && state.drone.target) {
     moveDroneToward(state, state.drone.target, deltaSeconds);
-    state.drone.etaSeconds = distance(state.drone, state.drone.target) / state.tuning.droneSpeed;
+    state.drone.etaSeconds = estimateActiveDroneRefillEta(state);
     if (distance(state.drone, state.drone.target) <= 8) {
       state.drone.status = 'reclaiming';
-      state.drone.reclaimSeconds = 0.42;
+      state.drone.reclaimSeconds = DRONE_RECLAIM_SECONDS;
       state.drone.etaSeconds = state.drone.reclaimSeconds + distance(state.drone, state.rover) / state.tuning.droneSpeed;
     }
     return;
@@ -677,7 +682,27 @@ function getPreparedFieldTangent(fields: FieldPatch[], index: number): Vec2 | un
   };
 }
 
-function allocateArms(speedState: SpeedState, inFertileZone: boolean): ArmAllocation {
+function allocateArms(speedState: SpeedState, inFertileZone: boolean, driveIntent: boolean): ArmAllocation {
+  if (speedState === 'crawl') {
+    return {
+      total: TOTAL_ARMS,
+      building: 1,
+      mining: 0,
+      stabilizing: 1,
+      emergency: 6
+    };
+  }
+
+  if (!driveIntent) {
+    return {
+      total: TOTAL_ARMS,
+      building: 0,
+      mining: inFertileZone ? 7 : 0,
+      stabilizing: inFertileZone ? 1 : TOTAL_ARMS,
+      emergency: 0
+    };
+  }
+
   if (speedState === 'prepared') {
     return {
       total: TOTAL_ARMS,
@@ -688,22 +713,12 @@ function allocateArms(speedState: SpeedState, inFertileZone: boolean): ArmAlloca
     };
   }
 
-  if (speedState === 'fabricating') {
-    return {
-      total: TOTAL_ARMS,
-      building: inFertileZone ? 3 : 4,
-      mining: inFertileZone ? 3 : 1,
-      stabilizing: inFertileZone ? 2 : 3,
-      emergency: 0
-    };
-  }
-
   return {
     total: TOTAL_ARMS,
-    building: 1,
-    mining: 0,
-    stabilizing: 1,
-    emergency: 6
+    building: inFertileZone ? 3 : 4,
+    mining: inFertileZone ? 3 : 1,
+    stabilizing: inFertileZone ? 2 : 3,
+    emergency: 0
   };
 }
 
@@ -721,9 +736,40 @@ function applyContinuousWinLoss(state: ContinuousWorldState): void {
 }
 
 function selectDroneTarget(state: ContinuousWorldState): FieldPatch | undefined {
-  return [...state.fields]
-    .filter((field) => isSelectableReclaimTarget(state, field))
-    .sort((a, b) => droneTargetScore(b, state.rover) - droneTargetScore(a, state.rover))[0];
+  const candidates: Array<{
+    field: FieldPatch;
+    score: number;
+    payload: number;
+    distance: number;
+  }> = [];
+
+  for (const field of state.fields) {
+    if (!isSelectableReclaimTarget(state, field)) continue;
+
+    const cluster = getReclaimCluster(state, field);
+    const payload = getClusterPayload(cluster);
+    if (payload <= 0) continue;
+
+    candidates.push({
+      field,
+      score: droneTargetScore(state, field, cluster, payload),
+      payload,
+      distance: distance(field, state.rover)
+    });
+  }
+
+  return candidates.sort((a, b) => {
+    const scoreDelta = b.score - a.score;
+    if (Math.abs(scoreDelta) > 0.000001) return scoreDelta;
+
+    const distanceDelta = a.distance - b.distance;
+    if (Math.abs(distanceDelta) > 0.000001) return distanceDelta;
+
+    const payloadDelta = b.payload - a.payload;
+    if (Math.abs(payloadDelta) > 0.000001) return payloadDelta;
+
+    return a.field.id - b.field.id;
+  })[0]?.field;
 }
 
 function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatch): boolean {
@@ -743,8 +789,48 @@ function isInReclaimCluster(state: ContinuousWorldState, field: FieldPatch, targ
   return field.value >= RECLAIM_MIN_FIELD_VALUE && distance(field, target) <= state.tuning.dronePickupRadius;
 }
 
-function droneTargetScore(field: FieldPatch, rover: Vec2): number {
-  return field.age * 2.2 + field.value * 4 + distance(field, rover) / 160;
+function droneTargetScore(
+  state: ContinuousWorldState,
+  target: FieldPatch,
+  cluster: FieldPatch[],
+  payload: number
+): number {
+  const ageBonus =
+    clamp(getClusterWeightedAge(cluster, payload) - RECLAIM_MIN_FIELD_AGE_SECONDS, 0, 18) *
+    DRONE_AGE_SCORE_MULTIPLIER;
+  const travelCost = estimateReclaimRefillEta(state, target) * DRONE_TRAVEL_SCORE_MULTIPLIER;
+  const awkwardnessPenalty = getClusterAverageDistanceFromTarget(cluster, target, payload) / DRONE_CLUSTER_SPREAD_SCORE_DIVISOR;
+
+  return payload * DRONE_PAYLOAD_SCORE_MULTIPLIER + ageBonus - travelCost - awkwardnessPenalty;
+}
+
+function getClusterPayload(cluster: FieldPatch[]): number {
+  return cluster.reduce((total, field) => total + field.value, 0);
+}
+
+function getClusterWeightedAge(cluster: FieldPatch[], payload: number): number {
+  if (payload <= 0) return 0;
+  return cluster.reduce((total, field) => total + field.age * field.value, 0) / payload;
+}
+
+function getClusterAverageDistanceFromTarget(cluster: FieldPatch[], target: Vec2, payload: number): number {
+  if (payload <= 0) return 0;
+  return cluster.reduce((total, field) => total + distance(field, target) * field.value, 0) / payload;
+}
+
+function estimateReclaimRefillEta(state: ContinuousWorldState, target: Vec2): number {
+  const targetDistance = distance(state.rover, target);
+  return (targetDistance * 2) / state.tuning.droneSpeed + DRONE_RECLAIM_SECONDS;
+}
+
+function estimateActiveDroneRefillEta(state: ContinuousWorldState): number {
+  if (!state.drone.target) return 0;
+
+  return (
+    distance(state.drone, state.drone.target) / state.tuning.droneSpeed +
+    DRONE_RECLAIM_SECONDS +
+    distance(state.drone.target, state.rover) / state.tuning.droneSpeed
+  );
 }
 
 function isPointInFertileZone(zone: FertileZone, point: Vec2): boolean {
@@ -757,6 +843,7 @@ function isPointInFertileZone(zone: FertileZone, point: Vec2): boolean {
 
 function getFertileZoneMiningFlowMultiplier(state: ContinuousWorldState, zone: FertileZone): number {
   if (!zone.vein) return 1;
+  if (state.rover.speed < 1) return STATIONARY_MINING_FLOW_MULTIPLIER;
 
   const veinDx = zone.vein.to.x - zone.vein.from.x;
   const veinDy = zone.vein.to.y - zone.vein.from.y;
@@ -769,10 +856,7 @@ function getFertileZoneMiningFlowMultiplier(state: ContinuousWorldState, zone: F
   };
   const alignment = Math.abs((heading.x * veinDx + heading.y * veinDy) / veinLength);
   const alignmentMultiplier = 0.18 + alignment * alignment * 1.34;
-  const speedMultiplier =
-    state.rover.speed < 1
-      ? STATIONARY_MINING_FLOW_MULTIPLIER
-      : clamp(state.rover.speed / state.tuning.fabricatingSpeed, 0.35, 1.45);
+  const speedMultiplier = clamp(state.rover.speed / state.tuning.fabricatingSpeed, 0.35, 1.45);
   return alignmentMultiplier * speedMultiplier;
 }
 

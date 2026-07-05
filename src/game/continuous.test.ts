@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createContinuousWorld,
+  DRONE_RECLAIM_SECONDS,
   getReclaimPreview,
   launchReclaimDrone,
   tickContinuousWorld,
@@ -150,6 +151,8 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.fields.length).toBe(fieldCount);
     expect(next.rover.ore).toBeGreaterThan(start.ore);
     expect(next.lastYieldRate).toBeGreaterThan(0);
+    expect(next.arms.building).toBe(0);
+    expect(next.arms.mining).toBeGreaterThanOrEqual(7);
     expect(next.message).toBe('Mining arms harvesting while parked on prepared field.');
   });
 
@@ -170,7 +173,25 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.nanobots).toBe(4);
     expect(next.rover.ore).toBeGreaterThan(start.ore);
     expect(next.lastYieldRate).toBeGreaterThan(0);
+    expect(next.arms.building).toBe(0);
+    expect(next.arms.mining).toBeGreaterThanOrEqual(7);
     expect(next.message).toBe('Mining arms extracting from the seam while parked.');
+  });
+
+  it('shuts mining down during emergency crawl even on a fertile seam', () => {
+    const world = placeRoverAtVeinStart(createContinuousWorld(), 0);
+    world.fields = [];
+    world.nextFieldId = 1;
+    world.nanobots = 0;
+    const start = { ...world.rover };
+
+    const next = tickContinuousWorld(world, idleInput, 0.8);
+
+    expect(next.speedState).toBe('crawl');
+    expect(next.rover.ore).toBe(start.ore);
+    expect(next.lastYieldRate).toBe(0);
+    expect(next.arms.mining).toBe(0);
+    expect(next.arms.emergency).toBeGreaterThan(0);
   });
 
   it('rewards fast aligned vein passes more than slow crosswise loitering', () => {
@@ -356,7 +377,9 @@ describe('continuous Moon Miner spike rules', () => {
     expect(preview?.targetPatchId).toBe(launched.drone.targetPatchId);
     expect(preview?.fieldCount).toBe(2);
     expect(preview?.payload).toBeCloseTo(9);
-    expect(preview?.etaSeconds).toBeCloseTo(distance(world.rover, launched.drone.target ?? world.rover) / world.tuning.droneSpeed);
+    expect(preview?.etaSeconds).toBeCloseTo(
+      (distance(world.rover, launched.drone.target ?? world.rover) * 2) / world.tuning.droneSpeed + DRONE_RECLAIM_SECONDS
+    );
   });
 
   it('does not preview nearby, fresh, or low-value field as reclaimable', () => {
@@ -369,6 +392,17 @@ describe('continuous Moon Miner spike rules', () => {
     world.nextFieldId = 4;
 
     expect(getReclaimPreview(world)).toBeUndefined();
+  });
+
+  it('prefers a nearer equally valuable old reclaim target over a distant one', () => {
+    const world = createContinuousWorld();
+    world.fields = [
+      { id: 1, x: world.rover.x - 150, y: world.rover.y, radius: 44, value: 3, age: 6 },
+      { id: 2, x: world.rover.x + 420, y: world.rover.y, radius: 44, value: 3, age: 6 }
+    ];
+    world.nextFieldId = 3;
+
+    expect(getReclaimPreview(world)?.targetPatchId).toBe(1);
   });
 
   it('reclaims only the selected old field cluster and leaves distant field in place', () => {

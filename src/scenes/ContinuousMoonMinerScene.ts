@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import {
   createContinuousWorld,
   DEFAULT_CONTINUOUS_TUNING,
+  DRONE_RECLAIM_SECONDS,
   findFertileZoneAt,
   getPreparedCoverage,
   getReclaimPreview,
@@ -54,7 +55,6 @@ const PROJECTED_Y_SCALE = 0.78;
 const PROJECTED_SHEAR = -0.1;
 const CAMERA_TURN_RESPONSE = 1.75;
 const TACTICAL_CAMERA_RESPONSE = 1.4;
-const DRONE_RECLAIM_SECONDS = 0.42;
 const LOW_NANOBOT_RATIO = 0.18;
 const DRONE_URGENCY_RATIO = 0.32;
 const DELIVERY_READOUT_MS = 1260;
@@ -1499,7 +1499,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       'drone-preview-detail',
       labelPoint.x,
       labelPoint.y + 15,
-      `+${preview.payload.toFixed(1)} in ${preview.etaSeconds.toFixed(1)}s`,
+      `+${preview.payload.toFixed(1)} refill ${preview.etaSeconds.toFixed(1)}s`,
       10,
       '#ffeddf'
     );
@@ -1548,9 +1548,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineBetween(droneScreen.x, droneScreen.y, targetScreen.x, targetScreen.y);
 
     const label = reclaiming ? 'RECLAIMING' : 'RESERVED FIELD';
+    const outboundSeconds = Math.hypot(this.state.drone.x - target.x, this.state.drone.y - target.y) / this.state.tuning.droneSpeed;
     const detail = reclaiming
       ? `${Math.ceil(this.state.drone.reclaimSeconds * 10) / 10}s lock`
-      : `${this.state.drone.etaSeconds.toFixed(1)}s outbound`;
+      : `${outboundSeconds.toFixed(1)}s outbound`;
     const labelPoint = this.clampScreenPoint({ x: targetScreen.x + radius + 22, y: targetScreen.y - radius - 10 }, 128, 28);
     this.drawStaticText('drone-target-readout', labelPoint.x, labelPoint.y, label, 12, '#ffd2b7');
     this.drawStaticText('drone-target-detail', labelPoint.x, labelPoint.y + 16, detail, 10, '#ffeddf');
@@ -2317,7 +2318,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.state.drone.status === 'returning') {
       return `+${this.state.drone.payload.toFixed(1)} in ${this.state.drone.etaSeconds.toFixed(1)}s`;
     }
-    return `${this.state.drone.etaSeconds.toFixed(1)}s to field`;
+    return `${this.state.drone.etaSeconds.toFixed(1)}s to refill`;
   }
 
   private drawBar(x: number, y: number, width: number, height: number, progress: number, color: number): void {
