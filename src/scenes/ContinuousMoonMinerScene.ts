@@ -2,8 +2,8 @@ import Phaser from 'phaser';
 import {
   createContinuousWorld,
   DEFAULT_CONTINUOUS_TUNING,
-  DRONE_RECLAIM_SECONDS,
   findFertileZoneAt,
+  getDroneReclaimDiagnostics,
   getPreparedCoverage,
   getReclaimPreview,
   launchReclaimDrone,
@@ -13,6 +13,7 @@ import {
   type ContinuousPhase,
   type ContinuousTuning,
   type ContinuousWorldState,
+  type DroneReclaimDiagnostics,
   type DroneStatus,
   type FertileZone,
   type ReclaimPreview,
@@ -61,6 +62,7 @@ const DELIVERY_READOUT_MS = 1260;
 const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v4';
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
+const DRONE_RAIL_LAB_STORAGE_KEY = 'moon-miner-drone-rail-lab-v1';
 
 type ButtonId = 'launch' | 'reset';
 type EffectKind = 'launch' | 'delivery' | 'recovery' | 'sprint' | 'build' | 'crawl' | 'mine' | 'win' | 'loss' | 'blocked';
@@ -69,6 +71,12 @@ type LayoutMode = 'desktop' | 'mobilePortrait';
 type ViewMode = 'tactical' | 'chase' | 'hybrid';
 type TuningKey = keyof ContinuousTuning;
 type CameraPresetId = 'tacticalMap' | 'threeQuarterTactical' | 'softChase' | 'roverChase' | 'hybridAuto';
+type NumericTuningKey = {
+  [Key in keyof ContinuousTuning]: ContinuousTuning[Key] extends number ? Key : never;
+}[keyof ContinuousTuning];
+type BooleanTuningKey = {
+  [Key in keyof ContinuousTuning]: ContinuousTuning[Key] extends boolean ? Key : never;
+}[keyof ContinuousTuning];
 type NumericCameraControlKey = {
   [Key in keyof CameraLabSettings]: CameraLabSettings[Key] extends number ? Key : never;
 }[keyof CameraLabSettings];
@@ -133,6 +141,41 @@ interface CameraToggleDefinition {
   label: string;
 }
 
+interface TuningNumericControlDefinition {
+  key: NumericTuningKey;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  precision?: number;
+}
+
+interface TuningBooleanControlDefinition {
+  key: BooleanTuningKey;
+  label: string;
+}
+
+interface DroneRailLabSettings {
+  overlayReclaimEligibility: boolean;
+  overlayFieldAge: boolean;
+  overlayFieldValue: boolean;
+  overlaySelectedDroneTarget: boolean;
+  overlayRejectedReclaimCandidates: boolean;
+  overlayDroneRoute: boolean;
+  overlayRefillEtaLabels: boolean;
+  overlayPreparedCoverage: boolean;
+  overlayPreparedMagnetInfluence: boolean;
+  overlayFieldEmissionPoints: boolean;
+  overlayCrawlEmissionPoints: boolean;
+}
+
+type DroneRailOverlayKey = keyof DroneRailLabSettings;
+
+interface DroneRailOverlayDefinition {
+  key: DroneRailOverlayKey;
+  label: string;
+}
+
 interface SceneRect {
   x: number;
   y: number;
@@ -160,7 +203,7 @@ interface SceneLayout {
 }
 
 interface TuningControlDefinition {
-  key: TuningKey;
+  key: NumericTuningKey;
   label: string;
   min: number;
   max: number;
@@ -180,6 +223,105 @@ const TUNING_CONTROLS: TuningControlDefinition[] = [
   { key: 'startingNanobots', label: 'Start stock', min: 3, max: 16, step: 1 },
   { key: 'startingSolarSeconds', label: 'Sun window', min: 90, max: 220, step: 5 },
   { key: 'preparedFieldMinAgeSeconds', label: 'Prep delay', min: 0.2, max: 1.4, step: 0.05, precision: 2 }
+];
+
+const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericControlDefinition[] }> = [
+  {
+    label: 'Launch Gating',
+    controls: [
+      { key: 'reclaimMinFieldAgeSeconds', label: 'Reclaim min age', min: 0, max: 8, step: 0.05, precision: 2 },
+      { key: 'reclaimMinFieldValue', label: 'Reclaim min value', min: 0, max: 0.4, step: 0.005, precision: 3 },
+      { key: 'reclaimMinDistanceFromRover', label: 'Min distance', min: 0, max: 220, step: 1 },
+      { key: 'dronePickupRadius', label: 'Pickup radius', min: 40, max: 260, step: 2 },
+      { key: 'droneSpeed', label: 'Drone speed', min: 180, max: 760, step: 10 },
+      { key: 'reclaimLockSeconds', label: 'Reclaim lock', min: 0.05, max: 2.5, step: 0.01, precision: 2 },
+      { key: 'minReclaimClusterPayload', label: 'Min payload', min: 0, max: 1.2, step: 0.01, precision: 2 },
+      { key: 'minReclaimCandidateCount', label: 'Min candidates', min: 1, max: 6, step: 1 }
+    ]
+  },
+  {
+    label: 'Target Scoring',
+    controls: [
+      { key: 'dronePayloadScoreMultiplier', label: 'Payload score', min: 0, max: 16, step: 0.1, precision: 1 },
+      { key: 'droneAgeScoreMultiplier', label: 'Age score', min: 0, max: 4, step: 0.05, precision: 2 },
+      { key: 'droneTravelScoreMultiplier', label: 'Travel cost', min: 0, max: 8, step: 0.1, precision: 1 },
+      { key: 'droneClusterSpreadScoreDivisor', label: 'Spread divisor', min: 20, max: 260, step: 5 }
+    ]
+  },
+  {
+    label: 'Rail / Field',
+    controls: [
+      { key: 'fieldRadius', label: 'Field radius', min: 18, max: 82, step: 1 },
+      { key: 'fieldEmitDistance', label: 'Normal emit dist', min: 8, max: 80, step: 1 },
+      { key: 'crawlFieldEmitDistance', label: 'Crawl emit dist', min: 4, max: 48, step: 1 },
+      { key: 'normalFieldPatchMinValue', label: 'Normal min value', min: 0.01, max: 0.5, step: 0.005, precision: 3 },
+      { key: 'crawlFieldPatchMinValue', label: 'Crawl min value', min: 0.005, max: 0.16, step: 0.005, precision: 3 },
+      { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 0.2, max: 5, step: 0.05, precision: 2 },
+      { key: 'fieldValueMultiplierFromSpentStock', label: 'Spent stock value', min: 0.2, max: 2.4, step: 0.05, precision: 2 },
+      { key: 'startingFieldValue', label: 'Starting field value', min: 0.1, max: 2, step: 0.05, precision: 2 },
+      { key: 'maxFieldPatches', label: 'Max patches', min: 120, max: 1800, step: 20 },
+      { key: 'trimmableCrawlFieldValue', label: 'Trim crawl value', min: 0.005, max: 0.25, step: 0.005, precision: 3 }
+    ]
+  },
+  {
+    label: 'Prepared Field',
+    controls: [
+      { key: 'preparedFieldMinAgeSeconds', label: 'Prepared min age', min: 0.1, max: 4, step: 0.05, precision: 2 },
+      { key: 'preparedCoverageThreshold', label: 'Coverage threshold', min: 0.02, max: 0.8, step: 0.01, precision: 2 },
+      { key: 'preparedFieldMinValue', label: 'Prepared min value', min: 0, max: 0.5, step: 0.005, precision: 3 },
+      { key: 'preparedMagnetInfluenceMultiplier', label: 'Magnet influence', min: 0, max: 3.5, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 2, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetPassiveTurnRate', label: 'Passive turn', min: 0, max: 5, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetActiveTurnRate', label: 'Active turn', min: 0, max: 2, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetCorrectionRange', label: 'Correction range', min: 0.1, max: 2, step: 0.05, precision: 2 }
+    ]
+  },
+  {
+    label: 'Stock / Crawl',
+    controls: [
+      { key: 'startingNanobots', label: 'Starting stock', min: 0, max: 24, step: 1 },
+      { key: 'maxNanobots', label: 'Max stock', min: 8, max: 64, step: 1 },
+      { key: 'crawlRecoveryPerSecond', label: 'Crawl recovery', min: 0, max: 0.5, step: 0.01, precision: 2 },
+      { key: 'crawlSpeed', label: 'Crawl speed', min: 4, max: 44, step: 1 },
+      { key: 'fabricatingSpeed', label: 'Raw speed', min: 30, max: 140, step: 1 },
+      { key: 'preparedSpeed', label: 'Prepared speed', min: 40, max: 180, step: 1 },
+      { key: 'lowStockWarningRatio', label: 'Low-stock ratio', min: 0.02, max: 0.6, step: 0.01, precision: 2 },
+      { key: 'droneUrgencyRatio', label: 'Drone urgency ratio', min: 0.02, max: 0.75, step: 0.01, precision: 2 }
+    ]
+  }
+];
+
+const DRONE_RAIL_BOOLEAN_CONTROLS: TuningBooleanControlDefinition[] = [
+  { key: 'allowCloseReclaim', label: 'Allow close reclaim' },
+  { key: 'allowLowPayloadLaunch', label: 'Allow low payload launch' }
+];
+
+const DEFAULT_DRONE_RAIL_LAB_SETTINGS: DroneRailLabSettings = {
+  overlayReclaimEligibility: false,
+  overlayFieldAge: false,
+  overlayFieldValue: false,
+  overlaySelectedDroneTarget: false,
+  overlayRejectedReclaimCandidates: false,
+  overlayDroneRoute: false,
+  overlayRefillEtaLabels: false,
+  overlayPreparedCoverage: false,
+  overlayPreparedMagnetInfluence: false,
+  overlayFieldEmissionPoints: false,
+  overlayCrawlEmissionPoints: false
+};
+
+const DRONE_RAIL_OVERLAY_CONTROLS: DroneRailOverlayDefinition[] = [
+  { key: 'overlayReclaimEligibility', label: 'Reclaim eligibility' },
+  { key: 'overlayFieldAge', label: 'Field age visualization' },
+  { key: 'overlayFieldValue', label: 'Field value visualization' },
+  { key: 'overlaySelectedDroneTarget', label: 'Selected drone target' },
+  { key: 'overlayRejectedReclaimCandidates', label: 'Rejected reclaim candidates' },
+  { key: 'overlayDroneRoute', label: 'Drone route line' },
+  { key: 'overlayRefillEtaLabels', label: 'Refill ETA labels' },
+  { key: 'overlayPreparedCoverage', label: 'Prepared coverage' },
+  { key: 'overlayPreparedMagnetInfluence', label: 'Prepared magnet influence' },
+  { key: 'overlayFieldEmissionPoints', label: 'Field emission points' },
+  { key: 'overlayCrawlEmissionPoints', label: 'Crawl emission points' }
 ];
 
 const DEFAULT_CAMERA_LAB_SETTINGS: CameraLabSettings = {
@@ -421,6 +563,7 @@ interface ContinuousUiSnapshot {
   mode: LayoutMode;
   viewMode: ViewMode;
   cameraLab: CameraLabSnapshot;
+  droneRailLab: DroneRailLabSnapshot;
   hudHeight: number;
   debugOverlayVisible: boolean;
   vitals: ContinuousUiRect[];
@@ -441,6 +584,23 @@ interface ContinuousUiSnapshot {
     deliveryReadoutVisible: boolean;
     deliveryAmount?: number;
   };
+}
+
+interface DroneRailLabSnapshot {
+  settings: DroneRailLabSettings;
+  diagnostics: DroneReclaimDiagnostics;
+  blockedReason?: string;
+  candidateReclaimCount: number;
+  bestTargetScore?: number;
+  bestTargetPayload?: number;
+  bestTargetFieldCount?: number;
+  bestTargetRefillEta?: number;
+  oldestFieldAge: number;
+  nearestEligibleFieldDistance?: number;
+  nearestNearEligibleFieldDistance?: number;
+  preparedCoverage: number;
+  speedState: SpeedState;
+  tuning: ContinuousTuning;
 }
 
 interface CameraLabSnapshot {
@@ -475,6 +635,8 @@ declare global {
       getCameraLab: () => CameraLabSnapshot;
       setCameraPreset: (presetId: CameraPresetId) => void;
       setViewMode: (viewMode: ViewMode) => void;
+      getDroneRailLab: () => DroneRailLabSnapshot;
+      setDynamicsTuning: (tuning: Partial<ContinuousTuning>) => void;
       startSelfPlay: (routeId?: ContinuousSelfPlayRouteId) => void;
       stopSelfPlay: () => void;
       getSelfPlayStatus: () => ContinuousSelfPlayStatus | undefined;
@@ -499,6 +661,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     launchedAtSeconds: Set<number>;
   };
   private cameraLab: CameraLabSettings = { ...DEFAULT_CAMERA_LAB_SETTINGS };
+  private droneRailLab: DroneRailLabSettings = { ...DEFAULT_DRONE_RAIL_LAB_SETTINGS };
   private viewMode: ViewMode = 'tactical';
   private tacticalCameraFocus: Vec2 = { x: 420, y: 500 };
   private cameraHeading = -0.18;
@@ -509,10 +672,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private debugStateElement?: HTMLScriptElement;
   private tuningPanelElement?: HTMLElement;
   private cameraLabElement?: HTMLElement;
+  private droneRailLabElement?: HTMLElement;
+  private droneRailDiagnosticsElement?: HTMLElement;
   private cameraPresetSelectElement?: HTMLSelectElement;
   private cameraViewModeSelectElement?: HTMLSelectElement;
   private arenaSelectElement?: HTMLSelectElement;
   private tuningControls = new Map<TuningKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
+  private droneRailNumericControls = new Map<NumericTuningKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
+  private droneRailBooleanControls = new Map<BooleanTuningKey, HTMLInputElement>();
+  private droneRailOverlayControls = new Map<DroneRailOverlayKey, HTMLInputElement>();
   private cameraNumericControls = new Map<NumericCameraControlKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
   private cameraToggleControls = new Map<BooleanCameraControlKey, HTMLInputElement>();
   private debugOverlayVisible = false;
@@ -528,6 +696,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   create(): void {
     this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId());
     this.cameraLab = this.loadStoredCameraLab();
+    this.droneRailLab = this.loadStoredDroneRailLab();
     this.viewMode = this.readViewMode(this.cameraLab.viewMode);
     this.cameraLab.viewMode = this.viewMode;
     this.debugOverlayVisible = this.shouldOpenDebugOverlay();
@@ -570,6 +739,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.exposeDebugHook();
     this.createTuningPanel();
     this.createCameraLabPanel();
+    this.createDroneRailLabPanel();
     this.draw();
   }
 
@@ -937,6 +1107,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.previousOre = this.state.rover.ore;
     this.syncTuningPanel();
     this.syncCameraLabPanel();
+    this.syncDroneRailLabPanel();
   }
 
   private setArena(arenaId: ContinuousArenaId): void {
@@ -961,6 +1132,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.saveStoredArenaId();
     this.syncTuningPanel();
     this.syncCameraLabPanel();
+    this.syncDroneRailLabPanel();
   }
 
   private startSelfPlay(routeId: ContinuousSelfPlayRouteId = 'firstLoop'): void {
@@ -1261,11 +1433,133 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.syncDebugOverlayVisibility();
   }
 
+  private createDroneRailLabPanel(): void {
+    if (!import.meta.env.DEV) return;
+
+    const existing = document.getElementById('moon-miner-drone-rail-lab');
+    const panel = existing ?? document.createElement('aside');
+    panel.id = 'moon-miner-drone-rail-lab';
+    panel.className = 'moon-miner-tuning moon-miner-drone-rail-lab';
+    panel.textContent = '';
+    this.droneRailNumericControls.clear();
+    this.droneRailBooleanControls.clear();
+    this.droneRailOverlayControls.clear();
+
+    const title = document.createElement('h2');
+    title.textContent = 'Drone / Rail Lab';
+    panel.appendChild(title);
+
+    const diagnostics = document.createElement('pre');
+    diagnostics.className = 'moon-miner-tuning__diagnostics';
+    panel.appendChild(diagnostics);
+    this.droneRailDiagnosticsElement = diagnostics;
+
+    for (const group of DRONE_RAIL_NUMERIC_GROUPS) {
+      const details = document.createElement('details');
+      details.open = group.label === 'Launch Gating' || group.label === 'Target Scoring';
+      const summary = document.createElement('summary');
+      summary.textContent = group.label;
+      details.appendChild(summary);
+
+      for (const definition of group.controls) {
+        const row = document.createElement('label');
+        row.className = 'moon-miner-tuning__row';
+
+        const name = document.createElement('span');
+        name.className = 'moon-miner-tuning__name';
+        name.textContent = definition.label;
+
+        const range = document.createElement('input');
+        range.type = 'range';
+        range.min = String(definition.min);
+        range.max = String(definition.max);
+        range.step = String(definition.step);
+
+        const number = document.createElement('input');
+        number.type = 'number';
+        number.min = String(definition.min);
+        number.max = String(definition.max);
+        number.step = String(definition.step);
+
+        const value = document.createElement('span');
+        value.className = 'moon-miner-tuning__value';
+
+        range.addEventListener('input', () => this.applyTuningValue(definition.key, Number(range.value)));
+        number.addEventListener('change', () => this.applyTuningValue(definition.key, Number(number.value)));
+
+        row.append(name, range, number, value);
+        details.appendChild(row);
+        this.droneRailNumericControls.set(definition.key, { range, number, value });
+      }
+
+      panel.appendChild(details);
+    }
+
+    const gates = document.createElement('details');
+    gates.open = true;
+    const gatesSummary = document.createElement('summary');
+    gatesSummary.textContent = 'Test Gates';
+    gates.appendChild(gatesSummary);
+    for (const definition of DRONE_RAIL_BOOLEAN_CONTROLS) {
+      const row = document.createElement('label');
+      row.className = 'moon-miner-tuning__toggle';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.addEventListener('change', () => this.applyTuningBooleanValue(definition.key, checkbox.checked));
+      const name = document.createElement('span');
+      name.textContent = definition.label;
+      row.append(checkbox, name);
+      gates.appendChild(row);
+      this.droneRailBooleanControls.set(definition.key, checkbox);
+    }
+    panel.appendChild(gates);
+
+    const overlays = document.createElement('details');
+    overlays.open = false;
+    const overlaysSummary = document.createElement('summary');
+    overlaysSummary.textContent = 'Overlays';
+    overlays.appendChild(overlaysSummary);
+    for (const definition of DRONE_RAIL_OVERLAY_CONTROLS) {
+      const row = document.createElement('label');
+      row.className = 'moon-miner-tuning__toggle';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.addEventListener('change', () => this.applyDroneRailOverlayValue(definition.key, checkbox.checked));
+      const name = document.createElement('span');
+      name.textContent = definition.label;
+      row.append(checkbox, name);
+      overlays.appendChild(row);
+      this.droneRailOverlayControls.set(definition.key, checkbox);
+    }
+    panel.appendChild(overlays);
+
+    const actions = document.createElement('div');
+    actions.className = 'moon-miner-tuning__actions';
+
+    const resetButton = document.createElement('button');
+    resetButton.type = 'button';
+    resetButton.textContent = 'Reset Dynamics';
+    resetButton.addEventListener('click', () => this.resetDroneRailDynamics());
+
+    const copyButton = document.createElement('button');
+    copyButton.type = 'button';
+    copyButton.textContent = 'Copy Dynamics JSON';
+    copyButton.addEventListener('click', () => this.copyDroneRailDynamicsJson(copyButton));
+
+    actions.append(resetButton, copyButton);
+    panel.appendChild(actions);
+
+    if (!existing) document.body.appendChild(panel);
+    this.droneRailLabElement = panel;
+    this.syncDroneRailLabPanel();
+    this.syncDebugOverlayVisibility();
+  }
+
   private syncDebugOverlayVisibility(): void {
     if (!import.meta.env.DEV) return;
-    if (!this.tuningPanelElement && !this.cameraLabElement) return;
+    if (!this.tuningPanelElement && !this.cameraLabElement && !this.droneRailLabElement) return;
 
-    for (const panel of [this.tuningPanelElement, this.cameraLabElement]) {
+    for (const panel of [this.tuningPanelElement, this.cameraLabElement, this.droneRailLabElement]) {
       if (!panel) continue;
       panel.hidden = !this.debugOverlayVisible;
       panel.dataset.open = this.debugOverlayVisible ? 'true' : 'false';
@@ -1277,7 +1571,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     );
   }
 
-  private applyTuningValue(key: TuningKey, value: number): void {
+  private applyTuningValue(key: NumericTuningKey, value: number): void {
     if (!Number.isFinite(value)) return;
 
     this.state.tuning = resolveContinuousTuning({
@@ -1290,6 +1584,30 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.state.solarSeconds = Math.min(this.state.solarSeconds, this.state.tuning.startingSolarSeconds);
     this.saveStoredTuning();
     this.syncTuningPanel();
+    this.syncDroneRailLabPanel();
+  }
+
+  private applyTuningBooleanValue(key: BooleanTuningKey, value: boolean): void {
+    this.state.tuning = resolveContinuousTuning({
+      ...this.state.tuning,
+      [key]: value
+    });
+    this.saveStoredTuning();
+    this.syncDroneRailLabPanel();
+  }
+
+  private setDynamicsTuning(tuning: Partial<ContinuousTuning>): void {
+    this.state.tuning = resolveContinuousTuning({
+      ...this.state.tuning,
+      ...tuning
+    });
+    this.state.maxNanobots = this.state.tuning.maxNanobots;
+    this.state.targetOre = this.state.tuning.targetOre;
+    this.state.nanobots = clamp(this.state.nanobots, 0, this.state.maxNanobots);
+    this.state.solarSeconds = Math.min(this.state.solarSeconds, this.state.tuning.startingSolarSeconds);
+    this.saveStoredTuning();
+    this.syncTuningPanel();
+    this.syncDroneRailLabPanel();
   }
 
   private syncTuningPanel(): void {
@@ -1307,6 +1625,67 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       controls.number.value = formatted;
       controls.value.textContent = formatted;
     }
+  }
+
+  private syncDroneRailLabPanel(): void {
+    for (const group of DRONE_RAIL_NUMERIC_GROUPS) {
+      for (const definition of group.controls) {
+        const controls = this.droneRailNumericControls.get(definition.key);
+        if (!controls) continue;
+
+        const value = this.state.tuning[definition.key];
+        const formatted = this.formatDroneRailValue(definition, value);
+        controls.range.value = String(value);
+        controls.number.value = formatted;
+        controls.value.textContent = formatted;
+      }
+    }
+
+    for (const definition of DRONE_RAIL_BOOLEAN_CONTROLS) {
+      const checkbox = this.droneRailBooleanControls.get(definition.key);
+      if (checkbox) checkbox.checked = this.state.tuning[definition.key];
+    }
+
+    for (const definition of DRONE_RAIL_OVERLAY_CONTROLS) {
+      const checkbox = this.droneRailOverlayControls.get(definition.key);
+      if (checkbox) checkbox.checked = this.droneRailLab[definition.key];
+    }
+
+    if (this.droneRailDiagnosticsElement) {
+      this.droneRailDiagnosticsElement.textContent = this.formatDroneRailDiagnostics();
+    }
+  }
+
+  private formatDroneRailValue(definition: TuningNumericControlDefinition, value: number): string {
+    return value.toFixed(definition.precision ?? 0);
+  }
+
+  private formatDroneRailDiagnostics(): string {
+    const diagnostics = getDroneReclaimDiagnostics(this.state);
+    const best = diagnostics.bestTarget;
+    const lines = [
+      `Launch: ${diagnostics.blockedReason ?? 'available'}`,
+      `Candidates: ${diagnostics.candidateCount}  Oldest: ${diagnostics.oldestFieldAge.toFixed(1)}s`,
+      `Prepared: ${diagnostics.currentPreparedCoverage.toFixed(2)}  Speed: ${diagnostics.currentSpeedState}`
+    ];
+
+    if (best) {
+      lines.push(
+        `Best #${best.targetPatchId}: +${best.payload.toFixed(2)} / ${best.fieldCount} fields / ${best.distanceFromRover.toFixed(0)}u`,
+        `ETA: out ${best.eta.outboundSeconds.toFixed(2)} + lock ${best.eta.reclaimLockSeconds.toFixed(2)} + return ${best.eta.returnSeconds.toFixed(2)} = ${best.eta.totalSeconds.toFixed(2)}s`,
+        `Score ${best.score.toFixed(2)} = payload ${best.components.payloadValue.toFixed(2)} + age ${best.components.ageBonus.toFixed(2)} - travel ${best.components.travelCost.toFixed(2)} - spread ${best.components.spreadPenalty.toFixed(2)}`
+      );
+    }
+
+    if (diagnostics.topCandidates.length > 1) {
+      lines.push(
+        `Top 3: ${diagnostics.topCandidates
+          .map((candidate) => `#${candidate.targetPatchId} ${candidate.score.toFixed(1)} +${candidate.payload.toFixed(1)}`)
+          .join(' | ')}`
+      );
+    }
+
+    return lines.join('\n');
   }
 
   private formatTuningValue(definition: TuningControlDefinition, value: number): string {
@@ -1353,6 +1732,83 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     } catch {
       // Local storage can be unavailable in hardened browser contexts; live arena switching still works.
     }
+  }
+
+  private loadStoredDroneRailLab(): DroneRailLabSettings {
+    if (!import.meta.env.DEV) return { ...DEFAULT_DRONE_RAIL_LAB_SETTINGS };
+
+    try {
+      const raw = window.localStorage.getItem(DRONE_RAIL_LAB_STORAGE_KEY);
+      return {
+        ...DEFAULT_DRONE_RAIL_LAB_SETTINGS,
+        ...(raw ? (JSON.parse(raw) as Partial<DroneRailLabSettings>) : {})
+      };
+    } catch {
+      return { ...DEFAULT_DRONE_RAIL_LAB_SETTINGS };
+    }
+  }
+
+  private saveStoredDroneRailLab(): void {
+    if (!import.meta.env.DEV) return;
+
+    try {
+      window.localStorage.setItem(DRONE_RAIL_LAB_STORAGE_KEY, JSON.stringify(this.droneRailLab));
+    } catch {
+      // Local storage can be unavailable in hardened browser contexts; live overlays still work.
+    }
+  }
+
+  private applyDroneRailOverlayValue(key: DroneRailOverlayKey, value: boolean): void {
+    this.droneRailLab = {
+      ...this.droneRailLab,
+      [key]: value
+    };
+    this.saveStoredDroneRailLab();
+    this.syncDroneRailLabPanel();
+  }
+
+  private resetDroneRailDynamics(): void {
+    this.setDynamicsTuning(DEFAULT_CONTINUOUS_TUNING);
+    this.droneRailLab = { ...DEFAULT_DRONE_RAIL_LAB_SETTINGS };
+    this.saveStoredDroneRailLab();
+    this.syncDroneRailLabPanel();
+  }
+
+  private copyDroneRailDynamicsJson(button: HTMLButtonElement): void {
+    const original = button.textContent ?? 'Copy Dynamics JSON';
+    const text = JSON.stringify(
+      {
+        tuning: this.state.tuning,
+        overlays: this.droneRailLab,
+        diagnostics: getDroneReclaimDiagnostics(this.state)
+      },
+      null,
+      2
+    );
+
+    if (!navigator.clipboard) {
+      console.info('Moon Miner drone/rail dynamics JSON:', text);
+      button.textContent = 'Logged';
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 900);
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        button.textContent = 'Copied';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 900);
+      })
+      .catch(() => {
+        button.textContent = 'Copy failed';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 900);
+      });
   }
 
   private copyTuningJson(button: HTMLButtonElement): void {
@@ -1614,8 +2070,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     const crossedIntoLaunchPressure =
-      previousNanobots / this.state.maxNanobots >= DRONE_URGENCY_RATIO &&
-      this.state.nanobots / this.state.maxNanobots < DRONE_URGENCY_RATIO;
+      previousNanobots / this.state.maxNanobots >= this.state.tuning.droneUrgencyRatio &&
+      this.state.nanobots / this.state.maxNanobots < this.state.tuning.droneUrgencyRatio;
     if (crossedIntoLaunchPressure && this.state.drone.status === 'ready') {
       this.addEffect('crawl', this.state.rover.x, this.state.rover.y, 620);
       this.showEventMessage('Low buffer. Drone is ready.', 1450, timeMs, 2);
@@ -1663,10 +2119,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawDrone();
     this.drawRover();
     this.drawEffects();
+    this.drawDroneRailDebugOverlays();
     this.drawCameraDebugOverlays();
     this.drawHud();
     this.drawPhaseBanner();
+    this.syncDroneRailDiagnosticsText();
     this.updateDebugState();
+  }
+
+  private syncDroneRailDiagnosticsText(): void {
+    if (!import.meta.env.DEV || !this.debugOverlayVisible || !this.droneRailDiagnosticsElement) return;
+    this.droneRailDiagnosticsElement.textContent = this.formatDroneRailDiagnostics();
   }
 
   private drawBackdrop(): void {
@@ -2314,7 +2777,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.graphics.strokeCircle(targetScreen.x, targetScreen.y, drone.status === 'reclaiming' ? 42 : 30);
 
       if (drone.status === 'reclaiming') {
-        const progress = 1 - clamp(drone.reclaimSeconds / DRONE_RECLAIM_SECONDS, 0, 1);
+        const progress = 1 - clamp(drone.reclaimSeconds / this.state.tuning.reclaimLockSeconds, 0, 1);
         this.drawProgressRing(targetScreen, 38, progress, 0xffd2b7);
         this.drawDroneReclaimFragments(targetScreen, droneScreen);
       }
@@ -2755,7 +3218,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     progress: number,
     color: number
   ): void {
-    const warningPulse = label === 'Nanobots' && progress < LOW_NANOBOT_RATIO ? 0.5 + Math.sin(this.time.now / 105) * 0.5 : 0;
+    const warningPulse = label === 'Nanobots' && progress < this.state.tuning.lowStockWarningRatio ? 0.5 + Math.sin(this.time.now / 105) * 0.5 : 0;
     if (warningPulse > 0) {
       this.graphics.fillStyle(0x451f1a, 0.52 + warningPulse * 0.18);
       this.graphics.fillRoundedRect(x - 7, y - 3, width + 14, 62, 8);
@@ -2947,6 +3410,148 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStaticText('loop-trace-stats', 0, 0, '', 1, '#ffffff');
   }
 
+  private drawDroneRailDebugOverlays(): void {
+    if (!import.meta.env.DEV || !this.debugOverlayVisible) {
+      this.clearDroneRailOverlayText();
+      return;
+    }
+
+    const diagnostics = getDroneReclaimDiagnostics(this.state);
+    const best = diagnostics.bestTarget;
+    const bestId = best?.targetPatchId;
+    const fieldLabelLimit = 36;
+    let labelsDrawn = 0;
+
+    for (const field of this.state.fields) {
+      const screen = this.project(field);
+      const distanceFromRover = Math.hypot(field.x - this.state.rover.x, field.y - this.state.rover.y);
+      const oldEnough = field.age >= this.state.tuning.reclaimMinFieldAgeSeconds;
+      const valuableEnough = field.value >= this.state.tuning.reclaimMinFieldValue;
+      const farEnough = this.state.tuning.allowCloseReclaim || distanceFromRover >= this.state.tuning.reclaimMinDistanceFromRover;
+      const eligible = !field.reservedByDrone && oldEnough && valuableEnough && farEnough;
+      const radius = Math.max(7, this.fieldRoadWidth(field) * 0.7);
+
+      if (this.droneRailLab.overlayReclaimEligibility) {
+        this.graphics.lineStyle(eligible ? 3 : 1, eligible ? 0x86f6dc : 0xff7d77, eligible ? 0.86 : 0.52);
+        this.graphics.strokeCircle(screen.x, screen.y, radius + (eligible ? 8 : 3));
+      }
+
+      if (this.droneRailLab.overlayRejectedReclaimCandidates && !eligible) {
+        this.graphics.lineStyle(1, 0xff7d77, 0.46);
+        this.graphics.lineBetween(screen.x - 8, screen.y - 8, screen.x + 8, screen.y + 8);
+        this.graphics.lineBetween(screen.x + 8, screen.y - 8, screen.x - 8, screen.y + 8);
+      }
+
+      if (this.droneRailLab.overlayFieldAge && labelsDrawn < fieldLabelLimit) {
+        const alpha = clamp(field.age / Math.max(0.1, this.state.tuning.reclaimMinFieldAgeSeconds), 0.18, 0.95);
+        this.graphics.lineStyle(2, 0x9fb7ff, alpha);
+        this.graphics.strokeCircle(screen.x, screen.y, radius + field.age * 0.5);
+        this.drawStaticText(`drone-rail-field-${labelsDrawn}`, screen.x + 8, screen.y - 12, `${field.age.toFixed(1)}s`, 9, '#c8d6ff');
+        labelsDrawn += 1;
+      }
+
+      if (this.droneRailLab.overlayFieldValue) {
+        this.graphics.fillStyle(0xffd35a, clamp(field.value / Math.max(0.1, this.state.tuning.startingFieldValue), 0.12, 0.72));
+        this.graphics.fillCircle(screen.x, screen.y, clamp(3 + field.value * 8, 3, 15));
+      }
+
+      if (this.droneRailLab.overlaySelectedDroneTarget && bestId === field.id) {
+        this.graphics.lineStyle(4, 0xfff0ba, 0.96);
+        this.graphics.strokeCircle(screen.x, screen.y, radius + 18);
+        this.drawStaticText('drone-rail-selected-target', screen.x + 14, screen.y - 28, `BEST #${field.id}`, 11, '#fff0ba');
+      }
+    }
+
+    for (let index = labelsDrawn; index < fieldLabelLimit; index += 1) {
+      this.drawStaticText(`drone-rail-field-${index}`, 0, 0, '', 1, '#ffffff');
+    }
+    if (!this.droneRailLab.overlaySelectedDroneTarget) {
+      this.drawStaticText('drone-rail-selected-target', 0, 0, '', 1, '#ffffff');
+    }
+
+    if (this.droneRailLab.overlayDroneRoute || this.droneRailLab.overlayRefillEtaLabels) {
+      this.drawDroneRailRouteOverlay(diagnostics);
+    } else {
+      this.clearDroneRailRouteText();
+    }
+
+    if (this.droneRailLab.overlayPreparedCoverage) {
+      const coverage = getPreparedCoverage(this.state, this.state.rover);
+      const rover = this.project(this.state.rover);
+      this.graphics.lineStyle(3, coverage >= this.state.tuning.preparedCoverageThreshold ? 0x78f7df : 0x7b8798, 0.72);
+      this.graphics.strokeCircle(rover.x, rover.y, 30 + coverage * 42);
+      this.drawStaticText('drone-rail-prepared-coverage', rover.x + 18, rover.y + 30, `coverage ${coverage.toFixed(2)}`, 10, '#a8f4e7');
+    } else {
+      this.drawStaticText('drone-rail-prepared-coverage', 0, 0, '', 1, '#ffffff');
+    }
+
+    if (this.droneRailLab.overlayPreparedMagnetInfluence) {
+      for (const field of this.state.fields) {
+        if (field.age < this.state.tuning.preparedFieldMinAgeSeconds || field.value < this.state.tuning.preparedFieldMinValue) continue;
+        const screen = this.project(field);
+        this.graphics.lineStyle(1, 0x78f7df, 0.24);
+        this.graphics.strokeCircle(screen.x, screen.y, field.radius * this.projectedScale(field) * this.state.tuning.preparedMagnetInfluenceMultiplier);
+      }
+    }
+
+    if (this.droneRailLab.overlayFieldEmissionPoints || this.droneRailLab.overlayCrawlEmissionPoints) {
+      const offset = this.state.speedState === 'crawl' ? 6 : 14;
+      const emission = this.pointFromHeading(this.state.rover, this.state.rover.heading + Math.PI, offset);
+      const screen = this.project(emission);
+      const show =
+        (this.state.speedState === 'crawl' && this.droneRailLab.overlayCrawlEmissionPoints) ||
+        (this.state.speedState !== 'crawl' && this.droneRailLab.overlayFieldEmissionPoints);
+      if (show) {
+        this.graphics.lineStyle(2, this.state.speedState === 'crawl' ? 0xff765f : 0x68f3ff, 0.92);
+        this.graphics.strokeCircle(screen.x, screen.y, 12);
+        this.drawStaticText('drone-rail-emission-point', screen.x + 14, screen.y + 14, `emit ${this.state.fieldEmitDistance.toFixed(1)}`, 10, '#dfe8f2');
+      }
+    } else {
+      this.drawStaticText('drone-rail-emission-point', 0, 0, '', 1, '#ffffff');
+    }
+  }
+
+  private drawDroneRailRouteOverlay(diagnostics: DroneReclaimDiagnostics): void {
+    const target = this.state.drone.target ?? diagnostics.bestTarget?.target;
+    if (!target) {
+      this.clearDroneRailRouteText();
+      return;
+    }
+
+    const origin = this.state.drone.status === 'ready' ? this.state.rover : this.state.drone;
+    const originScreen = this.project(origin);
+    const targetScreen = this.project(target);
+    const roverScreen = this.project(this.state.rover);
+    this.graphics.lineStyle(3, 0xffa06c, 0.78);
+    this.graphics.lineBetween(originScreen.x, originScreen.y, targetScreen.x, targetScreen.y);
+    this.graphics.lineStyle(2, 0x78f7df, 0.58);
+    this.graphics.lineBetween(targetScreen.x, targetScreen.y, roverScreen.x, roverScreen.y);
+
+    if (this.droneRailLab.overlayRefillEtaLabels) {
+      const eta = diagnostics.bestTarget?.eta;
+      const etaLabel = eta
+        ? `out ${eta.outboundSeconds.toFixed(1)} lock ${eta.reclaimLockSeconds.toFixed(1)} ret ${eta.returnSeconds.toFixed(1)} = ${eta.totalSeconds.toFixed(1)}s`
+        : `${this.state.drone.etaSeconds.toFixed(1)}s refill`;
+      this.drawStaticText('drone-rail-eta-label', targetScreen.x + 14, targetScreen.y + 22, etaLabel, 10, '#ffeddf');
+    } else {
+      this.drawStaticText('drone-rail-eta-label', 0, 0, '', 1, '#ffffff');
+    }
+  }
+
+  private clearDroneRailOverlayText(): void {
+    for (let index = 0; index < 36; index += 1) {
+      this.drawStaticText(`drone-rail-field-${index}`, 0, 0, '', 1, '#ffffff');
+    }
+    this.drawStaticText('drone-rail-selected-target', 0, 0, '', 1, '#ffffff');
+    this.drawStaticText('drone-rail-prepared-coverage', 0, 0, '', 1, '#ffffff');
+    this.drawStaticText('drone-rail-emission-point', 0, 0, '', 1, '#ffffff');
+    this.clearDroneRailRouteText();
+  }
+
+  private clearDroneRailRouteText(): void {
+    this.drawStaticText('drone-rail-eta-label', 0, 0, '', 1, '#ffffff');
+  }
+
   private drawCameraDebugOverlays(): void {
     if (!import.meta.env.DEV || !this.debugOverlayVisible) {
       this.clearCameraDebugOverlayText();
@@ -3054,7 +3659,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private shouldShowDroneLaunchUrgency(): boolean {
     if (this.state.phase !== 'playing') return false;
     if (this.state.drone.status !== 'ready') return false;
-    return this.state.speedState === 'crawl' || this.state.nanobots / this.state.maxNanobots < DRONE_URGENCY_RATIO;
+    return this.state.speedState === 'crawl' || this.state.nanobots / this.state.maxNanobots < this.state.tuning.droneUrgencyRatio;
   }
 
   private getDroneStatusLine(): string {
@@ -3062,7 +3667,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       if (this.state.speedState === 'crawl') return 'CRAWL READY';
       if (this.shouldShowDroneLaunchUrgency()) return 'LOW BUFFER';
       const preview = getReclaimPreview(this.state);
-      return preview ? `+${preview.payload.toFixed(1)} in ${preview.etaSeconds.toFixed(1)}s` : 'no old field';
+      return preview ? `+${preview.payload.toFixed(1)} in ${preview.etaSeconds.toFixed(1)}s` : getDroneReclaimDiagnostics(this.state).blockedReason ?? 'no target';
     }
     if (this.state.drone.status === 'returning') {
       return `+${this.state.drone.payload.toFixed(1)} in ${this.state.drone.etaSeconds.toFixed(1)}s`;
@@ -3164,6 +3769,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       getCameraLab: () => this.getCameraLabSnapshot(),
       setCameraPreset: (presetId) => this.applyCameraPreset(presetId),
       setViewMode: (viewMode) => this.setCameraViewMode(viewMode),
+      getDroneRailLab: () => this.getDroneRailLabSnapshot(),
+      setDynamicsTuning: (tuning) => this.setDynamicsTuning(tuning),
       startSelfPlay: (routeId = 'firstLoop') => this.startSelfPlay(routeId),
       stopSelfPlay: () => this.stopSelfPlay(),
       getSelfPlayStatus: () => this.getSelfPlayStatus()
@@ -3203,6 +3810,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       mode: layout.mode,
       viewMode: this.viewMode,
       cameraLab: this.getCameraLabSnapshot(),
+      droneRailLab: this.getDroneRailLabSnapshot(),
       hudHeight: layout.hudHeight,
       debugOverlayVisible: this.debugOverlayVisible,
       vitals: layout.vitals.map((rect) => ({ ...rect })),
@@ -3226,6 +3834,27 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       center: this.getCameraCenter(),
       zoom: this.getCameraZoom(),
       heading: this.cameraHeading
+    };
+  }
+
+  private getDroneRailLabSnapshot(): DroneRailLabSnapshot {
+    const diagnostics = getDroneReclaimDiagnostics(this.state);
+    const best = diagnostics.bestTarget;
+    return {
+      settings: { ...this.droneRailLab },
+      diagnostics,
+      blockedReason: diagnostics.blockedReason,
+      candidateReclaimCount: diagnostics.candidateCount,
+      bestTargetScore: best?.score,
+      bestTargetPayload: best?.payload,
+      bestTargetFieldCount: best?.fieldCount,
+      bestTargetRefillEta: best?.refillEtaSeconds,
+      oldestFieldAge: diagnostics.oldestFieldAge,
+      nearestEligibleFieldDistance: diagnostics.nearestEligibleFieldDistance,
+      nearestNearEligibleFieldDistance: diagnostics.nearestNearEligibleFieldDistance,
+      preparedCoverage: diagnostics.currentPreparedCoverage,
+      speedState: diagnostics.currentSpeedState,
+      tuning: { ...this.state.tuning }
     };
   }
 
@@ -3475,7 +4104,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.viewMode !== 'hybrid') return 0;
 
     const active =
-      (this.cameraLab.zoomOutLowNanobots && this.state.nanobots / this.state.maxNanobots < DRONE_URGENCY_RATIO) ||
+      (this.cameraLab.zoomOutLowNanobots && this.state.nanobots / this.state.maxNanobots < this.state.tuning.droneUrgencyRatio) ||
       (this.cameraLab.zoomOutDroneReadyWithPreview && this.state.drone.status === 'ready' && Boolean(getReclaimPreview(this.state))) ||
       (this.cameraLab.zoomOutDroneActive && this.state.drone.status !== 'ready') ||
       (this.cameraLab.zoomOutDuringCrawl && this.state.speedState === 'crawl');

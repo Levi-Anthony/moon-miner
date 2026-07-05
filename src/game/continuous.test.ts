@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createContinuousWorld,
   DRONE_RECLAIM_SECONDS,
+  getDroneReclaimDiagnostics,
   getReclaimPreview,
   launchReclaimDrone,
   tickContinuousWorld,
@@ -392,6 +393,65 @@ describe('continuous Moon Miner spike rules', () => {
     world.nextFieldId = 4;
 
     expect(getReclaimPreview(world)).toBeUndefined();
+  });
+
+  it('reports a precise drone launch blocked reason when no reclaim target exists', () => {
+    const world = createContinuousWorld();
+    world.fields = [];
+
+    const diagnostics = getDroneReclaimDiagnostics(world);
+    const launch = launchReclaimDrone(world);
+
+    expect(diagnostics.blockedReason).toBe('No reclaimable field yet');
+    expect(diagnostics.candidateCount).toBe(0);
+    expect(launch.ok).toBe(false);
+    expect(launch.message).toBe('No reclaimable field yet');
+  });
+
+  it('lets reclaim age and distance tuning make launch available sooner', () => {
+    const world = createContinuousWorld('early-reclaim', {
+      reclaimMinFieldAgeSeconds: 2.2,
+      reclaimMinDistanceFromRover: 74
+    });
+    world.fields = [{ id: 1, x: world.rover.x - 52, y: world.rover.y, radius: 44, value: 0.4, age: 1.4 }];
+    world.nextFieldId = 2;
+
+    expect(getDroneReclaimDiagnostics(world).blockedReason).toBe('Oldest field age 1.4s / need 2.2s');
+    expect(getReclaimPreview(world)).toBeUndefined();
+
+    world.tuning.reclaimMinFieldAgeSeconds = 1.2;
+    expect(getDroneReclaimDiagnostics(world).blockedReason).toBe('Nearest old field 52 / need 74');
+    expect(getReclaimPreview(world)).toBeUndefined();
+
+    world.tuning.reclaimMinDistanceFromRover = 40;
+    expect(getReclaimPreview(world)?.targetPatchId).toBe(1);
+    expect(getDroneReclaimDiagnostics(world).blockedReason).toBeUndefined();
+  });
+
+  it('changes target score when payload and travel weights are adjusted', () => {
+    const world = createDroneRouteWorld();
+    const baseline = getDroneReclaimDiagnostics(world).bestTarget?.score;
+
+    world.tuning.dronePayloadScoreMultiplier = 0;
+    world.tuning.droneTravelScoreMultiplier = 5;
+    const tuned = getDroneReclaimDiagnostics(world).bestTarget?.score;
+
+    expect(baseline).toBeDefined();
+    expect(tuned).toBeDefined();
+    expect(tuned).toBeLessThan((baseline ?? 0) - 10);
+  });
+
+  it('breaks refill ETA into outbound, reclaim lock, and return time', () => {
+    const world = createDroneRouteWorld();
+    world.tuning.reclaimLockSeconds = 0.7;
+    const best = getDroneReclaimDiagnostics(world).bestTarget;
+
+    expect(best).toBeDefined();
+    expect(best?.eta.reclaimLockSeconds).toBeCloseTo(0.7);
+    expect(best?.eta.totalSeconds).toBeCloseTo(
+      (best?.eta.outboundSeconds ?? 0) + (best?.eta.reclaimLockSeconds ?? 0) + (best?.eta.returnSeconds ?? 0)
+    );
+    expect(best?.refillEtaSeconds).toBeCloseTo(best?.eta.totalSeconds ?? 0);
   });
 
   it('prefers a nearer equally valuable old reclaim target over a distant one', () => {

@@ -46,6 +46,49 @@ export interface ReclaimPreview {
   etaSeconds: number;
 }
 
+export interface ReclaimEtaBreakdown {
+  outboundSeconds: number;
+  reclaimLockSeconds: number;
+  returnSeconds: number;
+  totalSeconds: number;
+}
+
+export interface DroneTargetScoreBreakdown {
+  payloadValue: number;
+  ageBonus: number;
+  travelCost: number;
+  spreadPenalty: number;
+}
+
+export interface ReclaimCandidateDiagnostics {
+  targetPatchId: number;
+  target: Vec2;
+  payload: number;
+  fieldCount: number;
+  distanceFromRover: number;
+  weightedAge: number;
+  spread: number;
+  refillEtaSeconds: number;
+  eta: ReclaimEtaBreakdown;
+  score: number;
+  components: DroneTargetScoreBreakdown;
+}
+
+export interface DroneReclaimDiagnostics {
+  blockedReason?: string;
+  candidateCount: number;
+  rejectedCount: number;
+  bestTarget?: ReclaimCandidateDiagnostics;
+  topCandidates: ReclaimCandidateDiagnostics[];
+  oldestFieldAge: number;
+  nearestEligibleFieldDistance?: number;
+  nearestNearEligibleFieldDistance?: number;
+  bestClusterPayload: number;
+  currentPreparedCoverage: number;
+  currentSpeedState: SpeedState;
+  tuning: ContinuousTuning;
+}
+
 export interface FertileZone extends Vec2 {
   id: string;
   radius: number;
@@ -90,6 +133,35 @@ export interface ContinuousTuning {
   mineRate: number;
   preparedFieldMinAgeSeconds: number;
   startingFieldValue: number;
+  fieldRadius: number;
+  fieldEmitDistance: number;
+  crawlFieldEmitDistance: number;
+  normalFieldPatchMinValue: number;
+  crawlFieldPatchMinValue: number;
+  fieldValueMultiplierFromSpentStock: number;
+  maxFieldPatches: number;
+  trimmableCrawlFieldValue: number;
+  reclaimMinFieldAgeSeconds: number;
+  reclaimMinFieldValue: number;
+  reclaimMinDistanceFromRover: number;
+  reclaimLockSeconds: number;
+  allowCloseReclaim: boolean;
+  allowLowPayloadLaunch: boolean;
+  minReclaimClusterPayload: number;
+  minReclaimCandidateCount: number;
+  dronePayloadScoreMultiplier: number;
+  droneAgeScoreMultiplier: number;
+  droneTravelScoreMultiplier: number;
+  droneClusterSpreadScoreDivisor: number;
+  preparedCoverageThreshold: number;
+  preparedFieldMinValue: number;
+  preparedMagnetInfluenceMultiplier: number;
+  preparedMagnetCenterPull: number;
+  preparedMagnetPassiveTurnRate: number;
+  preparedMagnetActiveTurnRate: number;
+  preparedMagnetCorrectionRange: number;
+  lowStockWarningRatio: number;
+  droneUrgencyRatio: number;
 }
 
 export interface ContinuousWorldState {
@@ -128,23 +200,7 @@ const WORLD_WIDTH = 1040;
 const WORLD_HEIGHT = 720;
 const TOTAL_ARMS = 8;
 const TURN_RATE = 2.25;
-const FIELD_RADIUS = 44;
-const FIELD_EMIT_DISTANCE = 28;
-const CRAWL_FIELD_EMIT_DISTANCE = 12;
-const MAX_FIELD_PATCHES = 1200;
-const RECLAIM_MIN_FIELD_AGE_SECONDS = 2.2;
-const RECLAIM_MIN_FIELD_VALUE = 0.08;
-const TRIMMABLE_CRAWL_FIELD_VALUE = 0.045;
-const PREPARED_MAGNET_INFLUENCE_MULTIPLIER = 1.35;
-const PREPARED_MAGNET_CENTER_PULL = 0.92;
-const PREPARED_MAGNET_PASSIVE_TURN_RATE = 2.25;
-const PREPARED_MAGNET_ACTIVE_TURN_RATE = 0.45;
-const PREPARED_MAGNET_CORRECTION_RANGE = 0.7;
 const STATIONARY_MINING_FLOW_MULTIPLIER = 1;
-const DRONE_PAYLOAD_SCORE_MULTIPLIER = 6;
-const DRONE_AGE_SCORE_MULTIPLIER = 0.6;
-const DRONE_TRAVEL_SCORE_MULTIPLIER = 1.8;
-const DRONE_CLUSTER_SPREAD_SCORE_DIVISOR = 100;
 
 export const DEFAULT_CONTINUOUS_TUNING: ContinuousTuning = {
   startingNanobots: 6,
@@ -160,7 +216,36 @@ export const DEFAULT_CONTINUOUS_TUNING: ContinuousTuning = {
   dronePickupRadius: 170,
   mineRate: 0.32,
   preparedFieldMinAgeSeconds: 1.25,
-  startingFieldValue: 0.85
+  startingFieldValue: 0.85,
+  fieldRadius: 44,
+  fieldEmitDistance: 28,
+  crawlFieldEmitDistance: 12,
+  normalFieldPatchMinValue: 0.12,
+  crawlFieldPatchMinValue: 0.025,
+  fieldValueMultiplierFromSpentStock: 1.05,
+  maxFieldPatches: 1200,
+  trimmableCrawlFieldValue: 0.045,
+  reclaimMinFieldAgeSeconds: 2.2,
+  reclaimMinFieldValue: 0.08,
+  reclaimMinDistanceFromRover: 74,
+  reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
+  allowCloseReclaim: false,
+  allowLowPayloadLaunch: false,
+  minReclaimClusterPayload: 0.08,
+  minReclaimCandidateCount: 1,
+  dronePayloadScoreMultiplier: 6,
+  droneAgeScoreMultiplier: 0.6,
+  droneTravelScoreMultiplier: 1.8,
+  droneClusterSpreadScoreDivisor: 100,
+  preparedCoverageThreshold: 0.24,
+  preparedFieldMinValue: 0.08,
+  preparedMagnetInfluenceMultiplier: 1.35,
+  preparedMagnetCenterPull: 0.92,
+  preparedMagnetPassiveTurnRate: 2.25,
+  preparedMagnetActiveTurnRate: 0.45,
+  preparedMagnetCorrectionRange: 0.7,
+  lowStockWarningRatio: 0.18,
+  droneUrgencyRatio: 0.32
 };
 
 export function resolveContinuousTuning(tuning: Partial<ContinuousTuning> = {}): ContinuousTuning {
@@ -177,7 +262,7 @@ export function createContinuousWorld(
 ): ContinuousWorldState {
   const resolvedTuning = resolveContinuousTuning(tuning);
   const arena = getContinuousArena(arenaId);
-  const fields = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, FIELD_RADIUS);
+  const fields = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, resolvedTuning.fieldRadius);
   const nextFieldId = fields.length + 1;
 
   const state: ContinuousWorldState = {
@@ -245,8 +330,9 @@ export function launchReclaimDrone(state: ContinuousWorldState): ContinuousComma
   if (state.phase !== 'playing') return fail(state, 'Run is over.');
   if (state.drone.status !== 'ready') return fail(state, 'Drone is already committed.');
 
+  const diagnostics = getDroneReclaimDiagnostics(state);
   const preview = getReclaimPreview(state);
-  if (!preview) return fail(state, 'No old field is far enough to reclaim.');
+  if (!preview) return fail(state, diagnostics.blockedReason ?? 'No reclaimable field yet.');
 
   const next = cloneContinuousWorld(state);
   const patch = next.fields.find((field) => field.id === preview.targetPatchId);
@@ -274,16 +360,12 @@ export function getReclaimPreview(state: ContinuousWorldState): ReclaimPreview |
   const target = selectDroneTarget(state);
   if (!target) return undefined;
 
-  const cluster = getReclaimCluster(state, target);
-  const payload = cluster.reduce((total, field) => total + field.value, 0);
-  if (payload <= 0) return undefined;
-
   return {
-    target: { x: target.x, y: target.y },
-    targetPatchId: target.id,
-    payload,
-    fieldCount: cluster.length,
-    etaSeconds: estimateReclaimRefillEta(state, target)
+    target: { ...target.target },
+    targetPatchId: target.targetPatchId,
+    payload: target.payload,
+    fieldCount: target.fieldCount,
+    etaSeconds: target.refillEtaSeconds
   };
 }
 
@@ -291,7 +373,7 @@ export function getPreparedCoverage(state: ContinuousWorldState, point: Vec2): n
   let coverage = 0;
   for (const field of state.fields) {
     if (field.age < state.tuning.preparedFieldMinAgeSeconds) continue;
-    if (field.value < 0.08) continue;
+    if (field.value < state.tuning.preparedFieldMinValue) continue;
     const fieldDistance = distance(point, field);
     if (fieldDistance >= field.radius) continue;
     coverage = Math.max(coverage, 1 - fieldDistance / field.radius);
@@ -425,18 +507,21 @@ function runFieldSystem(
     const cost = (state.tuning.fabricateCostPerSecond * movedDistance) / state.tuning.fabricatingSpeed;
     const spent = Math.min(state.nanobots, cost);
     state.nanobots = Math.max(0, state.nanobots - spent);
-    state.pendingFieldValue += spent * 1.05;
+    state.pendingFieldValue += spent * state.tuning.fieldValueMultiplierFromSpentStock;
     state.message = 'Arms are fabricating field just in time. Mining capacity is constrained.';
   } else {
     state.nanobots = Math.min(1.2, state.nanobots + state.tuning.crawlRecoveryPerSecond * deltaSeconds);
-    state.pendingFieldValue += 0.025 * deltaSeconds;
+    state.pendingFieldValue += state.tuning.crawlFieldPatchMinValue * deltaSeconds;
     state.message = 'Emergency crawl: local reclaim legs are scraping enough residue to keep moving.';
   }
 
   state.fieldEmitDistance += movedDistance;
-  const emitDistance = state.speedState === 'crawl' ? CRAWL_FIELD_EMIT_DISTANCE : FIELD_EMIT_DISTANCE;
+  const emitDistance = state.speedState === 'crawl' ? state.tuning.crawlFieldEmitDistance : state.tuning.fieldEmitDistance;
   if (state.fieldEmitDistance >= emitDistance) {
-    const value = Math.max(state.speedState === 'crawl' ? 0.025 : 0.12, state.pendingFieldValue);
+    const value = Math.max(
+      state.speedState === 'crawl' ? state.tuning.crawlFieldPatchMinValue : state.tuning.normalFieldPatchMinValue,
+      state.pendingFieldValue
+    );
     addFieldPatch(state, value);
     state.fieldEmitDistance = 0;
     state.pendingFieldValue = 0;
@@ -494,7 +579,7 @@ function advanceDrone(state: ContinuousWorldState, deltaSeconds: number): void {
     state.drone.etaSeconds = estimateActiveDroneRefillEta(state);
     if (distance(state.drone, state.drone.target) <= 8) {
       state.drone.status = 'reclaiming';
-      state.drone.reclaimSeconds = DRONE_RECLAIM_SECONDS;
+      state.drone.reclaimSeconds = state.tuning.reclaimLockSeconds;
       state.drone.etaSeconds = state.drone.reclaimSeconds + distance(state.drone, state.rover) / state.tuning.droneSpeed;
     }
     return;
@@ -568,7 +653,7 @@ function addFieldPatch(state: ContinuousWorldState, value: number): void {
     id: state.nextFieldId,
     x: state.rover.x - Math.cos(state.rover.heading) * offset,
     y: state.rover.y - Math.sin(state.rover.heading) * offset,
-    radius: state.speedState === 'crawl' ? 26 : FIELD_RADIUS,
+    radius: state.speedState === 'crawl' ? Math.max(12, state.tuning.fieldRadius * 0.59) : state.tuning.fieldRadius,
     value,
     age: 0
   });
@@ -576,19 +661,19 @@ function addFieldPatch(state: ContinuousWorldState, value: number): void {
 }
 
 function preserveFieldPatches(state: ContinuousWorldState): void {
-  if (state.fields.length <= MAX_FIELD_PATCHES) return;
+  if (state.fields.length <= state.tuning.maxFieldPatches) return;
 
   const removable = state.fields
-    .filter((field) => !field.reservedByDrone && field.value <= TRIMMABLE_CRAWL_FIELD_VALUE && field.radius < FIELD_RADIUS)
+    .filter((field) => !field.reservedByDrone && field.value <= state.tuning.trimmableCrawlFieldValue && field.radius < state.tuning.fieldRadius)
     .sort((a, b) => b.age - a.age)
-    .slice(0, state.fields.length - MAX_FIELD_PATCHES)
+    .slice(0, state.fields.length - state.tuning.maxFieldPatches)
     .map((field) => field.id);
   const removableIds = new Set(removable);
   state.fields = state.fields.filter((field) => !removableIds.has(field.id));
 }
 
 function resolveSpeedState(state: ContinuousWorldState): SpeedState {
-  if (getPreparedCoverage(state, state.rover) >= 0.24) return 'prepared';
+  if (getPreparedCoverage(state, state.rover) >= state.tuning.preparedCoverageThreshold) return 'prepared';
   if (state.nanobots >= 0.85) return 'fabricating';
   return 'crawl';
 }
@@ -602,13 +687,13 @@ function getPreparedMagnetTurn(state: ContinuousWorldState, input: ContinuousInp
   const activeSteer = Math.abs(input.steer) > 0.06;
   if (activeSteer && Math.sign(input.steer) === Math.sign(magnet.correction)) return 0;
 
-  const turnRate = activeSteer ? PREPARED_MAGNET_ACTIVE_TURN_RATE : PREPARED_MAGNET_PASSIVE_TURN_RATE;
-  return clamp(magnet.correction / PREPARED_MAGNET_CORRECTION_RANGE, -1, 1) * turnRate * magnet.strength;
+  const turnRate = activeSteer ? state.tuning.preparedMagnetActiveTurnRate : state.tuning.preparedMagnetPassiveTurnRate;
+  return clamp(magnet.correction / state.tuning.preparedMagnetCorrectionRange, -1, 1) * turnRate * magnet.strength;
 }
 
 function getPreparedFieldMagnet(state: ContinuousWorldState): { correction: number; strength: number } | undefined {
   const preparedFields = state.fields
-    .filter((field) => field.age >= state.tuning.preparedFieldMinAgeSeconds && field.value >= 0.08)
+    .filter((field) => field.age >= state.tuning.preparedFieldMinAgeSeconds && field.value >= state.tuning.preparedFieldMinValue)
     .sort((a, b) => a.id - b.id);
   if (preparedFields.length === 0) return undefined;
 
@@ -625,7 +710,7 @@ function getPreparedFieldMagnet(state: ContinuousWorldState): { correction: numb
   for (let index = 0; index < preparedFields.length; index += 1) {
     const field = preparedFields[index];
     const fieldDistance = distance(state.rover, field);
-    const influence = field.radius * PREPARED_MAGNET_INFLUENCE_MULTIPLIER;
+    const influence = field.radius * state.tuning.preparedMagnetInfluenceMultiplier;
     if (fieldDistance >= influence) continue;
 
     const weight = (1 - fieldDistance / influence) * clamp(field.value / state.tuning.startingFieldValue, 0.4, 1.4);
@@ -648,8 +733,8 @@ function getPreparedFieldMagnet(state: ContinuousWorldState): { correction: numb
   const tangentLength = Math.hypot(tangentX, tangentY);
   const tangent = tangentLength > 0.001 ? { x: tangentX / tangentLength, y: tangentY / tangentLength } : heading;
   const centerPull = {
-    x: (pullX / totalWeight) * PREPARED_MAGNET_CENTER_PULL,
-    y: (pullY / totalWeight) * PREPARED_MAGNET_CENTER_PULL
+    x: (pullX / totalWeight) * state.tuning.preparedMagnetCenterPull,
+    y: (pullY / totalWeight) * state.tuning.preparedMagnetCenterPull
   };
   const desired = {
     x: tangent.x + centerPull.x,
@@ -735,49 +820,129 @@ function applyContinuousWinLoss(state: ContinuousWorldState): void {
   }
 }
 
-function selectDroneTarget(state: ContinuousWorldState): FieldPatch | undefined {
-  const candidates: Array<{
-    field: FieldPatch;
-    score: number;
-    payload: number;
-    distance: number;
-  }> = [];
+export function getDroneReclaimDiagnostics(state: ContinuousWorldState): DroneReclaimDiagnostics {
+  const candidates = getReclaimCandidateDiagnostics(state);
+  const topCandidates = [...candidates].sort(compareReclaimCandidates).slice(0, 3);
+  const bestTarget = topCandidates[0];
+  const oldestFieldAge = state.fields.reduce((oldest, field) => Math.max(oldest, field.age), 0);
+  const nearEligibleFields = state.fields.filter((field) => {
+    return !field.reservedByDrone && field.age >= state.tuning.reclaimMinFieldAgeSeconds && field.value >= state.tuning.reclaimMinFieldValue;
+  });
+  const nearestNearEligibleFieldDistance =
+    nearEligibleFields.length > 0 ? Math.min(...nearEligibleFields.map((field) => distance(field, state.rover))) : undefined;
+  const bestClusterPayload = candidates.reduce((best, candidate) => Math.max(best, candidate.payload), 0);
+
+  return {
+    blockedReason: getDroneBlockedReason(state, candidates, oldestFieldAge, nearestNearEligibleFieldDistance, bestClusterPayload),
+    candidateCount: candidates.length,
+    rejectedCount: Math.max(0, state.fields.length - candidates.length),
+    bestTarget,
+    topCandidates,
+    oldestFieldAge,
+    nearestEligibleFieldDistance: bestTarget?.distanceFromRover,
+    nearestNearEligibleFieldDistance,
+    bestClusterPayload,
+    currentPreparedCoverage: getPreparedCoverage(state, state.rover),
+    currentSpeedState: state.speedState,
+    tuning: { ...state.tuning }
+  };
+}
+
+function selectDroneTarget(state: ContinuousWorldState): ReclaimCandidateDiagnostics | undefined {
+  return getReclaimCandidateDiagnostics(state).sort(compareReclaimCandidates)[0];
+}
+
+function getDroneBlockedReason(
+  state: ContinuousWorldState,
+  candidates: ReclaimCandidateDiagnostics[],
+  oldestFieldAge: number,
+  nearestNearEligibleFieldDistance: number | undefined,
+  bestClusterPayload: number
+): string | undefined {
+  if (state.phase !== 'playing') return 'Run is over';
+  if (state.drone.status !== 'ready') return 'Drone already committed';
+  if (candidates.length >= state.tuning.minReclaimCandidateCount && candidates.length > 0) return undefined;
+  if (state.fields.length === 0) return 'No reclaimable field yet';
+  if (oldestFieldAge < state.tuning.reclaimMinFieldAgeSeconds) {
+    return `Oldest field age ${oldestFieldAge.toFixed(1)}s / need ${state.tuning.reclaimMinFieldAgeSeconds.toFixed(1)}s`;
+  }
+  if (!state.fields.some((field) => !field.reservedByDrone)) return 'No unreserved reclaim target';
+  if (!state.fields.some((field) => !field.reservedByDrone && field.value >= state.tuning.reclaimMinFieldValue)) {
+    return `Best cluster payload ${bestClusterPayload.toFixed(2)} / need ${state.tuning.minReclaimClusterPayload.toFixed(2)}`;
+  }
+  if (!state.tuning.allowCloseReclaim && nearestNearEligibleFieldDistance !== undefined && nearestNearEligibleFieldDistance < state.tuning.reclaimMinDistanceFromRover) {
+    return `Nearest old field ${nearestNearEligibleFieldDistance.toFixed(0)} / need ${state.tuning.reclaimMinDistanceFromRover.toFixed(0)}`;
+  }
+  if (!state.tuning.allowLowPayloadLaunch && bestClusterPayload < state.tuning.minReclaimClusterPayload) {
+    return `Best cluster payload ${bestClusterPayload.toFixed(2)} / need ${state.tuning.minReclaimClusterPayload.toFixed(2)}`;
+  }
+  if (candidates.length < state.tuning.minReclaimCandidateCount) {
+    return `Candidate count ${candidates.length} / need ${state.tuning.minReclaimCandidateCount}`;
+  }
+  return 'No unreserved reclaim target';
+}
+
+function getReclaimCandidateDiagnostics(state: ContinuousWorldState): ReclaimCandidateDiagnostics[] {
+  const candidates: ReclaimCandidateDiagnostics[] = [];
 
   for (const field of state.fields) {
     if (!isSelectableReclaimTarget(state, field)) continue;
 
     const cluster = getReclaimCluster(state, field);
     const payload = getClusterPayload(cluster);
-    if (payload <= 0) continue;
+    if (!state.tuning.allowLowPayloadLaunch && payload < state.tuning.minReclaimClusterPayload) continue;
 
-    candidates.push({
-      field,
-      score: droneTargetScore(state, field, cluster, payload),
-      payload,
-      distance: distance(field, state.rover)
-    });
+    candidates.push(createReclaimCandidateDiagnostics(state, field, cluster, payload));
   }
 
-  return candidates.sort((a, b) => {
-    const scoreDelta = b.score - a.score;
-    if (Math.abs(scoreDelta) > 0.000001) return scoreDelta;
+  return candidates;
+}
 
-    const distanceDelta = a.distance - b.distance;
-    if (Math.abs(distanceDelta) > 0.000001) return distanceDelta;
+function createReclaimCandidateDiagnostics(
+  state: ContinuousWorldState,
+  field: FieldPatch,
+  cluster: FieldPatch[],
+  payload: number
+): ReclaimCandidateDiagnostics {
+  const weightedAge = getClusterWeightedAge(cluster, payload);
+  const spread = getClusterAverageDistanceFromTarget(cluster, field, payload);
+  const eta = estimateReclaimRefillEtaBreakdown(state, field);
+  const components = droneTargetScoreComponents(state, cluster, payload, weightedAge, spread, eta.totalSeconds);
+  const score = components.payloadValue + components.ageBonus - components.travelCost - components.spreadPenalty;
+  return {
+    targetPatchId: field.id,
+    target: { x: field.x, y: field.y },
+    payload,
+    fieldCount: cluster.length,
+    distanceFromRover: distance(field, state.rover),
+    weightedAge,
+    spread,
+    refillEtaSeconds: eta.totalSeconds,
+    eta,
+    score,
+    components
+  };
+}
 
-    const payloadDelta = b.payload - a.payload;
-    if (Math.abs(payloadDelta) > 0.000001) return payloadDelta;
+function compareReclaimCandidates(a: ReclaimCandidateDiagnostics, b: ReclaimCandidateDiagnostics): number {
+  const scoreDelta = b.score - a.score;
+  if (Math.abs(scoreDelta) > 0.000001) return scoreDelta;
 
-    return a.field.id - b.field.id;
-  })[0]?.field;
+  const distanceDelta = a.distanceFromRover - b.distanceFromRover;
+  if (Math.abs(distanceDelta) > 0.000001) return distanceDelta;
+
+  const payloadDelta = b.payload - a.payload;
+  if (Math.abs(payloadDelta) > 0.000001) return payloadDelta;
+
+  return a.targetPatchId - b.targetPatchId;
 }
 
 function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatch): boolean {
   return (
     !field.reservedByDrone &&
-    field.age >= RECLAIM_MIN_FIELD_AGE_SECONDS &&
-    field.value >= RECLAIM_MIN_FIELD_VALUE &&
-    distance(field, state.rover) >= 74
+    field.age >= state.tuning.reclaimMinFieldAgeSeconds &&
+    field.value >= state.tuning.reclaimMinFieldValue &&
+    (state.tuning.allowCloseReclaim || distance(field, state.rover) >= state.tuning.reclaimMinDistanceFromRover)
   );
 }
 
@@ -786,22 +951,25 @@ function getReclaimCluster(state: ContinuousWorldState, target: Vec2): FieldPatc
 }
 
 function isInReclaimCluster(state: ContinuousWorldState, field: FieldPatch, target: Vec2): boolean {
-  return field.value >= RECLAIM_MIN_FIELD_VALUE && distance(field, target) <= state.tuning.dronePickupRadius;
+  return field.value >= state.tuning.reclaimMinFieldValue && distance(field, target) <= state.tuning.dronePickupRadius;
 }
 
-function droneTargetScore(
+function droneTargetScoreComponents(
   state: ContinuousWorldState,
-  target: FieldPatch,
   cluster: FieldPatch[],
-  payload: number
-): number {
-  const ageBonus =
-    clamp(getClusterWeightedAge(cluster, payload) - RECLAIM_MIN_FIELD_AGE_SECONDS, 0, 18) *
-    DRONE_AGE_SCORE_MULTIPLIER;
-  const travelCost = estimateReclaimRefillEta(state, target) * DRONE_TRAVEL_SCORE_MULTIPLIER;
-  const awkwardnessPenalty = getClusterAverageDistanceFromTarget(cluster, target, payload) / DRONE_CLUSTER_SPREAD_SCORE_DIVISOR;
-
-  return payload * DRONE_PAYLOAD_SCORE_MULTIPLIER + ageBonus - travelCost - awkwardnessPenalty;
+  payload: number,
+  weightedAge: number,
+  spread: number,
+  refillEtaSeconds: number
+): DroneTargetScoreBreakdown {
+  return {
+    payloadValue: payload * state.tuning.dronePayloadScoreMultiplier,
+    ageBonus:
+      clamp(weightedAge - state.tuning.reclaimMinFieldAgeSeconds, 0, 18) *
+      state.tuning.droneAgeScoreMultiplier,
+    travelCost: refillEtaSeconds * state.tuning.droneTravelScoreMultiplier,
+    spreadPenalty: spread / Math.max(1, state.tuning.droneClusterSpreadScoreDivisor)
+  };
 }
 
 function getClusterPayload(cluster: FieldPatch[]): number {
@@ -819,8 +987,19 @@ function getClusterAverageDistanceFromTarget(cluster: FieldPatch[], target: Vec2
 }
 
 function estimateReclaimRefillEta(state: ContinuousWorldState, target: Vec2): number {
+  return estimateReclaimRefillEtaBreakdown(state, target).totalSeconds;
+}
+
+function estimateReclaimRefillEtaBreakdown(state: ContinuousWorldState, target: Vec2): ReclaimEtaBreakdown {
   const targetDistance = distance(state.rover, target);
-  return (targetDistance * 2) / state.tuning.droneSpeed + DRONE_RECLAIM_SECONDS;
+  const outboundSeconds = targetDistance / state.tuning.droneSpeed;
+  const returnSeconds = targetDistance / state.tuning.droneSpeed;
+  return {
+    outboundSeconds,
+    reclaimLockSeconds: state.tuning.reclaimLockSeconds,
+    returnSeconds,
+    totalSeconds: outboundSeconds + state.tuning.reclaimLockSeconds + returnSeconds
+  };
 }
 
 function estimateActiveDroneRefillEta(state: ContinuousWorldState): number {
@@ -828,7 +1007,7 @@ function estimateActiveDroneRefillEta(state: ContinuousWorldState): number {
 
   return (
     distance(state.drone, state.drone.target) / state.tuning.droneSpeed +
-    DRONE_RECLAIM_SECONDS +
+    state.tuning.reclaimLockSeconds +
     distance(state.drone.target, state.rover) / state.tuning.droneSpeed
   );
 }
