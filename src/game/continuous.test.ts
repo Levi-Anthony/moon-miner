@@ -27,24 +27,33 @@ describe('continuous Moon Miner spike rules', () => {
     expect(first.fertileZones).toEqual(second.fertileZones);
   });
 
-  it('stages the starter level as runway, temptation, and recovery pockets', () => {
+  it('stages the starter level as a raw start with spread-out ore seams', () => {
     const world = createContinuousWorld();
 
     expect(world.arenaId).toBe('first-run-readable');
     expect(world.arena.label).toBe('Readable First Run');
-    expect(world.fields.length).toBeGreaterThanOrEqual(9);
-    expect(world.fields[0].x).toBeLessThan(world.rover.x);
-    expect(world.fields[world.fields.length - 1].x).toBeGreaterThan(400);
+    expect(world.fields).toEqual([]);
+    expect(world.nextFieldId).toBe(1);
+    expect(world.speedState).toBe('fabricating');
+    expect(world.message).toBe('Raw field start. Drive to lay your first line, then reclaim it.');
+    expect(world.nanobots).toBe(6);
     expect(world.fertileZones.map((zone) => zone.id)).toEqual([
       'runway-pocket',
       'temptation-lobe',
-      'recovery-pocket'
+      'recovery-pocket',
+      'upper-shelf',
+      'east-saddle',
+      'south-east-pocket'
     ]);
     expect(world.fertileZones[0].x).toBeGreaterThan(world.rover.x);
-    expect(world.fertileZones[1].y).toBeLessThan(world.fertileZones[0].y - 80);
-    expect(world.fertileZones[2].y).toBeGreaterThan(world.fertileZones[0].y + 90);
+    expect(world.fertileZones[1].x).toBeGreaterThan(world.fertileZones[0].x + 300);
+    expect(world.fertileZones[1].y).toBeLessThan(world.fertileZones[0].y - 120);
+    expect(world.fertileZones[2].y).toBeGreaterThan(world.fertileZones[0].y + 130);
+    expect(world.fertileZones[4].x).toBeGreaterThan(800);
     expect(world.fertileZones.every((zone) => zone.vein)).toBe(true);
     expect(world.fertileZones[1].vein?.to.x).toBeGreaterThan(world.fertileZones[1].vein?.from.x ?? 0);
+    expect(world.arena.beats.length).toBeGreaterThanOrEqual(6);
+    expect(world.arena.beats.map((beat) => beat.label)).not.toContain('prepared runway');
     expect(world.arena.ridges.length).toBeLessThanOrEqual(3);
   });
 
@@ -57,7 +66,8 @@ describe('continuous Moon Miner spike rules', () => {
     expect(tight.tuning.preparedSpeed).toBe(125);
     expect(readable.arenaId).toBe('first-run-readable');
     expect(tight.arenaId).toBe('first-run-tight');
-    expect(readable.fields).not.toEqual(tight.fields);
+    expect(readable.fields).toEqual([]);
+    expect(tight.fields).toEqual([]);
     expect(readable.fertileZones[1].x).toBeGreaterThan(tight.fertileZones[1].x);
     expect(readable.fertileZones[1].vein).not.toEqual(tight.fertileZones[1].vein);
   });
@@ -76,14 +86,12 @@ describe('continuous Moon Miner spike rules', () => {
     expect(tickContinuousWorld(world, { steer: 0, throttle: 0, brake: true }, 0.1).lastYieldRate).toBe(0);
   });
 
-  it('idles on raw terrain without moving, printing field, or mining when there is no drive intent', () => {
+  it('idles on barren raw terrain without moving, printing field, or mining when there is no drive intent', () => {
     const world = createContinuousWorld();
-    const seam = world.fertileZones[0];
-    const veinStart = seam.vein?.from ?? seam;
     world.fields = [];
-    world.rover.x = veinStart.x;
-    world.rover.y = veinStart.y;
-    world.rover.heading = seam.vein ? Math.atan2(seam.vein.to.y - seam.vein.from.y, seam.vein.to.x - seam.vein.from.x) : 0;
+    world.rover.x = 90;
+    world.rover.y = 130;
+    world.rover.heading = 0;
     const start = { ...world.rover };
     const nanobots = world.nanobots;
 
@@ -145,6 +153,26 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.message).toBe('Mining arms harvesting while parked on prepared field.');
   });
 
+  it('keeps mining while parked on a raw fertile seam without printing field', () => {
+    const world = placeRoverAtVeinStart(createContinuousWorld(), 0);
+    world.fields = [];
+    world.nextFieldId = 1;
+    world.nanobots = 4;
+    const start = { ...world.rover };
+
+    const next = tickContinuousWorld(world, idleInput, 0.8);
+
+    expect(next.speedState).toBe('fabricating');
+    expect(next.rover.x).toBe(start.x);
+    expect(next.rover.y).toBe(start.y);
+    expect(next.rover.speed).toBe(0);
+    expect(next.fields).toEqual([]);
+    expect(next.nanobots).toBe(4);
+    expect(next.rover.ore).toBeGreaterThan(start.ore);
+    expect(next.lastYieldRate).toBeGreaterThan(0);
+    expect(next.message).toBe('Mining arms extracting from the seam while parked.');
+  });
+
   it('rewards fast aligned vein passes more than slow crosswise loitering', () => {
     const aligned = placeRoverInSecondFertileZone(createContinuousWorld());
     const crosswise = placeRoverInSecondFertileZone(createContinuousWorld());
@@ -169,7 +197,7 @@ describe('continuous Moon Miner spike rules', () => {
     const next = driveAlongCurrentVein(world, 0, 0.35, 'fabricating');
 
     expect(startRemaining).toBeLessThanOrEqual(10);
-    expect(next.fertileZones[0].remaining).toBeLessThan(startRemaining * 0.28);
+    expect(next.fertileZones[0].remaining).toBeLessThan(startRemaining * 0.32);
     expect(next.rover.ore).toBeGreaterThan(startRemaining * 0.7);
   });
 
@@ -413,7 +441,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.message).toBe('Solar window closed before the extraction quota.');
   });
 
-  it('can demonstrate abundance, overextension, crawl, and drone recovery in the starter route', () => {
+  it('can demonstrate field commitment, overextension, crawl, and drone recovery in the starter route', () => {
     const result = runContinuousSelfPlay();
     const speedKinds = new Set(result.trace.events.map((event) => event.speedState));
 
@@ -421,10 +449,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(result.summary.droneLaunches).toBe(1);
     expect(result.summary.droneDeliveries).toBeGreaterThan(0);
     expect(result.summary.elapsedSeconds).toBeGreaterThanOrEqual(75);
-    expect(result.summary.elapsedSeconds).toBeLessThanOrEqual(90);
-    expect(result.summary.speedSeconds.fabricating).toBeGreaterThan(10);
+    expect(result.summary.elapsedSeconds).toBeLessThanOrEqual(100);
+    expect(result.summary.speedSeconds.fabricating).toBeGreaterThan(8);
     expect(result.summary.speedSeconds.crawl).toBeGreaterThan(8);
-    expect(speedKinds.has('prepared')).toBe(true);
+    expect(result.summary.speedSeconds.prepared).toBeGreaterThan(5);
     expect(speedKinds.has('fabricating')).toBe(true);
     expect(speedKinds.has('crawl')).toBe(true);
     expect(result.state.rover.ore).toBeGreaterThan(1);
@@ -435,7 +463,7 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(summary.hitLoop).toBe(true);
     expect(summary.milestones.map((milestone) => [milestone.id, milestone.hit])).toEqual([
-      ['preparedAbundance', true],
+      ['fieldCommit', true],
       ['overextension', true],
       ['emergencyCrawl', true],
       ['droneRecovery', true]
@@ -451,7 +479,7 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(result.state.arenaId).toBe('first-run-tight');
     expect(result.summary.droneLaunches).toBe(1);
-    expect(result.summary.milestones.some((milestone) => milestone.id === 'preparedAbundance' && milestone.hit)).toBe(true);
+    expect(result.summary.milestones.some((milestone) => milestone.id === 'fieldCommit' && milestone.hit)).toBe(true);
   });
 });
 

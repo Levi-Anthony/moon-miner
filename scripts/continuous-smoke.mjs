@@ -12,7 +12,7 @@ const SNAPSHOT_SCRIPT_ID = 'moon-miner-continuous-debug-state';
 const ARENA_ID = 'first-run-readable';
 const DESKTOP_VIEWPORT = { width: 1040, height: 720 };
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
-const LOCAL_STORAGE_KEYS = ['moon-miner-continuous-tuning-v3', 'moon-miner-continuous-arena-v1'];
+const LOCAL_STORAGE_KEYS = ['moon-miner-continuous-tuning-v3', 'moon-miner-continuous-tuning-v4', 'moon-miner-continuous-arena-v1'];
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
@@ -232,9 +232,9 @@ async function verifyThrottleAndBrake(page) {
 }
 
 async function verifyReclaimPreview(page) {
-  const snapshot = await resetContinuousScene(page);
+  const snapshot = await prepareReclaimableTrail(page);
   const preview = snapshot.ui?.droneCue?.previewTarget;
-  if (!preview) throw new Error('Expected reclaim preview target in the fresh desktop scene.');
+  if (!preview) throw new Error('Expected reclaim preview target after driving a raw-start trail.');
   if (!(snapshot.ui.droneCue.previewPayload > 0)) {
     throw new Error(`Expected positive reclaim preview payload, got ${snapshot.ui.droneCue.previewPayload}.`);
   }
@@ -250,10 +250,11 @@ async function verifyReclaimPreview(page) {
 }
 
 async function verifyDroneLaunch(page) {
-  const reset = await resetContinuousScene(page);
-  if (reset.state.drone.status !== 'ready') {
-    throw new Error(`Expected ready drone after reset, got ${reset.state.drone.status}.`);
+  const ready = await prepareReclaimableTrail(page);
+  if (ready.state.drone.status !== 'ready') {
+    throw new Error(`Expected ready drone after preparing reclaimable trail, got ${ready.state.drone.status}.`);
   }
+  if (!ready.ui?.droneCue?.previewTarget) throw new Error('Expected a reclaim target before launching the drone.');
 
   await page.keyboard.down('Space');
   try {
@@ -267,6 +268,23 @@ async function verifyDroneLaunch(page) {
   } finally {
     await page.keyboard.up('Space');
   }
+}
+
+async function prepareReclaimableTrail(page) {
+  await resetContinuousScene(page);
+  return holdKeyUntil(
+    page,
+    'w',
+    'raw-start trail with reclaim preview',
+    (snapshot) => {
+      const preview = snapshot.ui?.droneCue?.previewTarget;
+      if (!preview) return undefined;
+      if (!(snapshot.ui.droneCue.previewPayload > 0)) return undefined;
+      if (!(snapshot.ui.droneCue.previewEtaSeconds > 0)) return undefined;
+      return snapshot;
+    },
+    18000
+  );
 }
 
 async function verifyDroneReadability(page) {
@@ -476,9 +494,9 @@ async function verifyMobileDrive(page) {
 }
 
 async function verifyMobileDroneLaunch(page) {
-  const reset = await resetContinuousScene(page);
-  const launch = reset.ui.buttons.launch;
-  await clickScenePoint(page, reset, launch.x + launch.width * 0.5, launch.y + launch.height * 0.5);
+  const ready = await prepareMobileReclaimableTrail(page);
+  const launch = ready.ui.buttons.launch;
+  await clickScenePoint(page, ready, launch.x + launch.width * 0.5, launch.y + launch.height * 0.5);
   const launched = await waitForSnapshot(page, 'portrait mobile drone launch', (snapshot) => {
     return snapshot.state.drone.status !== 'ready' && snapshot.loopSummary.droneLaunches === 1 ? snapshot : undefined;
   });
@@ -487,6 +505,36 @@ async function verifyMobileDroneLaunch(page) {
     status: launched.state.drone.status,
     launches: launched.loopSummary.droneLaunches
   };
+}
+
+async function prepareMobileReclaimableTrail(page) {
+  const reset = await resetContinuousScene(page);
+  const drive = reset.ui.controls?.drive;
+  if (!drive) throw new Error('Portrait mobile snapshot is missing drive control geometry.');
+
+  const start = {
+    x: drive.x + drive.width * 0.5,
+    y: drive.y + drive.height * 0.52
+  };
+  const end = {
+    x: start.x + drive.width * 0.08,
+    y: start.y - drive.height * 0.34
+  };
+
+  return dragScenePointUntil(
+    page,
+    reset,
+    start,
+    end,
+    'portrait mobile reclaimable trail',
+    (snapshot) => {
+      const preview = snapshot.ui?.droneCue?.previewTarget;
+      if (!preview) return undefined;
+      if (!(snapshot.ui.droneCue.previewPayload > 0)) return undefined;
+      return snapshot;
+    },
+    18000
+  );
 }
 
 async function assertMobileTouchTargets(page, snapshot) {
@@ -528,14 +576,14 @@ async function clickScenePoint(page, snapshot, x, y) {
   await page.mouse.click(point.x, point.y);
 }
 
-async function dragScenePointUntil(page, snapshot, start, end, label, predicate) {
+async function dragScenePointUntil(page, snapshot, start, end, label, predicate, timeoutMs = 8000) {
   const startPoint = await sceneToViewportPoint(page, snapshot, start.x, start.y);
   const endPoint = await sceneToViewportPoint(page, snapshot, end.x, end.y);
   await page.mouse.move(startPoint.x, startPoint.y);
   await page.mouse.down();
   await page.mouse.move(endPoint.x, endPoint.y, { steps: 8 });
   try {
-    return await waitForSnapshot(page, label, predicate);
+    return await waitForSnapshot(page, label, predicate, timeoutMs);
   } finally {
     await page.mouse.up();
   }
@@ -559,10 +607,10 @@ async function getSceneToViewportScale(page, snapshot) {
   };
 }
 
-async function holdKeyUntil(page, key, label, predicate) {
+async function holdKeyUntil(page, key, label, predicate, timeoutMs = 8000) {
   await page.keyboard.down(key);
   try {
-    return await waitForSnapshot(page, label, predicate);
+    return await waitForSnapshot(page, label, predicate, timeoutMs);
   } finally {
     await page.keyboard.up(key);
   }

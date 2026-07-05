@@ -1,7 +1,7 @@
 import type { ContinuousWorldState, DroneStatus, SpeedState } from './continuous';
 
 export type ContinuousLoopMilestoneId =
-  | 'preparedAbundance'
+  | 'fieldCommit'
   | 'overextension'
   | 'emergencyCrawl'
   | 'droneRecovery';
@@ -64,13 +64,12 @@ const LOOP_MILESTONES: Array<{
   label: string;
   shortLabel: string;
 }> = [
-  { id: 'preparedAbundance', label: 'Prepared abundance', shortLabel: 'Prep' },
+  { id: 'fieldCommit', label: 'First field commit', shortLabel: 'Field' },
   { id: 'overextension', label: 'Overextension', shortLabel: 'Extend' },
   { id: 'emergencyCrawl', label: 'Emergency crawl', shortLabel: 'Crawl' },
   { id: 'droneRecovery', label: 'Drone recovery', shortLabel: 'Drone' }
 ];
 
-const PREPARED_SPEED_THRESHOLD_RATIO = 0.8;
 const OVEREXTENSION_SPEND_THRESHOLD = 2.5;
 const CRAWL_SECONDS_THRESHOLD = 0.2;
 const RECOVERY_REBOUND_THRESHOLD = 3;
@@ -91,7 +90,7 @@ export function createContinuousLoopTrace(state: ContinuousWorldState): Continuo
       crawl: 0
     },
     milestones: {
-      preparedAbundance: { hit: false },
+      fieldCommit: { hit: false },
       overextension: { hit: false },
       emergencyCrawl: { hit: false },
       droneRecovery: { hit: false }
@@ -138,7 +137,7 @@ export function recordContinuousLoopTick(
     pushEvent(trace, current, 'droneDelivery', `payload +${delivered.toFixed(1)}`);
   }
 
-  maybeHitPreparedAbundance(trace, current);
+  maybeHitFieldCommit(trace, current);
   maybeHitOverextension(trace, current);
   maybeHitEmergencyCrawl(trace, current);
   maybeHitDroneRecovery(trace, current);
@@ -173,22 +172,21 @@ export function getContinuousLoopSummary(trace: ContinuousLoopTrace): Continuous
   };
 }
 
-function maybeHitPreparedAbundance(trace: ContinuousLoopTrace, state: ContinuousWorldState): void {
-  if (trace.milestones.preparedAbundance.hit) return;
-  if (state.speedState !== 'prepared') return;
-  if (state.rover.speed < state.tuning.preparedSpeed * PREPARED_SPEED_THRESHOLD_RATIO) return;
-  if (state.nanobots < trace.startNanobots - 0.25) return;
+function maybeHitFieldCommit(trace: ContinuousLoopTrace, state: ContinuousWorldState): void {
+  if (trace.milestones.fieldCommit.hit) return;
+  if (state.fields.length <= 0) return;
+  if (state.rover.speed <= 0) return;
 
   hitMilestone(
     trace,
     state,
-    'preparedAbundance',
-    `speed ${state.rover.speed.toFixed(0)}, nanobots ${state.nanobots.toFixed(1)}`
+    'fieldCommit',
+    `${state.fields.length} field patch${state.fields.length === 1 ? '' : 'es'}, nanobots ${state.nanobots.toFixed(1)}`
   );
 }
 
 function maybeHitOverextension(trace: ContinuousLoopTrace, state: ContinuousWorldState): void {
-  if (!trace.milestones.preparedAbundance.hit || trace.milestones.overextension.hit) return;
+  if (!trace.milestones.fieldCommit.hit || trace.milestones.overextension.hit) return;
   if (state.speedState !== 'fabricating') return;
   if (state.nanobots > trace.startNanobots - OVEREXTENSION_SPEND_THRESHOLD) return;
 

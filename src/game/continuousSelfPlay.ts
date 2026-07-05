@@ -41,13 +41,15 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
   firstLoop: {
     id: 'firstLoop',
     label: 'First Loop Read',
-    durationSeconds: 84,
-    droneLaunchSeconds: [42],
+    durationSeconds: 96,
+    droneLaunchSeconds: [32],
     waypoints: [
-      { label: 'read prepared runway', x: 326, y: 492, untilSeconds: 9 },
-      { label: 'take the rich side lobe', x: 590, y: 358, untilSeconds: 28 },
-      { label: 'recover through lower pocket', x: 368, y: 596, untilSeconds: 42 },
-      { label: 'stretch toward the next leg', x: 650, y: 510, untilSeconds: 84 }
+      { label: 'shape opening seam', x: 320, y: 492, untilSeconds: 5 },
+      { label: 'reuse opening field', x: 128, y: 520, untilSeconds: 14 },
+      { label: 'climb upper shelf', x: 484, y: 256, untilSeconds: 32 },
+      { label: 'push rich far seam', x: 690, y: 342, untilSeconds: 50 },
+      { label: 'drop to lower recovery', x: 392, y: 640, untilSeconds: 68 },
+      { label: 'test east saddle', x: 846, y: 496, untilSeconds: 96 }
     ]
   }
 } satisfies Record<string, ContinuousSelfPlayRoute>;

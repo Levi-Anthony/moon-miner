@@ -58,7 +58,7 @@ const DRONE_RECLAIM_SECONDS = 0.42;
 const LOW_NANOBOT_RATIO = 0.18;
 const DRONE_URGENCY_RATIO = 0.32;
 const DELIVERY_READOUT_MS = 1260;
-const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v3';
+const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v4';
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 
 type ButtonId = 'launch' | 'reset';
@@ -112,7 +112,7 @@ const TUNING_CONTROLS: TuningControlDefinition[] = [
   { key: 'dronePickupRadius', label: 'Drone pickup', min: 70, max: 180, step: 2 },
   { key: 'crawlRecoveryPerSecond', label: 'Crawl recovery', min: 0.02, max: 0.3, step: 0.01, precision: 2 },
   { key: 'mineRate', label: 'Mining yield', min: 0.18, max: 0.55, step: 0.01, precision: 2 },
-  { key: 'startingNanobots', label: 'Start stock', min: 6, max: 24, step: 1 },
+  { key: 'startingNanobots', label: 'Start stock', min: 3, max: 16, step: 1 },
   { key: 'startingSolarSeconds', label: 'Sun window', min: 90, max: 220, step: 5 },
   { key: 'preparedFieldMinAgeSeconds', label: 'Prep delay', min: 0.2, max: 1.4, step: 0.05, precision: 2 }
 ];
@@ -2336,6 +2336,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (message.startsWith('Drone recovered')) return message.replace(' nanobots. Shape the return.', '. Payload returning.');
     if (message.startsWith('Drone delivered')) return message.replace(' nanobots. Field buffer restored.', '. Buffer restored.');
     if (message.startsWith('Prepared field online')) return 'Prepared field online. Keep supplied.';
+    if (message.startsWith('Raw field start')) return 'Raw start. Lay a line, then reclaim.';
     return message;
   }
 

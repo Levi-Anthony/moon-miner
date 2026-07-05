@@ -138,12 +138,12 @@ const PREPARED_MAGNET_CENTER_PULL = 0.92;
 const PREPARED_MAGNET_PASSIVE_TURN_RATE = 2.25;
 const PREPARED_MAGNET_ACTIVE_TURN_RATE = 0.45;
 const PREPARED_MAGNET_CORRECTION_RANGE = 0.7;
-const STATIONARY_MINING_FLOW_MULTIPLIER = 0.28;
+const STATIONARY_MINING_FLOW_MULTIPLIER = 0.55;
 
 export const DEFAULT_CONTINUOUS_TUNING: ContinuousTuning = {
-  startingNanobots: 11,
+  startingNanobots: 6,
   maxNanobots: 32,
-  targetOre: 28,
+  targetOre: 42,
   startingSolarSeconds: 165,
   preparedSpeed: 88,
   fabricatingSpeed: 74,
@@ -203,10 +203,10 @@ export function createContinuousWorld(
     solarSeconds: resolvedTuning.startingSolarSeconds,
     elapsedSeconds: 0,
     phase: 'playing',
-    speedState: 'prepared',
-    arms: allocateArms('prepared', true),
+    speedState: 'fabricating',
+    arms: allocateArms('fabricating', false),
     lastYieldRate: 0,
-    message: 'Prepared field online. Keep the machine supplied before sunset.',
+    message: fields.length > 0 ? 'Prepared field online. Keep the machine supplied before sunset.' : 'Raw field start. Drive to lay your first line, then reclaim it.',
     nextFieldId,
     fieldEmitDistance: 0,
     pendingFieldValue: 0
@@ -339,11 +339,11 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
   }
 
   state.speedState = resolveSpeedState(state);
-  const fertileZone = findFertileZoneAt(state, state.rover);
-  state.arms = allocateArms(state.speedState, Boolean(fertileZone));
   const driveIntent = Boolean(input.driveIntent);
   const movedDistance = steerAndMoveRover(state, input, deltaSeconds);
   runFieldSystem(state, driveIntent, movedDistance, deltaSeconds);
+  const fertileZone = findFertileZoneAt(state, state.rover);
+  state.arms = allocateArms(state.speedState, Boolean(fertileZone));
   runMiningSystem(state, fertileZone, driveIntent, deltaSeconds);
   advanceDrone(state, deltaSeconds);
   preserveFieldPatches(state);
@@ -445,7 +445,6 @@ function runMiningSystem(
 ): void {
   state.lastYieldRate = 0;
   if (!fertileZone || state.arms.mining <= 0) return;
-  if (!driveIntent && state.speedState !== 'prepared') return;
 
   const preparedMultiplier = state.speedState === 'prepared' ? 1.08 : state.speedState === 'fabricating' ? 1 : 0.12;
   const speedMultiplier = state.speedState === 'crawl' ? 0.35 : 1;
@@ -462,8 +461,13 @@ function runMiningSystem(
   state.rover.ore += mined;
   state.lastYieldRate = yieldRate;
 
-  if (mined > 0 && !driveIntent) {
+  if (mined > 0 && !driveIntent && state.speedState === 'prepared') {
     state.message = 'Mining arms harvesting while parked on prepared field.';
+    return;
+  }
+
+  if (mined > 0 && !driveIntent) {
+    state.message = 'Mining arms extracting from the seam while parked.';
     return;
   }
 

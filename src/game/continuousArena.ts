@@ -28,70 +28,102 @@ export interface ContinuousArenaDefinition {
 const FIRST_RUN_READABLE: ContinuousArenaDefinition = {
   id: 'first-run-readable',
   label: 'Readable First Run',
-  description: 'Calibration runway, obvious rich overextension lobe, and lower recovery seam for the continuous loop bet.',
-  start: { x: 150, y: 520 },
-  startHeading: -0.18,
-  starterFieldPoints: [
-    { x: 112, y: 528 },
-    { x: 150, y: 520 },
-    { x: 188, y: 512 },
-    { x: 226, y: 505 },
-    { x: 264, y: 499 },
-    { x: 302, y: 494 },
-    { x: 340, y: 491 },
-    { x: 378, y: 489 },
-    { x: 416, y: 490 }
-  ],
+  description: 'Raw-field start with separated opening, upper, lower, and far-east seams for route-shape testing.',
+  start: { x: 128, y: 520 },
+  startHeading: -0.1,
+  starterFieldPoints: [],
   fertileZones: [
     {
       id: 'runway-pocket',
-      x: 342,
+      x: 320,
       y: 492,
-      radius: 88,
+      radius: 82,
       vein: {
-        from: { x: 250, y: 506 },
-        to: { x: 442, y: 488 },
-        width: 76
+        from: { x: 240, y: 512 },
+        to: { x: 408, y: 466 },
+        width: 64
       },
-      richness: 1.25,
-      remaining: 5.8
+      richness: 1.18,
+      remaining: 6.5
     },
     {
       id: 'temptation-lobe',
-      x: 590,
-      y: 358,
-      radius: 116,
+      x: 690,
+      y: 342,
+      radius: 120,
       vein: {
-        from: { x: 496, y: 448 },
-        to: { x: 668, y: 306 },
-        width: 72
+        from: { x: 590, y: 414 },
+        to: { x: 784, y: 280 },
+        width: 70
       },
       richness: 1.95,
       remaining: 13
     },
     {
       id: 'recovery-pocket',
-      x: 368,
-      y: 596,
-      radius: 102,
+      x: 392,
+      y: 640,
+      radius: 108,
       vein: {
-        from: { x: 286, y: 594 },
-        to: { x: 476, y: 624 },
-        width: 74
+        from: { x: 286, y: 624 },
+        to: { x: 514, y: 672 },
+        width: 72
       },
-      richness: 1.7,
-      remaining: 13.5
+      richness: 1.65,
+      remaining: 12
+    },
+    {
+      id: 'upper-shelf',
+      x: 484,
+      y: 256,
+      radius: 90,
+      vein: {
+        from: { x: 382, y: 294 },
+        to: { x: 592, y: 226 },
+        width: 58
+      },
+      richness: 1.45,
+      remaining: 9
+    },
+    {
+      id: 'east-saddle',
+      x: 846,
+      y: 496,
+      radius: 112,
+      vein: {
+        from: { x: 734, y: 548 },
+        to: { x: 958, y: 448 },
+        width: 68
+      },
+      richness: 1.55,
+      remaining: 12
+    },
+    {
+      id: 'south-east-pocket',
+      x: 782,
+      y: 632,
+      radius: 94,
+      vein: {
+        from: { x: 676, y: 628 },
+        to: { x: 900, y: 664 },
+        width: 62
+      },
+      richness: 1.45,
+      remaining: 9
     }
   ],
   ridges: [
     { id: 'left-horizon', from: { x: 76, y: 392 }, to: { x: 188, y: 368 } },
-    { id: 'temptation-backstop', from: { x: 706, y: 276 }, to: { x: 866, y: 318 } },
-    { id: 'lower-boundary', from: { x: 612, y: 648 }, to: { x: 812, y: 660 } }
+    { id: 'north-backstop', from: { x: 664, y: 210 }, to: { x: 884, y: 268 } },
+    { id: 'south-boundary', from: { x: 610, y: 674 }, to: { x: 844, y: 682 } }
   ],
   beats: [
-    { id: 'runway', label: 'prepared runway', x: 342, y: 492 },
-    { id: 'temptation', label: 'rich side seam', x: 590, y: 358 },
-    { id: 'recovery', label: 'recovery seam', x: 368, y: 596 }
+    { id: 'runway', label: 'opening seam', x: 320, y: 492 },
+    { id: 'upper-shelf', label: 'upper shelf', x: 484, y: 256 },
+    { id: 'temptation', label: 'rich far seam', x: 690, y: 342 },
+    { id: 'recovery', label: 'lower recovery', x: 392, y: 640 },
+    { id: 'east-saddle', label: 'east saddle', x: 846, y: 496 },
+    { id: 'south-east', label: 'south-east pocket', x: 782, y: 632 }
   ]
 };
 
@@ -99,68 +131,100 @@ const FIRST_RUN_TIGHT: ContinuousArenaDefinition = {
   ...FIRST_RUN_READABLE,
   id: 'first-run-tight',
   label: 'Tighter First Run',
-  description: 'A compact comparison variant with a shorter overextension leg.',
-  starterFieldPoints: [
-    { x: 116, y: 526 },
-    { x: 150, y: 520 },
-    { x: 184, y: 514 },
-    { x: 218, y: 508 },
-    { x: 252, y: 502 },
-    { x: 286, y: 497 },
-    { x: 320, y: 493 },
-    { x: 354, y: 490 },
-    { x: 388, y: 488 }
-  ],
+  description: 'A compact comparison variant with no starter field and shorter gaps between separated seams.',
+  starterFieldPoints: [],
   fertileZones: [
     {
       id: 'runway-pocket',
-      x: 326,
-      y: 492,
-      radius: 76,
+      x: 310,
+      y: 500,
+      radius: 74,
       vein: {
-        from: { x: 244, y: 505 },
-        to: { x: 394, y: 488 },
-        width: 68
+        from: { x: 236, y: 514 },
+        to: { x: 382, y: 474 },
+        width: 58
       },
-      richness: 1.6,
-      remaining: 8
+      richness: 1.35,
+      remaining: 7
     },
     {
       id: 'temptation-lobe',
-      x: 548,
-      y: 374,
-      radius: 94,
+      x: 640,
+      y: 354,
+      radius: 100,
       vein: {
-        from: { x: 476, y: 438 },
-        to: { x: 620, y: 322 },
-        width: 66
+        from: { x: 552, y: 416 },
+        to: { x: 720, y: 300 },
+        width: 64
       },
       richness: 2.1,
       remaining: 13
     },
     {
       id: 'recovery-pocket',
-      x: 360,
-      y: 582,
-      radius: 88,
+      x: 386,
+      y: 618,
+      radius: 90,
       vein: {
-        from: { x: 292, y: 578 },
-        to: { x: 434, y: 606 },
-        width: 68
+        from: { x: 300, y: 604 },
+        to: { x: 478, y: 642 },
+        width: 64
       },
       richness: 1.75,
+      remaining: 9.5
+    },
+    {
+      id: 'upper-shelf',
+      x: 444,
+      y: 288,
+      radius: 76,
+      vein: {
+        from: { x: 362, y: 316 },
+        to: { x: 526, y: 264 },
+        width: 54
+      },
+      richness: 1.45,
+      remaining: 7
+    },
+    {
+      id: 'east-saddle',
+      x: 786,
+      y: 500,
+      radius: 92,
+      vein: {
+        from: { x: 694, y: 536 },
+        to: { x: 880, y: 464 },
+        width: 60
+      },
+      richness: 1.6,
       remaining: 9
+    },
+    {
+      id: 'south-east-pocket',
+      x: 736,
+      y: 616,
+      radius: 78,
+      vein: {
+        from: { x: 654, y: 606 },
+        to: { x: 820, y: 638 },
+        width: 56
+      },
+      richness: 1.5,
+      remaining: 7.5
     }
   ],
   ridges: [
     { id: 'left-horizon', from: { x: 88, y: 404 }, to: { x: 188, y: 382 } },
-    { id: 'upper-horizon', from: { x: 650, y: 260 }, to: { x: 824, y: 306 } },
-    { id: 'lower-boundary', from: { x: 650, y: 640 }, to: { x: 820, y: 660 } }
+    { id: 'upper-horizon', from: { x: 604, y: 238 }, to: { x: 806, y: 288 } },
+    { id: 'lower-boundary', from: { x: 596, y: 658 }, to: { x: 808, y: 676 } }
   ],
   beats: [
-    { id: 'runway', label: 'prepared runway', x: 326, y: 492 },
-    { id: 'temptation', label: 'rich side lobe', x: 548, y: 374 },
-    { id: 'recovery', label: 'recovery pocket', x: 360, y: 582 }
+    { id: 'runway', label: 'opening seam', x: 310, y: 500 },
+    { id: 'upper-shelf', label: 'upper shelf', x: 444, y: 288 },
+    { id: 'temptation', label: 'rich far seam', x: 640, y: 354 },
+    { id: 'recovery', label: 'lower recovery', x: 386, y: 618 },
+    { id: 'east-saddle', label: 'east saddle', x: 786, y: 500 },
+    { id: 'south-east', label: 'south-east pocket', x: 736, y: 616 }
   ]
 };
 
