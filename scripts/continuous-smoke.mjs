@@ -63,6 +63,7 @@ async function main() {
     const reclaimPreview = await verifyReclaimPreview(page);
     const drone = await verifyDroneLaunch(page);
     const droneReadability = await verifyDroneReadability(page);
+    const oreVisibility = await verifyOreVeinVisibility(page);
     const { page: mobilePage } = await newHarnessPage(browser, `${appUrl}?mobile=1`, {
       viewport: MOBILE_VIEWPORT,
       deviceScaleFactor: 2,
@@ -87,7 +88,9 @@ async function main() {
         `Space drone status: ${drone.status}, launches: ${drone.launches}`,
         `drone cues urgent/reserved/return/delivery: ${droneReadability.urgentNanobots.toFixed(1)}nb / ${droneReadability.reservedCount} fields / +${droneReadability.returnPayload.toFixed(1)} / +${droneReadability.deliveryAmount.toFixed(1)}`,
         `view modes default/chase: ${presentation.defaultViewMode} / ${presentation.chaseViewMode}`,
-        `camera lab preset/hybrid: ${presentation.defaultCameraPreset} / ${presentation.hybridCameraPreset}`,
+        `camera lab preset/chase/hybrid: ${presentation.defaultCameraPreset} / ${presentation.chaseCameraPreset} / ${presentation.hybridCameraPreset}`,
+        `visual terrain craters/fissures/veins: ${presentation.defaultCraterCount} / ${presentation.defaultFissureCount} / ${presentation.defaultVeinCount}`,
+        `ore cues active/depleted/prepared beds: ${oreVisibility.activeVeinId} / ${oreVisibility.depletedScarCount} scars / ${oreVisibility.preparedFieldBeds} beds`,
         `dynamics preset: ${presentation.defaultDynamicsPresetName}`,
         `drone rail blocked/tuned: ${presentation.defaultBlockedReason} / ${presentation.tunedCandidateCount} candidates`,
         `dev overlay default/toggle/query: ${presentation.defaultHidden ? 'hidden' : 'visible'} / ${presentation.toggleVisible ? 'visible' : 'hidden'} / ${presentation.queryVisible ? 'visible' : 'hidden'}`,
@@ -134,6 +137,7 @@ async function verifyPresentation(page, appUrl) {
     throw new Error(`Expected Stable First Run dynamics preset by default, got ${JSON.stringify(defaultSnapshot.ui?.droneRailLab)}.`);
   }
   const defaultTextBoundsChecked = assertUiLayout(defaultSnapshot, 'desktop', 'tactical');
+  const defaultVisual = assertVisualClarity(defaultSnapshot, 'default tactical playfield');
 
   const defaultOverlay = await waitForOverlay(page, false, 'default hidden tuning panel');
 
@@ -145,6 +149,7 @@ async function verifyPresentation(page, appUrl) {
     return snapshot.ui?.viewMode === 'chase' ? snapshot : undefined;
   });
   const chaseTextBoundsChecked = assertUiLayout(chaseSnapshot, 'desktop', 'chase');
+  assertChasePresetDifference(defaultSnapshot, chaseSnapshot);
   await waitForOverlay(page, false, 'chase query clean tuning panel');
 
   await page.goto(`${appUrl}?debug=1`);
@@ -186,7 +191,11 @@ async function verifyPresentation(page, appUrl) {
     defaultViewMode: defaultSnapshot.ui.viewMode,
     chaseViewMode: chaseSnapshot.ui.viewMode,
     defaultCameraPreset: defaultSnapshot.ui.cameraLab.preset,
+    chaseCameraPreset: chaseSnapshot.ui.cameraLab.preset,
     hybridCameraPreset: hybridCameraSnapshot.ui.cameraLab.preset,
+    defaultCraterCount: defaultVisual.craterCount,
+    defaultFissureCount: defaultVisual.fissureCount,
+    defaultVeinCount: defaultVisual.veinCount,
     defaultDynamicsPresetName: defaultSnapshot.ui.droneRailLab.dynamicsPresetName,
     defaultBlockedReason: defaultSnapshot.ui.droneRailLab.blockedReason ?? 'available',
     tunedCandidateCount: tunedDynamicsSnapshot.ui.droneRailLab.candidateReclaimCount,
@@ -396,6 +405,58 @@ async function verifyDroneReadability(page) {
     reservedCount: reserved.reservedCount,
     returnPayload: returning.state.drone.payload,
     deliveryAmount: delivery.ui.droneCue.deliveryAmount
+  };
+}
+
+async function verifyOreVeinVisibility(page) {
+  const reset = await resetContinuousScene(page);
+  const defaultVisual = assertVisualClarity(reset, 'fresh tactical ore veins');
+
+  await page.evaluate(() => {
+    window.__moonMinerContinuous?.setDynamicsTuning({
+      mineRate: 3.2
+    });
+  });
+
+  const active = await holdKeyUntil(
+    page,
+    'w',
+    'active mining ore-vein cue',
+    (snapshot) => {
+      const activeVein = snapshot.ui?.visual?.oreVeins?.find((vein) => vein.activeMiningCue);
+      if (!activeVein) return undefined;
+      if (activeVein.richnessPipCount <= 0) {
+        throw new Error(`Active ore vein is missing richness pips: ${JSON.stringify(activeVein)}.`);
+      }
+      return { snapshot, activeVein };
+    },
+    12000
+  );
+
+  const depleted = await holdKeyUntil(
+    page,
+    'w',
+    'depleted ore-vein scar cue',
+    (snapshot) => {
+      const scarredVein = snapshot.ui?.visual?.oreVeins?.find((vein) => {
+        return vein.remainingRatio < 0.76 && vein.depletionScarCount >= 2;
+      });
+      return scarredVein ? { snapshot, scarredVein } : undefined;
+    },
+    12000
+  );
+
+  const reclaimTrail = await prepareReclaimableTrail(page);
+  const trailVisual = assertVisualClarity(reclaimTrail, 'prepared field terrain underlay', {
+    requirePreparedFieldBeds: true
+  });
+
+  return {
+    defaultVeinCount: defaultVisual.veinCount,
+    activeVeinId: active.activeVein.id,
+    depletedVeinId: depleted.scarredVein.id,
+    depletedScarCount: depleted.scarredVein.depletionScarCount,
+    preparedFieldBeds: trailVisual.preparedFieldBedCount
   };
 }
 
@@ -770,6 +831,81 @@ function assertUiLayout(snapshot, expectedMode, expectedViewMode = 'tactical') {
   return assertHudTextLayout(ui, snapshot.gameSize);
 }
 
+function assertVisualClarity(snapshot, label, options = {}) {
+  const visual = snapshot.ui?.visual;
+  if (!visual) throw new Error(`${label}: debug snapshot is missing visual clarity metadata.`);
+  const terrain = visual.terrain;
+  if (!terrain) throw new Error(`${label}: visual snapshot is missing terrain metadata.`);
+  if (terrain.craterCount < 12 || terrain.fissureCount < 16) {
+    throw new Error(`${label}: terrain layer is too sparse: ${JSON.stringify(terrain)}.`);
+  }
+  if (terrain.fertileBedCount < snapshot.state.fertileZones.length) {
+    throw new Error(`${label}: fertile terrain beds do not cover all zones: ${JSON.stringify(terrain)}.`);
+  }
+  if (terrain.ridgeCount < snapshot.state.arena.ridges.length) {
+    throw new Error(`${label}: ridge metadata dropped: ${JSON.stringify(terrain)}.`);
+  }
+  if (options.requirePreparedFieldBeds && terrain.preparedFieldBedCount < 1) {
+    throw new Error(`${label}: expected prepared field terrain underlay after a reclaimable trail.`);
+  }
+
+  const veins = visual.oreVeins;
+  if (!Array.isArray(veins) || veins.length < snapshot.state.fertileZones.filter((zone) => zone.vein).length) {
+    throw new Error(`${label}: visual snapshot is missing ore-vein metadata.`);
+  }
+  for (const vein of veins) {
+    if (!(vein.screenBounds.width > 18 && vein.screenBounds.height > 10)) {
+      throw new Error(`${label}: ore vein ${vein.id} has unreadable screen bounds ${JSON.stringify(vein.screenBounds)}.`);
+    }
+    assertRectIntersects(
+      vein.screenBounds,
+      { x: 0, y: snapshot.ui.hudHeight, width: snapshot.gameSize.x, height: snapshot.gameSize.y - snapshot.ui.hudHeight },
+      `${label}: ore vein ${vein.id}`
+    );
+    if (vein.remainingRatio > 0.025 && vein.richnessPipCount < 1) {
+      throw new Error(`${label}: ore vein ${vein.id} has remaining ore without richness pips: ${JSON.stringify(vein)}.`);
+    }
+    if (vein.remainingRatio < 0.76 && vein.depletionScarCount < 2) {
+      throw new Error(`${label}: depleted ore vein ${vein.id} lacks explicit depletion scars: ${JSON.stringify(vein)}.`);
+    }
+  }
+
+  return {
+    craterCount: terrain.craterCount,
+    fissureCount: terrain.fissureCount,
+    veinCount: veins.length,
+    preparedFieldBedCount: terrain.preparedFieldBedCount
+  };
+}
+
+function assertChasePresetDifference(defaultSnapshot, chaseSnapshot) {
+  const defaultCamera = defaultSnapshot.ui?.cameraLab;
+  const chaseCamera = chaseSnapshot.ui?.cameraLab;
+  if (!defaultCamera || !chaseCamera) throw new Error('Missing camera lab snapshots for chase comparison.');
+  if (chaseCamera.preset !== 'roverChase') {
+    throw new Error(`?view=chase should apply the rover chase preset, got ${chaseCamera.preset}.`);
+  }
+  if (chaseCamera.projectionMode !== 'chase perspective') {
+    throw new Error(`?view=chase should expose chase projection metadata, got ${chaseCamera.projectionMode}.`);
+  }
+  if (!chaseCamera.settings.horizonVisible) {
+    throw new Error('?view=chase should enable the horizon / ground plane cue.');
+  }
+
+  const focusDelta = pointDistance(defaultCamera.focus, chaseCamera.focus);
+  const centerDelta = pointDistance(defaultCamera.center, chaseCamera.center);
+  const zoomDelta = Math.abs(defaultCamera.zoom - chaseCamera.zoom);
+  const perspectiveDelta =
+    Math.abs(defaultCamera.settings.projectedYScale - chaseCamera.settings.projectedYScale) +
+    Math.abs(defaultCamera.settings.projectionShear - chaseCamera.settings.projectionShear) +
+    Math.abs(defaultCamera.settings.rotationBlendAmount - chaseCamera.settings.rotationBlendAmount);
+  if (focusDelta < 120 || centerDelta < 24 || zoomDelta < 0.2 || perspectiveDelta < 0.5) {
+    throw new Error(
+      `?view=chase is not visually distinct enough: focus ${focusDelta.toFixed(1)}, center ${centerDelta.toFixed(1)}, zoom ${zoomDelta.toFixed(2)}, perspective ${perspectiveDelta.toFixed(2)}.`
+    );
+  }
+}
+
 function assertHudTextLayout(ui, gameSize) {
   if (!ui.textBounds) throw new Error('Debug snapshot is missing rendered text bounds.');
 
@@ -809,6 +945,17 @@ function assertRectWithin(rect, bounds) {
   }
 }
 
+function assertRectIntersects(rect, bounds, label) {
+  if (
+    rect.x + rect.width < bounds.x ||
+    rect.x > bounds.x + bounds.width ||
+    rect.y + rect.height < bounds.y ||
+    rect.y > bounds.y + bounds.height
+  ) {
+    throw new Error(`${label} does not intersect expected bounds: ${JSON.stringify(rect)} in ${JSON.stringify(bounds)}.`);
+  }
+}
+
 function assertRectWithinPadded(rect, bounds, tolerance, label) {
   if (
     rect.x < bounds.x - tolerance ||
@@ -827,6 +974,10 @@ function rectsOverlap(first, second) {
     first.y < second.y + second.height &&
     first.y + first.height > second.y
   );
+}
+
+function pointDistance(first, second) {
+  return Math.hypot(first.x - second.x, first.y - second.y);
 }
 
 async function readSnapshot(page) {

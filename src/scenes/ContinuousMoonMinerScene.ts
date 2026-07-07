@@ -66,6 +66,8 @@ const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v5';
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
 const DRONE_RAIL_LAB_STORAGE_KEY = 'moon-miner-drone-rail-lab-v1';
+const TERRAIN_CRATER_COUNT = 18;
+const TERRAIN_FISSURE_COUNT = 22;
 
 type ButtonId = 'launch' | 'reset';
 type EffectKind = 'launch' | 'delivery' | 'recovery' | 'sprint' | 'build' | 'crawl' | 'mine' | 'win' | 'loss' | 'blocked';
@@ -571,6 +573,7 @@ interface ContinuousUiSnapshot {
   viewMode: ViewMode;
   cameraLab: CameraLabSnapshot;
   droneRailLab: DroneRailLabSnapshot;
+  visual: ContinuousVisualSnapshot;
   hudHeight: number;
   debugOverlayVisible: boolean;
   vitals: ContinuousUiRect[];
@@ -597,6 +600,30 @@ interface ContinuousUiSnapshot {
     deliveryReadoutVisible: boolean;
     deliveryAmount?: number;
   };
+}
+
+interface ContinuousVisualSnapshot {
+  terrain: TerrainVisualSnapshot;
+  oreVeins: OreVeinVisualSnapshot[];
+}
+
+interface TerrainVisualSnapshot {
+  craterCount: number;
+  fissureCount: number;
+  fertileBedCount: number;
+  preparedFieldBedCount: number;
+  ridgeCount: number;
+}
+
+interface OreVeinVisualSnapshot {
+  id: string;
+  screenBounds: ContinuousUiRect;
+  remainingRatio: number;
+  richness: number;
+  richnessPipCount: number;
+  depletionScarCount: number;
+  active: boolean;
+  activeMiningCue: boolean;
 }
 
 interface DroneRailLabSnapshot {
@@ -716,10 +743,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
   create(): void {
     this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId());
-    this.cameraLab = this.loadStoredCameraLab();
+    this.cameraLab = this.loadInitialCameraLab();
     this.droneRailLab = this.loadStoredDroneRailLab();
-    this.viewMode = this.readViewMode(this.cameraLab.viewMode);
-    this.cameraLab.viewMode = this.viewMode;
+    this.viewMode = this.cameraLab.viewMode;
     this.debugOverlayVisible = this.shouldOpenDebugOverlay();
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
@@ -919,16 +945,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  private readViewMode(fallback: ViewMode): ViewMode {
-    if (!import.meta.env.DEV) return 'tactical';
+  private readUrlViewMode(): ViewMode | undefined {
+    if (!import.meta.env.DEV) return undefined;
 
     try {
       const params = new URLSearchParams(window.location.search);
       const view = params.get('view');
       if (view === 'chase' || view === 'hybrid' || view === 'tactical') return view;
-      return fallback;
+      return undefined;
     } catch {
-      return fallback;
+      return undefined;
     }
   }
 
@@ -2040,6 +2066,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return value.toFixed(definition.precision ?? 0);
   }
 
+  private loadInitialCameraLab(): CameraLabSettings {
+    const stored = this.loadStoredCameraLab();
+    const urlViewMode = this.readUrlViewMode();
+    if (!urlViewMode) return stored;
+
+    const presetId: CameraPresetId =
+      urlViewMode === 'chase' ? 'roverChase' : urlViewMode === 'hybrid' ? 'hybridAuto' : 'tacticalMap';
+    return this.normalizeCameraLabSettings({ ...this.getCameraPreset(presetId).settings });
+  }
+
   private loadStoredCameraLab(): CameraLabSettings {
     if (!import.meta.env.DEV) return { ...DEFAULT_CAMERA_LAB_SETTINGS };
 
@@ -2219,6 +2255,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private draw(): void {
     this.graphics.clear();
     this.drawBackdrop();
+    this.drawTerrainLayer();
     this.drawFertileZones();
     this.drawFirstRunAffordances();
     this.drawBeatMarkers();
@@ -2341,30 +2378,201 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineBetween(0, layout.hudHeight, layout.width, layout.hudHeight);
   }
 
+  private drawTerrainLayer(): void {
+    const visualCalm = this.visualCalm();
+
+    for (let index = 0; index < TERRAIN_CRATER_COUNT; index += 1) {
+      this.drawTerrainCrater(index, visualCalm);
+    }
+
+    for (let index = 0; index < TERRAIN_FISSURE_COUNT; index += 1) {
+      this.drawTerrainFissure(index, visualCalm);
+    }
+
+    for (const zone of this.state.fertileZones) {
+      this.drawFertileTerrainBed(zone, visualCalm);
+    }
+
+    this.drawPreparedFieldTerrainBeds(visualCalm);
+  }
+
+  private drawTerrainCrater(index: number, visualCalm: number): void {
+    const point = this.terrainFeaturePoint(index, 37);
+    const screen = this.project(point);
+    const scale = this.projectedScale(point);
+    const yScale = this.shapeYScale();
+    const radius = 18 + ((index * 23) % 44);
+    const width = radius * (1.45 + (index % 4) * 0.12) * scale;
+    const height = radius * (0.72 + (index % 3) * 0.1) * yScale * scale;
+
+    this.graphics.fillStyle(index % 3 === 0 ? 0x1b211f : 0x161d24, 0.1 + visualCalm * 0.06);
+    this.graphics.fillEllipse(screen.x, screen.y, width, height);
+    this.graphics.lineStyle(1, index % 3 === 0 ? 0x58614e : 0x485467, 0.14 + visualCalm * 0.16);
+    this.graphics.strokeEllipse(screen.x, screen.y, width, height);
+    if (index % 4 === 0) {
+      this.graphics.lineStyle(1, 0x222a30, 0.32);
+      this.graphics.strokeEllipse(screen.x - width * 0.08, screen.y + height * 0.04, width * 0.54, height * 0.44);
+    }
+  }
+
+  private drawTerrainFissure(index: number, visualCalm: number): void {
+    const start = this.terrainFeaturePoint(index, 113);
+    const angle = ((index * 41) % 360) * (Math.PI / 180);
+    const length = 48 + ((index * 31) % 96);
+    const kink = this.pointFromHeading(start, angle + Math.sin(index) * 0.4, length * 0.48);
+    const end = this.pointFromHeading(kink, angle - 0.34 + (index % 5) * 0.12, length * 0.58);
+    const from = this.project(start);
+    const mid = this.project(kink);
+    const to = this.project(end);
+    const alpha = 0.16 + visualCalm * 0.15;
+
+    this.graphics.lineStyle(2, index % 2 === 0 ? 0x2a342d : 0x2b3340, alpha);
+    this.graphics.lineBetween(from.x, from.y, mid.x, mid.y);
+    this.graphics.lineBetween(mid.x, mid.y, to.x, to.y);
+    this.graphics.lineStyle(1, 0x697180, alpha * 0.38);
+    this.graphics.lineBetween(from.x + 2, from.y - 2, mid.x + 2, mid.y - 2);
+  }
+
+  private drawFertileTerrainBed(zone: FertileZone, visualCalm: number): void {
+    if (!zone.vein) {
+      const center = this.project(zone);
+      const scale = this.projectedScale(zone);
+      const yScale = this.shapeYScale();
+      this.graphics.fillStyle(0x25281e, 0.16 + visualCalm * 0.08);
+      this.graphics.fillEllipse(center.x, center.y, zone.radius * 2.55 * scale, zone.radius * 1.64 * yScale * scale);
+      this.graphics.lineStyle(1, 0x66704c, 0.18 + visualCalm * 0.1);
+      this.graphics.strokeEllipse(center.x, center.y, zone.radius * 2.55 * scale, zone.radius * 1.64 * yScale * scale);
+      return;
+    }
+
+    const polygon = this.fertileVeinScreenPolygon(zone, zone.vein.width + 76);
+    this.graphics.fillStyle(0x22281d, 0.18 + visualCalm * 0.07);
+    this.graphics.fillPoints(polygon.points, true, true);
+    this.graphics.lineStyle(1, 0x596342, 0.2 + visualCalm * 0.12);
+    this.graphics.strokePoints(polygon.points, true, true);
+
+    const from = this.project(zone.vein.from);
+    const to = this.project(zone.vein.to);
+    const width = Math.max(polygon.fromWidth, polygon.toWidth);
+    for (const offset of [-0.46, -0.18, 0.2, 0.48]) {
+      const fromOffset = {
+        x: from.x + polygon.normal.x * width * offset,
+        y: from.y + polygon.normal.y * width * offset
+      };
+      const toOffset = {
+        x: to.x + polygon.normal.x * width * offset,
+        y: to.y + polygon.normal.y * width * offset
+      };
+      this.graphics.lineStyle(1, offset > 0 ? 0x445642 : 0x343224, 0.12 + visualCalm * 0.1);
+      this.graphics.lineBetween(fromOffset.x, fromOffset.y, toOffset.x, toOffset.y);
+    }
+  }
+
+  private drawPreparedFieldTerrainBeds(visualCalm: number): void {
+    const preparedFields = [...this.state.fields]
+      .filter((field) => {
+        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds && field.value >= this.state.tuning.preparedFieldMinValue;
+      })
+      .sort((a, b) => a.id - b.id);
+    const sections = this.fieldSections(preparedFields);
+
+    for (const section of sections) {
+      if (section.length === 1) {
+        this.drawPreparedFieldTerrainCap(section[0], visualCalm);
+        continue;
+      }
+
+      for (let index = 0; index < section.length - 1; index += 1) {
+        this.drawPreparedFieldTerrainSegment(section[index], section[index + 1], visualCalm);
+      }
+      this.drawPreparedFieldTerrainCap(section[0], visualCalm);
+      this.drawPreparedFieldTerrainCap(section[section.length - 1], visualCalm);
+    }
+  }
+
+  private drawPreparedFieldTerrainSegment(
+    from: { x: number; y: number; radius: number; value: number },
+    to: { x: number; y: number; radius: number; value: number },
+    visualCalm: number
+  ): void {
+    const fromScreen = this.project(from);
+    const toScreen = this.project(to);
+    const dx = toScreen.x - fromScreen.x;
+    const dy = toScreen.y - fromScreen.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= 0.01) return;
+
+    const normal = { x: -dy / length, y: dx / length };
+    const fromWidth = this.fieldRoadWidth(from) * 1.42;
+    const toWidth = this.fieldRoadWidth(to) * 1.42;
+    const points = [
+      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
+      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
+      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
+      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
+    ];
+
+    this.graphics.fillStyle(0x193334, 0.12 + visualCalm * 0.06);
+    this.graphics.fillPoints(points, true, true);
+    this.graphics.lineStyle(1, 0x3b5f5c, 0.18 + visualCalm * 0.1);
+    this.graphics.strokePoints(points, true, true);
+  }
+
+  private drawPreparedFieldTerrainCap(
+    field: { x: number; y: number; radius: number; value: number },
+    visualCalm: number
+  ): void {
+    const center = this.project(field);
+    const width = this.fieldRoadWidth(field) * 1.42;
+    const yScale = this.shapeYScale();
+    this.graphics.fillStyle(0x193334, 0.1 + visualCalm * 0.05);
+    this.graphics.fillEllipse(center.x, center.y, width * 2.12, width * 1.22 * yScale);
+    this.graphics.lineStyle(1, 0x3b5f5c, 0.14 + visualCalm * 0.1);
+    this.graphics.strokeEllipse(center.x, center.y, width * 2.12, width * 1.22 * yScale);
+  }
+
+  private terrainFeaturePoint(index: number, salt: number): Vec2 {
+    return {
+      x: 58 + ((index * 197 + salt * 53) % Math.max(1, this.state.width - 116)),
+      y: 84 + ((index * 131 + salt * 71) % Math.max(1, this.state.height - 132))
+    };
+  }
+
   private drawFertileZones(): void {
     const visualCalm = this.visualCalm();
     const activeZone = findFertileZoneAt(this.state, this.state.rover);
     for (const zone of this.state.fertileZones) {
-      const depletion = clamp(zone.remaining / 70, 0.18, 1);
       const active = activeZone?.id === zone.id;
       if (zone.vein) {
-        this.drawFertileVein(zone.vein.from, zone.vein.to, zone.vein.width, depletion, visualCalm, active);
+        this.drawFertileVein(zone, visualCalm, active);
       } else {
         const center = this.project(zone);
         const scale = this.projectedScale(zone);
         const yScale = this.shapeYScale();
         const activePulse = active ? 0.14 + Math.sin(this.time.now / 130) * 0.04 : 0;
-        this.graphics.fillStyle(0x8a6837, (0.16 + 0.17 * visualCalm + activePulse) * depletion);
+        const remainingRatio = this.fertileZoneRemainingRatio(zone);
+        const depletedRatio = 1 - remainingRatio;
+        const scarCount = this.fertileZoneDepletionScarCount(zone);
+        this.graphics.fillStyle(0x8a6837, 0.1 + (0.16 + 0.17 * visualCalm + activePulse) * remainingRatio);
         this.graphics.fillEllipse(center.x, center.y, zone.radius * 2.1 * scale, zone.radius * 1.36 * yScale * scale);
-        this.graphics.lineStyle(active ? 5 : 3, active ? 0xffe48a : 0xf0bc4f, (0.26 + 0.24 * visualCalm + activePulse) * depletion);
+        this.graphics.lineStyle(active ? 5 : 3, active ? 0xffe48a : 0xf0bc4f, 0.18 + (0.26 + 0.24 * visualCalm + activePulse) * remainingRatio);
         this.graphics.strokeEllipse(center.x, center.y, zone.radius * 2.1 * scale, zone.radius * 1.36 * yScale * scale);
-        this.graphics.fillStyle(0xffdc75, (0.08 + 0.1 * visualCalm) * depletion);
+        this.graphics.fillStyle(0xffdc75, (0.08 + 0.1 * visualCalm) * remainingRatio);
         this.graphics.fillEllipse(
           center.x + zone.radius * 0.1 * scale,
           center.y - zone.radius * 0.08 * yScale * scale,
           zone.radius * 1.1 * scale,
           zone.radius * 0.52 * yScale * scale
         );
+        for (let index = 0; index < scarCount; index += 1) {
+          const angle = (index / Math.max(1, scarCount)) * Math.PI * 2;
+          const scar = {
+            x: center.x + Math.cos(angle) * zone.radius * 0.7 * scale * depletedRatio,
+            y: center.y + Math.sin(angle) * zone.radius * 0.36 * yScale * scale * depletedRatio
+          };
+          this.graphics.lineStyle(2, 0x33271f, 0.74);
+          this.graphics.lineBetween(scar.x - 8 * scale, scar.y - 3 * yScale * scale, scar.x + 8 * scale, scar.y + 3 * yScale * scale);
+        }
       }
     }
   }
@@ -2492,52 +2700,210 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineBetween(fromScreen.x, fromScreen.y, toScreen.x, toScreen.y);
   }
 
-  private drawFertileVein(
-    from: Vec2,
-    to: Vec2,
-    width: number,
-    depletion: number,
-    visualCalm: number,
-    active = false
+  private drawFertileVein(zone: FertileZone, visualCalm: number, active = false): void {
+    if (!zone.vein) return;
+
+    const polygon = this.fertileVeinScreenPolygon(zone, zone.vein.width);
+    const fromScreen = this.project(zone.vein.from);
+    const toScreen = this.project(zone.vein.to);
+    const remainingRatio = this.fertileZoneRemainingRatio(zone);
+    const depletedRatio = 1 - remainingRatio;
+    const richnessRatio = clamp(zone.richness / 2.1, 0.45, 1);
+    const pulse = active ? 0.5 + Math.sin(this.time.now / 145) * 0.5 : 0;
+    const activeMiningCue = active && this.state.lastYieldRate > 0.001;
+
+    this.graphics.fillStyle(0x664525, 0.14 + visualCalm * 0.1);
+    this.graphics.fillPoints(polygon.points, true, true);
+    this.graphics.lineStyle(active ? 5 : 3, active ? 0xffe48a : 0xbf9145, 0.34 + visualCalm * 0.22 + pulse * 0.18);
+    this.graphics.strokePoints(polygon.points, true, true);
+
+    if (depletedRatio > 0.025) {
+      this.drawVeinDepletionBand(zone, depletedRatio, polygon);
+    }
+
+    if (remainingRatio > 0.025) {
+      const richStart = depletedRatio;
+      const lineWidth = active ? 5 + richnessRatio * 4 : 3 + richnessRatio * 4;
+      const start = this.pointOnSegment(fromScreen, toScreen, richStart);
+      this.graphics.lineStyle(lineWidth + 5, 0x21170f, 0.54);
+      this.graphics.lineBetween(start.x, start.y, toScreen.x, toScreen.y);
+      this.graphics.lineStyle(lineWidth, active ? 0xfff0a8 : 0xffcf61, 0.72 + pulse * 0.2);
+      this.graphics.lineBetween(start.x, start.y, toScreen.x, toScreen.y);
+      this.drawOreRichnessPips(zone, richStart, remainingRatio, richnessRatio, active);
+    }
+
+    if (activeMiningCue) {
+      this.drawActiveMiningCue(zone, pulse);
+    } else if (active) {
+      const markerProgress = depletedRatio + ((this.time.now / 620) % 1) * remainingRatio;
+      const marker = this.pointOnSegment(fromScreen, toScreen, markerProgress);
+      this.graphics.fillStyle(0xfff0b5, 0.84);
+      this.graphics.fillCircle(marker.x, marker.y, 5);
+      this.graphics.lineStyle(1, 0xfff7d0, 0.86);
+      this.graphics.strokeCircle(marker.x, marker.y, 10);
+    }
+  }
+
+  private drawVeinDepletionBand(
+    zone: FertileZone,
+    depletedRatio: number,
+    polygon: { normal: Vec2; fromWidth: number; toWidth: number }
   ): void {
-    const fromScreen = this.project(from);
-    const toScreen = this.project(to);
+    if (!zone.vein) return;
+
+    const fromScreen = this.project(zone.vein.from);
+    const toScreen = this.project(zone.vein.to);
+    const depletedEnd = this.pointOnSegment(fromScreen, toScreen, depletedRatio);
+    this.graphics.lineStyle(8, 0x2b211a, 0.86);
+    this.graphics.lineBetween(fromScreen.x, fromScreen.y, depletedEnd.x, depletedEnd.y);
+
+    const scarCount = this.fertileZoneDepletionScarCount(zone);
+    for (let index = 0; index < scarCount; index += 1) {
+      const progress = clamp(((index + 0.5) / Math.max(1, scarCount)) * depletedRatio, 0.02, Math.max(0.02, depletedRatio));
+      const center = this.pointOnSegment(fromScreen, toScreen, progress);
+      const localWidth = Phaser.Math.Linear(polygon.fromWidth, polygon.toWidth, progress) * 0.62;
+      const jag = index % 2 === 0 ? 1 : -1;
+      this.graphics.lineStyle(2, 0x100c09, 0.9);
+      this.graphics.lineBetween(
+        center.x - polygon.normal.x * localWidth + jag * 3,
+        center.y - polygon.normal.y * localWidth - jag * 2,
+        center.x + polygon.normal.x * localWidth - jag * 3,
+        center.y + polygon.normal.y * localWidth + jag * 2
+      );
+      this.graphics.lineStyle(1, 0x6b5840, 0.42);
+      this.graphics.lineBetween(
+        center.x - polygon.normal.x * localWidth * 0.54,
+        center.y - polygon.normal.y * localWidth * 0.54,
+        center.x + polygon.normal.x * localWidth * 0.54,
+        center.y + polygon.normal.y * localWidth * 0.54
+      );
+    }
+  }
+
+  private drawOreRichnessPips(
+    zone: FertileZone,
+    richStart: number,
+    remainingRatio: number,
+    richnessRatio: number,
+    active: boolean
+  ): void {
+    if (!zone.vein) return;
+
+    const fromScreen = this.project(zone.vein.from);
+    const toScreen = this.project(zone.vein.to);
+    const pipCount = this.fertileZoneRichnessPipCount(zone);
+    const visiblePips = Math.min(pipCount, Math.max(1, Math.ceil(pipCount * remainingRatio)));
+    const pulse = active ? 0.5 + Math.sin(this.time.now / 150) * 0.5 : 0;
+
+    for (let index = 0; index < visiblePips; index += 1) {
+      const local = (index + 0.5) / visiblePips;
+      const progress = clamp(richStart + local * remainingRatio, 0.04, 0.98);
+      const center = this.pointOnSegment(fromScreen, toScreen, progress);
+      const offset = ((index % 3) - 1) * (3 + richnessRatio * 5);
+      const pip = {
+        x: center.x + ((toScreen.y - fromScreen.y) / Math.max(1, Math.hypot(toScreen.x - fromScreen.x, toScreen.y - fromScreen.y))) * offset,
+        y: center.y - ((toScreen.x - fromScreen.x) / Math.max(1, Math.hypot(toScreen.x - fromScreen.x, toScreen.y - fromScreen.y))) * offset
+      };
+      const radius = 3.8 + richnessRatio * 3 + (active ? pulse * 1.8 : 0);
+      this.graphics.fillStyle(index % 2 === 0 ? 0xffdc75 : 0xffb84c, 0.86);
+      this.graphics.fillCircle(pip.x, pip.y, radius);
+      this.graphics.lineStyle(1, 0xfff2b8, active ? 0.72 + pulse * 0.18 : 0.5);
+      this.graphics.strokeCircle(pip.x, pip.y, radius + 3);
+    }
+  }
+
+  private drawActiveMiningCue(zone: FertileZone, pulse: number): void {
+    if (!zone.vein) return;
+
+    const miningPoint = this.closestPointOnFertileZone(zone, this.state.rover);
+    const screen = this.project(miningPoint);
+    const scale = this.projectedScale(miningPoint);
+    this.graphics.fillStyle(0xffe48a, 0.18 + pulse * 0.12);
+    this.graphics.fillCircle(screen.x, screen.y, 20 * scale + pulse * 7);
+    this.graphics.lineStyle(3, 0xfff0b5, 0.82 + pulse * 0.14);
+    this.graphics.strokeCircle(screen.x, screen.y, 16 * scale + pulse * 6);
+
+    for (let index = 0; index < 8; index += 1) {
+      const angle = (index / 8) * Math.PI * 2 + this.time.now / 170;
+      const startRadius = 9 * scale;
+      const endRadius = (16 + (index % 3) * 5 + pulse * 7) * scale;
+      this.graphics.lineStyle(index % 2 === 0 ? 2 : 1, index % 2 === 0 ? 0xfff5c6 : 0xffb650, 0.58 + pulse * 0.28);
+      this.graphics.lineBetween(
+        screen.x + Math.cos(angle) * startRadius,
+        screen.y + Math.sin(angle) * startRadius,
+        screen.x + Math.cos(angle) * endRadius,
+        screen.y + Math.sin(angle) * endRadius
+      );
+    }
+  }
+
+  private fertileVeinScreenPolygon(
+    zone: FertileZone,
+    width: number
+  ): { points: Vec2[]; normal: Vec2; fromWidth: number; toWidth: number } {
+    const vein = zone.vein;
+    if (!vein) {
+      return {
+        points: [],
+        normal: { x: 0, y: 1 },
+        fromWidth: 0,
+        toWidth: 0
+      };
+    }
+
+    const fromScreen = this.project(vein.from);
+    const toScreen = this.project(vein.to);
     const dx = toScreen.x - fromScreen.x;
     const dy = toScreen.y - fromScreen.y;
     const length = Math.hypot(dx, dy);
-    if (length <= 0.01) return;
+    if (length <= 0.01) {
+      return {
+        points: [fromScreen, toScreen],
+        normal: { x: 0, y: 1 },
+        fromWidth: 0,
+        toWidth: 0
+      };
+    }
 
     const normal = { x: -dy / length, y: dx / length };
-    const fromWidth = (width / 2) * this.projectedScale(from);
-    const toWidth = (width / 2) * this.projectedScale(to);
-    const points = [
-      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
-      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
-      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
-      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
-    ];
-    const pulse = active ? 0.5 + Math.sin(this.time.now / 145) * 0.5 : 0;
-    const fillAlpha = (0.12 + 0.16 * visualCalm + pulse * 0.08) * depletion;
-    const lineAlpha = (0.26 + 0.24 * visualCalm + pulse * 0.12) * depletion;
+    const fromWidth = (width / 2) * this.projectedScale(vein.from);
+    const toWidth = (width / 2) * this.projectedScale(vein.to);
+    return {
+      points: [
+        { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
+        { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
+        { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
+        { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
+      ],
+      normal,
+      fromWidth,
+      toWidth
+    };
+  }
 
-    this.graphics.fillStyle(0x8a6837, fillAlpha);
-    this.graphics.fillPoints(points, true, true);
-    this.graphics.lineStyle(active ? 5 : 3, active ? 0xffe48a : 0xf0bc4f, lineAlpha);
-    this.graphics.strokePoints(points, true, true);
-    this.graphics.lineStyle(active ? 4 : 2, 0xffdc75, (0.24 + 0.25 * visualCalm + pulse * 0.22) * depletion);
-    this.graphics.lineBetween(fromScreen.x, fromScreen.y, toScreen.x, toScreen.y);
+  private fertileZoneInitialRemaining(zone: FertileZone): number {
+    return this.state.arena.fertileZones.find((candidate) => candidate.id === zone.id)?.remaining ?? zone.remaining;
+  }
 
-    if (active) {
-      const markerProgress = (this.time.now / 620) % 1;
-      const marker = {
-        x: Phaser.Math.Linear(fromScreen.x, toScreen.x, markerProgress),
-        y: Phaser.Math.Linear(fromScreen.y, toScreen.y, markerProgress)
-      };
-      this.graphics.fillStyle(0xfff0b5, 0.74);
-      this.graphics.fillCircle(marker.x, marker.y, 5);
-      this.graphics.lineStyle(1, 0xfff7d0, 0.8);
-      this.graphics.strokeCircle(marker.x, marker.y, 10);
-    }
+  private fertileZoneRemainingRatio(zone: FertileZone): number {
+    const initial = Math.max(0.001, this.fertileZoneInitialRemaining(zone));
+    return clamp(zone.remaining / initial, 0, 1);
+  }
+
+  private fertileZoneRichnessPipCount(zone: FertileZone): number {
+    return clamp(Math.round(3 + zone.richness * 2.35), 4, 8);
+  }
+
+  private fertileZoneDepletionScarCount(zone: FertileZone): number {
+    const depletedRatio = 1 - this.fertileZoneRemainingRatio(zone);
+    return Math.floor(depletedRatio * 9);
+  }
+
+  private pointOnSegment(from: Vec2, to: Vec2, progress: number): Vec2 {
+    return {
+      x: Phaser.Math.Linear(from.x, to.x, progress),
+      y: Phaser.Math.Linear(from.y, to.y, progress)
+    };
   }
 
   private drawRidges(): void {
@@ -4008,6 +4374,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       viewMode: this.viewMode,
       cameraLab: this.getCameraLabSnapshot(),
       droneRailLab: this.getDroneRailLabSnapshot(),
+      visual: this.getVisualSnapshot(),
       hudHeight: layout.hudHeight,
       debugOverlayVisible: this.debugOverlayVisible,
       vitals: layout.vitals.map((rect) => ({ ...rect })),
@@ -4060,6 +4427,68 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       preparedCoverage: diagnostics.currentPreparedCoverage,
       speedState: diagnostics.currentSpeedState,
       tuning: { ...this.state.tuning }
+    };
+  }
+
+  private getVisualSnapshot(): ContinuousVisualSnapshot {
+    const activeZone = findFertileZoneAt(this.state, this.state.rover);
+    return {
+      terrain: {
+        craterCount: TERRAIN_CRATER_COUNT,
+        fissureCount: TERRAIN_FISSURE_COUNT,
+        fertileBedCount: this.state.fertileZones.length,
+        preparedFieldBedCount: this.getPreparedFieldTerrainSectionCount(),
+        ridgeCount: this.state.arena.ridges.length
+      },
+      oreVeins: this.state.fertileZones
+        .filter((zone) => Boolean(zone.vein))
+        .map((zone) => {
+          const totalPips = this.fertileZoneRichnessPipCount(zone);
+          const remainingRatio = this.fertileZoneRemainingRatio(zone);
+          return {
+            id: zone.id,
+            screenBounds: this.getFertileVeinScreenBounds(zone),
+            remainingRatio,
+            richness: zone.richness,
+            richnessPipCount: Math.min(totalPips, remainingRatio > 0.025 ? Math.max(1, Math.ceil(totalPips * remainingRatio)) : 0),
+            depletionScarCount: this.fertileZoneDepletionScarCount(zone),
+            active: activeZone?.id === zone.id,
+            activeMiningCue: activeZone?.id === zone.id && this.state.lastYieldRate > 0.001
+          };
+        })
+    };
+  }
+
+  private getPreparedFieldTerrainSectionCount(): number {
+    const preparedFields = [...this.state.fields]
+      .filter((field) => {
+        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds && field.value >= this.state.tuning.preparedFieldMinValue;
+      })
+      .sort((a, b) => a.id - b.id);
+    return this.fieldSections(preparedFields).length;
+  }
+
+  private getFertileVeinScreenBounds(zone: FertileZone): ContinuousUiRect {
+    const polygon = this.fertileVeinScreenPolygon(zone, zone.vein?.width ?? zone.radius);
+    return this.rectFromPoints(polygon.points);
+  }
+
+  private rectFromPoints(points: Vec2[]): ContinuousUiRect {
+    if (points.length === 0) {
+      return { x: 0, y: 0, width: 0, height: 0 };
+    }
+
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const top = Math.min(...ys);
+    const bottom = Math.max(...ys);
+    return {
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top
     };
   }
 
