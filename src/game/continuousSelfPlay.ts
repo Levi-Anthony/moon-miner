@@ -1,7 +1,9 @@
 import {
   createContinuousWorld,
+  isRoverAtExtraction,
   launchReclaimDrone,
   tickContinuousWorld,
+  type ContinuousPhase,
   type ContinuousInput,
   type ContinuousTuning,
   type ContinuousWorldState,
@@ -25,9 +27,26 @@ export interface ContinuousSelfPlayWaypoint extends Vec2 {
 export interface ContinuousSelfPlayRoute {
   id: string;
   label: string;
+  arenaId?: ContinuousArenaId;
   durationSeconds: number;
   droneLaunchSeconds: number[];
+  safeCorridorLeaveThreshold?: number;
   waypoints: ContinuousSelfPlayWaypoint[];
+}
+
+export interface ContinuousSelfPlayMetrics {
+  reachedExtraction: boolean;
+  result: ContinuousPhase;
+  oreValue: number;
+  solarRemaining: number;
+  minNanobots: number;
+  crawlSeconds: number;
+  droneLaunches: number;
+  droneDeliveries: number;
+  maxDroneEta: number;
+  leftSafeCorridor: boolean;
+  maxSafeCorridorDistance: number;
+  routeDurationSeconds: number;
 }
 
 export interface ContinuousSelfPlayResult {
@@ -35,6 +54,7 @@ export interface ContinuousSelfPlayResult {
   state: ContinuousWorldState;
   trace: ContinuousLoopTrace;
   summary: ContinuousLoopSummary;
+  metrics: ContinuousSelfPlayMetrics;
 }
 
 export const CONTINUOUS_SELF_PLAY_ROUTES = {
@@ -51,6 +71,69 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
       { label: 'drop to lower recovery', x: 392, y: 640, untilSeconds: 68 },
       { label: 'test east saddle', x: 846, y: 496, untilSeconds: 96 }
     ]
+  },
+  safeReturn: {
+    id: 'safeReturn',
+    label: 'Last Light Safe Return',
+    arenaId: 'last-light-return',
+    durationSeconds: 48,
+    droneLaunchSeconds: [4.2, 9.2],
+    safeCorridorLeaveThreshold: 120,
+    waypoints: [
+      { label: 'hold the safe road', x: 745, y: 565, untilSeconds: 2.6 },
+      { label: 'safe center bend', x: 570, y: 530, untilSeconds: 5.4 },
+      { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 8.7 },
+      { label: 'extraction', x: 135, y: 610, untilSeconds: 48 }
+    ]
+  },
+  shallowLobe: {
+    id: 'shallowLobe',
+    label: 'Last Light Shallow Lobe',
+    arenaId: 'last-light-return',
+    durationSeconds: 58,
+    droneLaunchSeconds: [4.9, 11.8],
+    safeCorridorLeaveThreshold: 88,
+    waypoints: [
+      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
+      { label: 'shallow seam entry', x: 690, y: 430, untilSeconds: 5.4 },
+      { label: 'shallow seam sweep', x: 540, y: 455, untilSeconds: 9.0 },
+      { label: 'curve back to road', x: 570, y: 530, untilSeconds: 11.8 },
+      { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 15.6 },
+      { label: 'extraction', x: 135, y: 610, untilSeconds: 58 }
+    ]
+  },
+  deepLobe: {
+    id: 'deepLobe',
+    label: 'Last Light Deep Northern Lobe',
+    arenaId: 'last-light-return',
+    durationSeconds: 68,
+    droneLaunchSeconds: [5.3, 21.8, 34.6],
+    safeCorridorLeaveThreshold: 88,
+    waypoints: [
+      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 3.2 },
+      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 10.8 },
+      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 17.2 },
+      { label: 'bend back toward road', x: 570, y: 530, untilSeconds: 26.2 },
+      { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 34.2 },
+      { label: 'extraction', x: 135, y: 610, untilSeconds: 68 }
+    ]
+  },
+  greedyLatePocket: {
+    id: 'greedyLatePocket',
+    label: 'Last Light Greedy Late Pocket',
+    arenaId: 'last-light-return',
+    durationSeconds: 74,
+    droneLaunchSeconds: [5.3, 21.8, 36.2],
+    safeCorridorLeaveThreshold: 88,
+    waypoints: [
+      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 3.0 },
+      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 10.6 },
+      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 16.5 },
+      { label: 'one more seam', x: 400, y: 330, untilSeconds: 26.2 },
+      { label: 'late recovery dive', x: 500, y: 684, untilSeconds: 36.2 },
+      { label: 'lower recovery sweep', x: 300, y: 666, untilSeconds: 43.4 },
+      { label: 'extraction', x: 135, y: 610, untilSeconds: 74 }
+    ]
   }
 } satisfies Record<string, ContinuousSelfPlayRoute>;
 
@@ -58,6 +141,10 @@ export type ContinuousSelfPlayRouteId = keyof typeof CONTINUOUS_SELF_PLAY_ROUTES
 
 export function getContinuousSelfPlayRoute(routeId: ContinuousSelfPlayRouteId = 'firstLoop'): ContinuousSelfPlayRoute {
   return CONTINUOUS_SELF_PLAY_ROUTES[routeId];
+}
+
+export function getDefaultContinuousSelfPlayRouteId(arenaId: ContinuousArenaId = 'first-run-readable'): ContinuousSelfPlayRouteId {
+  return arenaId === 'last-light-return' ? 'safeReturn' : 'firstLoop';
 }
 
 export function getContinuousSelfPlayTarget(
@@ -81,20 +168,28 @@ export function runContinuousSelfPlay(options: {
   arenaId?: ContinuousArenaId;
   tuning?: Partial<ContinuousTuning>;
   deltaSeconds?: number;
+  droneLaunchSeconds?: number[];
 } = {}): ContinuousSelfPlayResult {
-  const route = getContinuousSelfPlayRoute(options.routeId);
+  const routeId = options.routeId ?? getDefaultContinuousSelfPlayRouteId(options.arenaId);
+  const route = getContinuousSelfPlayRoute(routeId);
+  const droneLaunchSeconds = options.droneLaunchSeconds ?? route.droneLaunchSeconds;
   const deltaSeconds = options.deltaSeconds ?? 0.1;
-  let world = createContinuousWorld(options.seed, options.tuning, options.arenaId);
+  let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId);
   const trace = createContinuousLoopTrace(world);
   const launchedAtSeconds = new Set<number>();
+  let maxDroneEta = world.drone.etaSeconds;
+  let maxSafeCorridorDistance = getSafeCorridorDistance(world);
 
   while (world.elapsedSeconds < route.durationSeconds && world.phase === 'playing') {
-    for (const launchSecond of route.droneLaunchSeconds) {
+    for (const launchSecond of droneLaunchSeconds) {
       if (!launchedAtSeconds.has(launchSecond) && world.elapsedSeconds >= launchSecond) {
+        if (world.drone.status !== 'ready') continue;
         const launch = launchReclaimDrone(world);
         world = launch.state;
-        if (launch.ok) recordContinuousLoopDroneLaunch(trace, world);
+        if (!launch.ok) continue;
+        recordContinuousLoopDroneLaunch(trace, world);
         launchedAtSeconds.add(launchSecond);
+        maxDroneEta = Math.max(maxDroneEta, world.drone.etaSeconds);
       }
     }
 
@@ -102,14 +197,67 @@ export function runContinuousSelfPlay(options: {
     const previous = world;
     world = tickContinuousWorld(world, getContinuousSelfPlayInput(world, target), deltaSeconds);
     recordContinuousLoopTick(trace, previous, world, deltaSeconds);
+    maxDroneEta = Math.max(maxDroneEta, world.drone.etaSeconds);
+    maxSafeCorridorDistance = Math.max(maxSafeCorridorDistance, getSafeCorridorDistance(world));
   }
 
+  const summary = getContinuousLoopSummary(trace);
   return {
     route,
     state: world,
     trace,
-    summary: getContinuousLoopSummary(trace)
+    summary,
+    metrics: createContinuousSelfPlayMetrics(route, world, summary, maxDroneEta, maxSafeCorridorDistance)
   };
+}
+
+function createContinuousSelfPlayMetrics(
+  route: ContinuousSelfPlayRoute,
+  state: ContinuousWorldState,
+  summary: ContinuousLoopSummary,
+  maxDroneEta: number,
+  maxSafeCorridorDistance: number
+): ContinuousSelfPlayMetrics {
+  const leaveThreshold = route.safeCorridorLeaveThreshold ?? 88;
+  return {
+    reachedExtraction: isRoverAtExtraction(state),
+    result: state.phase,
+    oreValue: round(state.rover.ore),
+    solarRemaining: round(state.solarSeconds),
+    minNanobots: summary.lowestNanobots,
+    crawlSeconds: summary.speedSeconds.crawl,
+    droneLaunches: summary.droneLaunches,
+    droneDeliveries: summary.droneDeliveries,
+    maxDroneEta: round(maxDroneEta),
+    leftSafeCorridor: maxSafeCorridorDistance > leaveThreshold,
+    maxSafeCorridorDistance: round(maxSafeCorridorDistance),
+    routeDurationSeconds: round(state.elapsedSeconds)
+  };
+}
+
+function getSafeCorridorDistance(world: ContinuousWorldState): number {
+  const path = world.arena.safePath;
+  if (!path || path.length < 2) return 0;
+
+  let closest = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    closest = Math.min(closest, distanceToSegment(world.rover, path[index], path[index + 1]));
+  }
+  return closest;
+}
+
+function distanceToSegment(point: Vec2, from: Vec2, to: Vec2): number {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return Math.hypot(point.x - from.x, point.y - from.y);
+
+  const t = clamp(((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSquared, 0, 1);
+  return Math.hypot(point.x - (from.x + dx * t), point.y - (from.y + dy * t));
+}
+
+function round(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 function angleDifference(target: number, current: number): number {

@@ -37,6 +37,7 @@ import {
   type ContinuousLoopTrace
 } from '../game/continuousTrace';
 import {
+  getDefaultContinuousSelfPlayRouteId,
   getContinuousSelfPlayInput,
   getContinuousSelfPlayRoute,
   getContinuousSelfPlayTarget,
@@ -1182,7 +1183,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.syncDroneRailLabPanel();
   }
 
-  private startSelfPlay(routeId: ContinuousSelfPlayRouteId = 'firstLoop'): void {
+  private startSelfPlay(routeId: ContinuousSelfPlayRouteId = getDefaultContinuousSelfPlayRouteId(this.state.arenaId)): void {
     const route = getContinuousSelfPlayRoute(routeId);
     this.preSelfPlayPointerTarget = this.pointerTarget ? { ...this.pointerTarget } : undefined;
     this.resetRun();
@@ -1647,7 +1648,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.state.maxNanobots = this.state.tuning.maxNanobots;
     this.state.targetOre = this.state.tuning.targetOre;
     this.state.nanobots = clamp(this.state.nanobots, 0, this.state.maxNanobots);
-    this.state.solarSeconds = Math.min(this.state.solarSeconds, this.state.tuning.startingSolarSeconds);
+    this.state.solarWindowSeconds = this.state.arena.solarWindowSeconds ?? this.state.tuning.startingSolarSeconds;
+    this.state.solarSeconds = Math.min(this.state.solarSeconds, this.state.solarWindowSeconds);
     this.saveStoredTuning();
     this.syncTuningPanel();
     this.syncDroneRailLabPanel();
@@ -1670,7 +1672,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.state.maxNanobots = this.state.tuning.maxNanobots;
     this.state.targetOre = this.state.tuning.targetOre;
     this.state.nanobots = clamp(this.state.nanobots, 0, this.state.maxNanobots);
-    this.state.solarSeconds = Math.min(this.state.solarSeconds, this.state.tuning.startingSolarSeconds);
+    this.state.solarWindowSeconds = this.state.arena.solarWindowSeconds ?? this.state.tuning.startingSolarSeconds;
+    this.state.solarSeconds = Math.min(this.state.solarSeconds, this.state.solarWindowSeconds);
     this.saveStoredTuning();
     this.syncTuningPanel();
     this.syncDroneRailLabPanel();
@@ -2256,6 +2259,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.clear();
     this.drawBackdrop();
     this.drawTerrainLayer();
+    this.drawArenaNavigationGuides();
     this.drawFertileZones();
     this.drawFirstRunAffordances();
     this.drawBeatMarkers();
@@ -2394,6 +2398,57 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     this.drawPreparedFieldTerrainBeds(visualCalm);
+  }
+
+  private drawArenaNavigationGuides(): void {
+    this.drawSafeReturnPath();
+    this.drawExtractionZone();
+  }
+
+  private drawSafeReturnPath(): void {
+    const path = this.state.arena.safePath;
+    if (!path || path.length < 2) return;
+
+    this.graphics.lineStyle(18, 0x102d33, 0.24);
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const from = this.project(path[index]);
+      const to = this.project(path[index + 1]);
+      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+
+    this.graphics.lineStyle(4, 0x76ddcf, 0.42);
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const from = this.project(path[index]);
+      const to = this.project(path[index + 1]);
+      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+
+    for (let index = 0; index < path.length; index += 1) {
+      const point = this.project(path[index]);
+      this.graphics.fillStyle(0x76ddcf, index === path.length - 1 ? 0.64 : 0.34);
+      this.graphics.fillCircle(point.x, point.y, index === path.length - 1 ? 5 : 3);
+    }
+  }
+
+  private drawExtractionZone(): void {
+    const extraction = this.state.arena.extraction;
+    if (!extraction) {
+      this.drawStaticText('extraction-label', 0, 0, '', 1, '#ffffff');
+      return;
+    }
+
+    const center = this.project(extraction);
+    const scale = this.projectedScale(extraction);
+    const radius = extraction.radius * scale;
+    const pulse = this.state.phase === 'playing' ? 0.5 + Math.sin(this.time.now / 190) * 0.5 : 0.3;
+    this.graphics.fillStyle(0x163b34, 0.26 + pulse * 0.05);
+    this.graphics.fillCircle(center.x, center.y, radius * 1.35);
+    this.graphics.lineStyle(4, 0x77f2ca, 0.62 + pulse * 0.18);
+    this.graphics.strokeCircle(center.x, center.y, radius * 1.35);
+    this.graphics.lineStyle(2, 0xeafffb, 0.58);
+    this.graphics.lineBetween(center.x - radius * 0.72, center.y, center.x + radius * 0.72, center.y);
+    this.graphics.lineBetween(center.x, center.y - radius * 0.72, center.x, center.y + radius * 0.72);
+    this.drawStaticText('extraction-label', center.x + 18, center.y - 12, extraction.label, 12, '#bfffee');
   }
 
   private drawTerrainCrater(index: number, visualCalm: number): void {
@@ -3643,8 +3698,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.message.setText(this.getEventFeedText());
 
     const nanobotRatio = this.state.nanobots / this.state.maxNanobots;
-    const oreRatio = this.state.rover.ore / this.state.targetOre;
-    const sunRatio = this.state.solarSeconds / this.state.tuning.startingSolarSeconds;
+    const extractionRun = Boolean(this.state.arena.extraction);
+    const oreRatio = extractionRun ? clamp(this.state.rover.ore / 36, 0, 1) : this.state.rover.ore / this.state.targetOre;
+    const sunRatio = this.state.solarSeconds / this.state.solarWindowSeconds;
 
     this.drawVital(
       'Nanobots',
@@ -3657,7 +3713,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     );
     this.drawVital(
       'Ore',
-      `${this.state.rover.ore.toFixed(1)}/${this.state.targetOre}`,
+      extractionRun ? this.state.rover.ore.toFixed(1) : `${this.state.rover.ore.toFixed(1)}/${this.state.targetOre}`,
       layout.vitals[1].x,
       layout.vitals[1].y + 5,
       layout.vitals[1].width,
@@ -3753,7 +3809,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStaticText(`vital-${label}-label`, x, y + 2, label, 12, '#9eabbc');
     this.drawStaticText(`vital-${label}-value`, x, y + 23, value, 19, '#f6f8fb');
     this.drawBar(x, y + 43, width, 10, progress, color);
-    if (label === 'Ore') {
+    if (label === 'Ore' && !this.state.arena.extraction) {
       this.graphics.lineStyle(2, 0xfff0ba, 0.84);
       this.graphics.lineBetween(x + width - 2, y + 40, x + width - 2, y + 56);
     }
@@ -4279,7 +4335,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.fillRoundedRect(x, y, width, height, 8);
     this.graphics.lineStyle(2, won ? 0x77f2ca : 0xff8491, 1);
     this.graphics.strokeRoundedRect(x, y, width, height, 8);
-    this.drawStaticText('phase-title', layout.width / 2, y + 36, won ? 'EXTRACTION QUOTA MET' : 'RUN FAILED', layout.mode === 'mobilePortrait' ? 20 : 25, '#ffffff', 0.5);
+    this.drawStaticText(
+      'phase-title',
+      layout.width / 2,
+      y + 36,
+      won && this.state.arena.extraction ? 'EXTRACTION REACHED' : won ? 'EXTRACTION QUOTA MET' : 'RUN FAILED',
+      layout.mode === 'mobilePortrait' ? 20 : 25,
+      '#ffffff',
+      0.5
+    );
     this.drawStaticText('phase-body', layout.width / 2, y + 76, this.formatPlayerMessage(this.state.message), layout.mode === 'mobilePortrait' ? 14 : 16, '#dfe8f2', 0.5);
   }
 
@@ -4334,7 +4398,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       setDynamicsPreset: (presetId) => this.applyDynamicsPreset(presetId),
       getDroneRailLab: () => this.getDroneRailLabSnapshot(),
       setDynamicsTuning: (tuning) => this.setDynamicsTuning(tuning),
-      startSelfPlay: (routeId = 'firstLoop') => this.startSelfPlay(routeId),
+      startSelfPlay: (routeId) => this.startSelfPlay(routeId),
       stopSelfPlay: () => this.stopSelfPlay(),
       getSelfPlayStatus: () => this.getSelfPlayStatus()
     };

@@ -1,6 +1,6 @@
 import type { FieldPatch, FertileZone, Vec2 } from './continuous';
 
-export type ContinuousArenaId = 'first-run-readable' | 'first-run-tight';
+export type ContinuousArenaId = 'first-run-readable' | 'first-run-tight' | 'last-light-return';
 
 export interface ContinuousArenaRidge {
   id: string;
@@ -13,12 +13,21 @@ export interface ContinuousArenaBeat extends Vec2 {
   label: string;
 }
 
+export interface ContinuousExtractionZone extends Vec2 {
+  id: string;
+  label: string;
+  radius: number;
+}
+
 export interface ContinuousArenaDefinition {
   id: ContinuousArenaId;
   label: string;
   description: string;
   start: Vec2;
   startHeading: number;
+  extraction?: ContinuousExtractionZone;
+  safePath?: Vec2[];
+  solarWindowSeconds?: number;
   starterFieldPoints: Vec2[];
   fertileZones: FertileZone[];
   ridges: ContinuousArenaRidge[];
@@ -228,9 +237,117 @@ const FIRST_RUN_TIGHT: ContinuousArenaDefinition = {
   ]
 };
 
+const LAST_LIGHT_SAFE_PATH: Vec2[] = [
+  { x: 900, y: 535 },
+  { x: 745, y: 565 },
+  { x: 570, y: 530 },
+  { x: 390, y: 585 },
+  { x: 150, y: 610 }
+];
+
+const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
+  id: 'last-light-return',
+  label: 'Last Light Return',
+  description: 'A readable low-value road home with upward unofficial seams that tax route shape, drone timing, and sunset margin.',
+  start: { x: 900, y: 535 },
+  startHeading: Math.PI - 0.2,
+  extraction: {
+    id: 'extraction-home',
+    label: 'extraction',
+    x: 135,
+    y: 610,
+    radius: 46
+  },
+  safePath: LAST_LIGHT_SAFE_PATH,
+  solarWindowSeconds: 51,
+  starterFieldPoints: [],
+  fertileZones: [
+    {
+      id: 'safe-route-scrap',
+      x: 655,
+      y: 548,
+      radius: 48,
+      vein: {
+        from: { x: 735, y: 558 },
+        to: { x: 585, y: 536 },
+        width: 34
+      },
+      richness: 0.42,
+      remaining: 1.6
+    },
+    {
+      id: 'shallow-lobe',
+      x: 615,
+      y: 442,
+      radius: 76,
+      vein: {
+        from: { x: 690, y: 430 },
+        to: { x: 540, y: 455 },
+        width: 52
+      },
+      richness: 1.22,
+      remaining: 7.8
+    },
+    {
+      id: 'northern-lobe',
+      x: 632,
+      y: 300,
+      radius: 112,
+      vein: {
+        from: { x: 720, y: 285 },
+        to: { x: 545, y: 315 },
+        width: 66
+      },
+      richness: 2.35,
+      remaining: 18
+    },
+    {
+      id: 'late-pocket',
+      x: 400,
+      y: 330,
+      radius: 82,
+      vein: {
+        from: { x: 462, y: 340 },
+        to: { x: 342, y: 320 },
+        width: 58
+      },
+      richness: 2.35,
+      remaining: 11
+    },
+    {
+      id: 'lower-recovery',
+      x: 400,
+      y: 675,
+      radius: 74,
+      vein: {
+        from: { x: 500, y: 684 },
+        to: { x: 300, y: 666 },
+        width: 34
+      },
+      richness: 1.38,
+      remaining: 8.6
+    }
+  ],
+  ridges: [
+    { id: 'official-return-cut', from: { x: 860, y: 610 }, to: { x: 592, y: 590 } },
+    { id: 'north-lobe-shadow', from: { x: 736, y: 238 }, to: { x: 514, y: 252 } },
+    { id: 'late-pocket-wall', from: { x: 474, y: 278 }, to: { x: 300, y: 296 } }
+  ],
+  beats: [
+    { id: 'start', label: 'shift end', x: 900, y: 535 },
+    { id: 'safe-turn-1', label: 'safe road', x: 745, y: 565 },
+    { id: 'shallow-lobe', label: 'shallow seam', x: 615, y: 442 },
+    { id: 'northern-lobe', label: 'rich high lobe', x: 632, y: 300 },
+    { id: 'late-pocket', label: 'one more seam', x: 400, y: 330 },
+    { id: 'lower-recovery', label: 'recovery seam', x: 400, y: 675 },
+    { id: 'home', label: 'extraction', x: 135, y: 610 }
+  ]
+};
+
 export const CONTINUOUS_ARENAS = {
   'first-run-readable': FIRST_RUN_READABLE,
-  'first-run-tight': FIRST_RUN_TIGHT
+  'first-run-tight': FIRST_RUN_TIGHT,
+  'last-light-return': LAST_LIGHT_RETURN
 } satisfies Record<ContinuousArenaId, ContinuousArenaDefinition>;
 
 export const DEFAULT_CONTINUOUS_ARENA_ID: ContinuousArenaId = 'first-run-readable';

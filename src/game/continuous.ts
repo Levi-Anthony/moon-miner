@@ -206,6 +206,7 @@ export interface ContinuousWorldState {
   maxNanobots: number;
   targetOre: number;
   solarSeconds: number;
+  solarWindowSeconds: number;
   elapsedSeconds: number;
   phase: ContinuousPhase;
   speedState: SpeedState;
@@ -370,6 +371,7 @@ export function createContinuousWorld(
 ): ContinuousWorldState {
   const resolvedTuning = resolveContinuousTuning(tuning);
   const arena = getContinuousArena(arenaId);
+  const solarWindowSeconds = arena.solarWindowSeconds ?? resolvedTuning.startingSolarSeconds;
   const fields = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, resolvedTuning.fieldRadius);
   const nextFieldId = fields.length + 1;
 
@@ -399,13 +401,18 @@ export function createContinuousWorld(
     nanobots: resolvedTuning.startingNanobots,
     maxNanobots: resolvedTuning.maxNanobots,
     targetOre: resolvedTuning.targetOre,
-    solarSeconds: resolvedTuning.startingSolarSeconds,
+    solarSeconds: solarWindowSeconds,
+    solarWindowSeconds,
     elapsedSeconds: 0,
     phase: 'playing',
     speedState: 'fabricating',
     arms: allocateArms('fabricating', false, false, 'ready'),
     lastYieldRate: 0,
-    message: fields.length > 0 ? 'Prepared field online. Keep the machine supplied before sunset.' : 'Raw field start. Drive to lay your first line, then reclaim it.',
+    message: arena.extraction
+      ? 'Shift is over. Follow the safe road home, or risk one more seam before sunset.'
+      : fields.length > 0
+        ? 'Prepared field online. Keep the machine supplied before sunset.'
+        : 'Raw field start. Drive to lay your first line, then reclaim it.',
     nextFieldId,
     fieldEmitDistance: 0,
     pendingFieldValue: 0
@@ -493,6 +500,11 @@ export function findFertileZoneAt(state: ContinuousWorldState, point: Vec2): Fer
   return state.fertileZones.find((zone) => zone.remaining > 0 && isPointInFertileZone(zone, point));
 }
 
+export function isRoverAtExtraction(state: ContinuousWorldState): boolean {
+  const extraction = state.arena.extraction;
+  return Boolean(extraction && distance(state.rover, extraction) <= extraction.radius);
+}
+
 export function getDroneSpeed(tuning: Partial<ContinuousTuning> = {}): number {
   return resolveContinuousTuning(tuning).droneSpeed;
 }
@@ -515,8 +527,19 @@ export function cloneContinuousWorld(state: ContinuousWorldState): ContinuousWor
     arena: {
       ...state.arena,
       start: { ...state.arena.start },
+      extraction: state.arena.extraction ? { ...state.arena.extraction } : undefined,
+      safePath: state.arena.safePath?.map((point) => ({ ...point })),
       starterFieldPoints: state.arena.starterFieldPoints.map((point) => ({ ...point })),
-      fertileZones: state.arena.fertileZones.map((zone) => ({ ...zone })),
+      fertileZones: state.arena.fertileZones.map((zone) => ({
+        ...zone,
+        vein: zone.vein
+          ? {
+              ...zone.vein,
+              from: { ...zone.vein.from },
+              to: { ...zone.vein.to }
+            }
+          : undefined
+      })),
       ridges: state.arena.ridges.map((ridge) => ({
         ...ridge,
         from: { ...ridge.from },
@@ -978,6 +1001,20 @@ function createArmAllocation(
 }
 
 function applyContinuousWinLoss(state: ContinuousWorldState): void {
+  if (state.arena.extraction) {
+    if (isRoverAtExtraction(state)) {
+      state.phase = 'won';
+      state.message = `Rover reached extraction before sunset with ${state.rover.ore.toFixed(1)} bonus ore.`;
+      return;
+    }
+
+    if (state.solarSeconds <= 0) {
+      state.phase = 'lost';
+      state.message = 'Sunset closed the extraction window before the rover got home.';
+    }
+    return;
+  }
+
   if (state.rover.ore >= state.targetOre) {
     state.phase = 'won';
     state.message = 'Extraction quota met before sunset.';

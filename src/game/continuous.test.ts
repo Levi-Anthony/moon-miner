@@ -7,6 +7,7 @@ import {
   DYNAMICS_PRESETS,
   getDroneReclaimDiagnostics,
   getReclaimPreview,
+  isRoverAtExtraction,
   launchReclaimDrone,
   tickContinuousWorld,
   type ContinuousWorldState
@@ -111,7 +112,7 @@ describe('continuous Moon Miner spike rules', () => {
     const readable = createContinuousWorld('same-seed', { preparedSpeed: 125 }, 'first-run-readable');
     const tight = createContinuousWorld('same-seed', { preparedSpeed: 125 }, 'first-run-tight');
 
-    expect(Object.keys(CONTINUOUS_ARENAS)).toEqual(['first-run-readable', 'first-run-tight']);
+    expect(Object.keys(CONTINUOUS_ARENAS)).toEqual(['first-run-readable', 'first-run-tight', 'last-light-return']);
     expect(readable.tuning.preparedSpeed).toBe(125);
     expect(tight.tuning.preparedSpeed).toBe(125);
     expect(readable.arenaId).toBe('first-run-readable');
@@ -120,6 +121,42 @@ describe('continuous Moon Miner spike rules', () => {
     expect(tight.fields).toEqual([]);
     expect(readable.fertileZones[1].x).toBeGreaterThan(tight.fertileZones[1].x);
     expect(readable.fertileZones[1].vein).not.toEqual(tight.fertileZones[1].vein);
+  });
+
+  it('stages last-light-return as a safe road home with off-route value lobes', () => {
+    const world = createContinuousWorld('same-seed', {}, 'last-light-return');
+
+    expect(world.arenaId).toBe('last-light-return');
+    expect(world.arena.label).toBe('Last Light Return');
+    expect(world.rover.x).toBeCloseTo(900);
+    expect(world.rover.y).toBeCloseTo(535);
+    expect(world.arena.extraction).toMatchObject({ x: 135, y: 610, radius: 46 });
+    expect(world.arena.safePath?.map((point) => [point.x, point.y])).toEqual([
+      [900, 535],
+      [745, 565],
+      [570, 530],
+      [390, 585],
+      [150, 610]
+    ]);
+    expect(world.solarWindowSeconds).toBe(51);
+    expect(world.solarSeconds).toBe(51);
+    expect(world.fertileZones.map((zone) => zone.id)).toEqual([
+      'safe-route-scrap',
+      'shallow-lobe',
+      'northern-lobe',
+      'late-pocket',
+      'lower-recovery'
+    ]);
+    expect(world.fertileZones[1].vein).toMatchObject({
+      from: { x: expect.any(Number), y: expect.any(Number) },
+      to: { x: expect.any(Number), y: expect.any(Number) },
+      width: 52
+    });
+    expect(world.fertileZones[1].y).toBeLessThan(world.arena.safePath?.[1].y ?? 0);
+    expect(world.fertileZones[2].y).toBeLessThan(world.fertileZones[1].y);
+    expect(world.fertileZones[3].x).toBeLessThan(world.fertileZones[2].x);
+    expect(world.fertileZones[4].y).toBeGreaterThan(world.arena.safePath?.[2].y ?? 0);
+    expect(world.message).toBe('Shift is over. Follow the safe road home, or risk one more seam before sunset.');
   });
 
   it('treats authored fertile seams as directional bands instead of circular mining blobs', () => {
@@ -625,6 +662,30 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.message).toBe('Solar window closed before the extraction quota.');
   });
 
+  it('wins last-light-return by reaching extraction before sunset without requiring ore', () => {
+    const world = createContinuousWorld('home-test', {}, 'last-light-return');
+    world.rover.ore = 0;
+    world.rover.x = 139;
+    world.rover.y = 610;
+
+    const next = tickContinuousWorld(world, idleInput, 0.1);
+
+    expect(isRoverAtExtraction(next)).toBe(true);
+    expect(next.phase).toBe('won');
+    expect(next.message).toBe('Rover reached extraction before sunset with 0.0 bonus ore.');
+  });
+
+  it('loses last-light-return when sunset closes before the rover gets home', () => {
+    const world = createContinuousWorld('late-home-test', {}, 'last-light-return');
+    world.solarSeconds = 0.1;
+
+    const next = tickContinuousWorld(world, idleInput, 0.2);
+
+    expect(isRoverAtExtraction(next)).toBe(false);
+    expect(next.phase).toBe('lost');
+    expect(next.message).toBe('Sunset closed the extraction window before the rover got home.');
+  });
+
   it('can demonstrate field commitment, overextension, crawl, and drone recovery in the starter route', () => {
     const result = runContinuousSelfPlay();
     const speedKinds = new Set(result.trace.events.map((event) => event.speedState));
@@ -664,6 +725,59 @@ describe('continuous Moon Miner spike rules', () => {
     expect(result.state.arenaId).toBe('first-run-tight');
     expect(result.summary.droneLaunches).toBe(1);
     expect(result.summary.milestones.some((milestone) => milestone.id === 'fieldCommit' && milestone.hit)).toBe(true);
+  });
+
+  it('proves the last-light-return reward and risk gradient through deterministic routes', () => {
+    const safe = runContinuousSelfPlay({ routeId: 'safeReturn', deltaSeconds: 0.05 }).metrics;
+    const shallow = runContinuousSelfPlay({ routeId: 'shallowLobe', deltaSeconds: 0.05 }).metrics;
+    const deep = runContinuousSelfPlay({ routeId: 'deepLobe', deltaSeconds: 0.05 }).metrics;
+    const greedy = runContinuousSelfPlay({ routeId: 'greedyLatePocket', deltaSeconds: 0.05 }).metrics;
+
+    for (const metrics of [safe, shallow, deep, greedy]) {
+      expect(metrics.result).toBe('won');
+      expect(metrics.reachedExtraction).toBe(true);
+      expect(metrics.droneDeliveries).toBeGreaterThan(0);
+    }
+
+    expect(safe.leftSafeCorridor).toBe(false);
+    expect(safe.oreValue).toBeLessThan(2.5);
+    expect(safe.solarRemaining).toBeGreaterThan(35);
+    expect(safe.crawlSeconds).toBe(0);
+
+    expect(shallow.leftSafeCorridor).toBe(true);
+    expect(shallow.oreValue).toBeGreaterThan(safe.oreValue + 4);
+    expect(shallow.solarRemaining).toBeGreaterThan(25);
+    expect(shallow.crawlSeconds).toBeLessThan(3);
+
+    expect(deep.oreValue).toBeGreaterThan(shallow.oreValue + 8);
+    expect(deep.solarRemaining).toBeLessThan(shallow.solarRemaining - 10);
+    expect(deep.crawlSeconds).toBeGreaterThan(6);
+    expect(deep.maxDroneEta).toBeGreaterThanOrEqual(shallow.maxDroneEta);
+
+    expect(greedy.oreValue).toBeGreaterThan(deep.oreValue + 8);
+    expect(greedy.solarRemaining).toBeLessThan(8);
+    expect(greedy.crawlSeconds).toBeGreaterThan(deep.crawlSeconds);
+    expect(greedy.maxDroneEta).toBeGreaterThan(deep.maxDroneEta);
+  });
+
+  it('makes the greedy last-light route depend on drone timing instead of succeeding casually', () => {
+    const withDrone = runContinuousSelfPlay({ routeId: 'greedyLatePocket', deltaSeconds: 0.05 }).metrics;
+    const noDrone = runContinuousSelfPlay({
+      routeId: 'greedyLatePocket',
+      deltaSeconds: 0.05,
+      droneLaunchSeconds: []
+    }).metrics;
+
+    expect(withDrone.result).toBe('won');
+    expect(withDrone.reachedExtraction).toBe(true);
+    expect(withDrone.oreValue).toBeGreaterThan(30);
+    expect(withDrone.solarRemaining).toBeGreaterThan(5);
+
+    expect(noDrone.result).toBe('lost');
+    expect(noDrone.reachedExtraction).toBe(false);
+    expect(noDrone.droneLaunches).toBe(0);
+    expect(noDrone.oreValue).toBeLessThan(withDrone.oreValue / 4);
+    expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds * 3);
   });
 });
 
