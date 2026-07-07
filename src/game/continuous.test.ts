@@ -19,7 +19,7 @@ import {
   recordContinuousLoopDroneLaunch,
   recordContinuousLoopTick
 } from './continuousTrace';
-import { runContinuousSelfPlay } from './continuousSelfPlay';
+import { formatLastLightRouteOutcomeTable, runContinuousSelfPlay } from './continuousSelfPlay';
 
 const straightInput = { steer: 0, throttle: 1 };
 const idleInput = { steer: 0, throttle: 0, driveIntent: false };
@@ -194,19 +194,40 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.solarSeconds).toBeLessThan(world.solarSeconds);
   });
 
-  it('infers no drive intent from omitted intent when throttle is zero', () => {
+  it('pivots in place from steering input when throttle is zero', () => {
     const world = createContinuousWorld();
     world.fields = [];
     world.rover.heading = 0;
+    world.nanobots = 6;
     const start = { ...world.rover };
+    const fieldCount = world.fields.length;
 
     const next = tickContinuousWorld(world, { steer: 1, throttle: 0 }, 0.6);
 
     expect(next.rover.x).toBe(start.x);
     expect(next.rover.y).toBe(start.y);
-    expect(next.rover.heading).toBe(start.heading);
+    expect(next.rover.heading).toBeGreaterThan(start.heading + 0.8);
+    expect(next.rover.speed).toBe(0);
+    expect(next.fields.length).toBe(fieldCount);
+    expect(next.nanobots).toBe(6);
+    expect(next.message).toBe('Chassis pivoting in place. Field fabrication is idle.');
+  });
+
+  it('stopped pivot steering does not move, print field, or spend nanobots', () => {
+    const world = createContinuousWorld();
+    world.fields = [];
+    world.nanobots = 5;
+    world.rover.heading = 0.5;
+    const start = { ...world.rover };
+
+    const next = tickContinuousWorld(world, { steer: -1, throttle: 0, driveIntent: false, pivotIntent: true }, 0.4);
+
+    expect(next.rover.x).toBe(start.x);
+    expect(next.rover.y).toBe(start.y);
+    expect(next.rover.heading).toBeLessThan(start.heading - 0.5);
     expect(next.rover.speed).toBe(0);
     expect(next.fields).toEqual([]);
+    expect(next.nanobots).toBe(5);
   });
 
   it('moves and fabricates only when explicit throttle creates drive intent', () => {
@@ -686,6 +707,21 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.message).toBe('Sunset closed the extraction window before the rover got home.');
   });
 
+  it('stopped pivot steering still obeys last-light sunset loss without drive movement', () => {
+    const world = createContinuousWorld('pivot-sunset', {}, 'last-light-return');
+    world.solarSeconds = 0.1;
+    const start = { ...world.rover };
+
+    const next = tickContinuousWorld(world, { steer: 1, throttle: 0 }, 0.2);
+
+    expect(next.rover.x).toBe(start.x);
+    expect(next.rover.y).toBe(start.y);
+    expect(next.rover.heading).not.toBe(start.heading);
+    expect(next.fields).toEqual([]);
+    expect(next.phase).toBe('lost');
+    expect(next.message).toBe('Sunset closed the extraction window before the rover got home.');
+  });
+
   it('can demonstrate field commitment, overextension, crawl, and drone recovery in the starter route', () => {
     const result = runContinuousSelfPlay();
     const speedKinds = new Set(result.trace.events.map((event) => event.speedState));
@@ -732,6 +768,7 @@ describe('continuous Moon Miner spike rules', () => {
     const shallow = runContinuousSelfPlay({ routeId: 'shallowLobe', deltaSeconds: 0.05 }).metrics;
     const deep = runContinuousSelfPlay({ routeId: 'deepLobe', deltaSeconds: 0.05 }).metrics;
     const greedy = runContinuousSelfPlay({ routeId: 'greedyLatePocket', deltaSeconds: 0.05 }).metrics;
+    const sloppy = runContinuousSelfPlay({ routeId: 'greedyLatePocketSloppy', deltaSeconds: 0.05 }).metrics;
 
     for (const metrics of [safe, shallow, deep, greedy]) {
       expect(metrics.result).toBe('won');
@@ -758,6 +795,12 @@ describe('continuous Moon Miner spike rules', () => {
     expect(greedy.solarRemaining).toBeLessThan(8);
     expect(greedy.crawlSeconds).toBeGreaterThan(deep.crawlSeconds);
     expect(greedy.maxDroneEta).toBeGreaterThan(deep.maxDroneEta);
+
+    expect(sloppy.result).toBe('lost');
+    expect(sloppy.reachedExtraction).toBe(false);
+    expect(sloppy.oreValue).toBeLessThan(greedy.oreValue / 3);
+    expect(sloppy.crawlSeconds).toBeGreaterThan(greedy.crawlSeconds + 8);
+    expect(sloppy.maxSafeCorridorDistance).toBeGreaterThan(greedy.maxSafeCorridorDistance + 40);
   });
 
   it('makes the greedy last-light route depend on drone timing instead of succeeding casually', () => {
@@ -778,6 +821,16 @@ describe('continuous Moon Miner spike rules', () => {
     expect(noDrone.droneLaunches).toBe(0);
     expect(noDrone.oreValue).toBeLessThan(withDrone.oreValue / 4);
     expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds * 3);
+  });
+
+  it('formats a last-light route outcome table for tuning passes', () => {
+    const table = formatLastLightRouteOutcomeTable();
+
+    expect(table).toContain('| Route | Result | Reached Home | Ore/Value | Solar Left |');
+    expect(table).toContain('| safeReturn | won | yes |');
+    expect(table).toContain('| greedyLatePocket | won | yes |');
+    expect(table).toContain('| greedyLatePocketSloppy | lost | no |');
+    expect(table).toContain('late launches and bad route shape miss extraction');
   });
 });
 

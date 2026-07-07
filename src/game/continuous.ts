@@ -22,6 +22,7 @@ export interface ContinuousInput {
   throttle: number;
   brake?: boolean;
   driveIntent?: boolean;
+  pivotIntent?: boolean;
 }
 
 export interface RoverMotionState extends Vec2 {
@@ -563,7 +564,7 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
   state.speedState = resolveSpeedState(state);
   const driveIntent = Boolean(input.driveIntent);
   const movedDistance = steerAndMoveRover(state, input, deltaSeconds);
-  runFieldSystem(state, driveIntent, movedDistance, deltaSeconds);
+  runFieldSystem(state, driveIntent, Boolean(input.pivotIntent), movedDistance, deltaSeconds);
   const fertileZone = findFertileZoneAt(state, state.rover);
   state.arms = allocateArms(state.speedState, Boolean(fertileZone), driveIntent, state.drone.status);
   runMiningSystem(state, fertileZone, driveIntent, deltaSeconds);
@@ -574,6 +575,11 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
 
 function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, deltaSeconds: number): number {
   if (!input.driveIntent) {
+    if (input.pivotIntent && Math.abs(input.steer) > 0.001) {
+      const turnMultiplier = state.speedState === 'prepared' ? 1.0 : state.speedState === 'crawl' ? 0.54 : 0.82;
+      state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * turnMultiplier * deltaSeconds);
+      state.message = 'Chassis pivoting in place. Field fabrication is idle.';
+    }
     state.rover.speed = 0;
     return 0;
   }
@@ -618,6 +624,7 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
 function runFieldSystem(
   state: ContinuousWorldState,
   driveIntent: boolean,
+  pivotIntent: boolean,
   movedDistance: number,
   deltaSeconds: number
 ): void {
@@ -631,7 +638,9 @@ function runFieldSystem(
     state.fieldEmitDistance = 0;
     state.pendingFieldValue = 0;
     state.message =
-      state.speedState === 'crawl'
+      pivotIntent
+        ? 'Chassis pivoting in place. Field fabrication is idle.'
+        : state.speedState === 'crawl'
         ? 'Crawl protocol standing by. Drag to scrape residue.'
         : 'Drive idle. Drag to fabricate field.';
     return;
@@ -1249,11 +1258,14 @@ function getFertileZoneMiningFlowMultiplier(state: ContinuousWorldState, zone: F
 function normalizeInput(input: ContinuousInput): ContinuousInput {
   const throttle = clamp(input.throttle, 0, 1);
   const brake = Boolean(input.brake);
+  const steer = clamp(input.steer, -1, 1);
+  const driveIntent = input.driveIntent ?? (throttle > 0 || brake);
   return {
-    steer: clamp(input.steer, -1, 1),
+    steer,
     throttle,
     brake,
-    driveIntent: input.driveIntent ?? (throttle > 0 || brake)
+    driveIntent,
+    pivotIntent: input.pivotIntent ?? (!driveIntent && Math.abs(steer) > 0.001)
   };
 }
 

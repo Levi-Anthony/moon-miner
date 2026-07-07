@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0",
+    "report:last-light": "node scripts/last-light-report.mjs",
     "smoke:continuous": "node --experimental-websocket scripts/continuous-smoke.mjs",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -49,6 +49,22 @@ export interface ContinuousSelfPlayMetrics {
   routeDurationSeconds: number;
 }
 
+export interface LastLightRouteOutcomeRow {
+  route: string;
+  result: ContinuousPhase;
+  reachedHome: boolean;
+  oreValue: number;
+  solarLeft: number;
+  minStock: number;
+  crawlSeconds: number;
+  droneLaunches: number;
+  droneDeliveries: number;
+  maxDroneEta: number;
+  leftSafeCorridor: boolean;
+  duration: number;
+  notes: string;
+}
+
 export interface ContinuousSelfPlayResult {
   route: ContinuousSelfPlayRoute;
   state: ContinuousWorldState;
@@ -134,10 +150,35 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
       { label: 'lower recovery sweep', x: 300, y: 666, untilSeconds: 43.4 },
       { label: 'extraction', x: 135, y: 610, untilSeconds: 74 }
     ]
+  },
+  greedyLatePocketSloppy: {
+    id: 'greedyLatePocketSloppy',
+    label: 'Last Light Sloppy Greedy Pocket',
+    arenaId: 'last-light-return',
+    durationSeconds: 76,
+    droneLaunchSeconds: [17.8, 37.4],
+    safeCorridorLeaveThreshold: 88,
+    waypoints: [
+      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 3.0 },
+      { label: 'climb too high', x: 720, y: 285, untilSeconds: 10.6 },
+      { label: 'overstay rich seam', x: 545, y: 315, untilSeconds: 18.4 },
+      { label: 'drive away from return', x: 742, y: 260, untilSeconds: 25.4 },
+      { label: 'late one more seam', x: 400, y: 330, untilSeconds: 36.8 },
+      { label: 'bad recovery angle', x: 520, y: 690, untilSeconds: 47.6 },
+      { label: 'late extraction dive', x: 135, y: 610, untilSeconds: 76 }
+    ]
   }
 } satisfies Record<string, ContinuousSelfPlayRoute>;
 
 export type ContinuousSelfPlayRouteId = keyof typeof CONTINUOUS_SELF_PLAY_ROUTES;
+
+export const LAST_LIGHT_ROUTE_REPORT_IDS = [
+  'safeReturn',
+  'shallowLobe',
+  'deepLobe',
+  'greedyLatePocket',
+  'greedyLatePocketSloppy'
+] satisfies ContinuousSelfPlayRouteId[];
 
 export function getContinuousSelfPlayRoute(routeId: ContinuousSelfPlayRouteId = 'firstLoop'): ContinuousSelfPlayRoute {
   return CONTINUOUS_SELF_PLAY_ROUTES[routeId];
@@ -209,6 +250,79 @@ export function runContinuousSelfPlay(options: {
     summary,
     metrics: createContinuousSelfPlayMetrics(route, world, summary, maxDroneEta, maxSafeCorridorDistance)
   };
+}
+
+export function getLastLightRouteOutcomeRows(deltaSeconds = 0.05): LastLightRouteOutcomeRow[] {
+  return LAST_LIGHT_ROUTE_REPORT_IDS.map((routeId) => {
+    const { metrics } = runContinuousSelfPlay({ routeId, deltaSeconds });
+    return {
+      route: routeId,
+      result: metrics.result,
+      reachedHome: metrics.reachedExtraction,
+      oreValue: metrics.oreValue,
+      solarLeft: metrics.solarRemaining,
+      minStock: metrics.minNanobots,
+      crawlSeconds: metrics.crawlSeconds,
+      droneLaunches: metrics.droneLaunches,
+      droneDeliveries: metrics.droneDeliveries,
+      maxDroneEta: metrics.maxDroneEta,
+      leftSafeCorridor: metrics.leftSafeCorridor,
+      duration: metrics.routeDurationSeconds,
+      notes: getLastLightRouteNote(routeId, metrics)
+    };
+  });
+}
+
+export function formatLastLightRouteOutcomeTable(deltaSeconds = 0.05): string {
+  const headers = [
+    'Route',
+    'Result',
+    'Reached Home',
+    'Ore/Value',
+    'Solar Left',
+    'Min Stock',
+    'Crawl Seconds',
+    'Drone Launches',
+    'Drone Deliveries',
+    'Max Drone ETA',
+    'Left Safe Corridor',
+    'Duration',
+    'Notes'
+  ];
+  const rows = getLastLightRouteOutcomeRows(deltaSeconds).map((row) => [
+    row.route,
+    row.result,
+    row.reachedHome ? 'yes' : 'no',
+    row.oreValue.toFixed(1),
+    row.solarLeft.toFixed(1),
+    row.minStock.toFixed(1),
+    row.crawlSeconds.toFixed(1),
+    String(row.droneLaunches),
+    String(row.droneDeliveries),
+    row.maxDroneEta.toFixed(1),
+    row.leftSafeCorridor ? 'yes' : 'no',
+    row.duration.toFixed(1),
+    row.notes
+  ]);
+
+  return [
+    `| ${headers.join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map((row) => `| ${row.join(' | ')} |`)
+  ].join('\n');
+}
+
+function getLastLightRouteNote(routeId: ContinuousSelfPlayRouteId, metrics: ContinuousSelfPlayMetrics): string {
+  if (routeId === 'safeReturn') return 'safe road, low reward, wide sunset margin';
+  if (routeId === 'shallowLobe') return 'first off-route lobe, still controlled';
+  if (routeId === 'deepLobe') return 'rich northern value with crawl pressure';
+  if (routeId === 'greedyLatePocket') return 'high value, tight successful return';
+  if (routeId === 'greedyLatePocketSloppy') {
+    return metrics.result === 'lost'
+      ? 'late launches and bad route shape miss extraction'
+      : 'sloppy route survives but collapses into heavy crawl';
+  }
+  return 'not part of last-light report';
 }
 
 function createContinuousSelfPlayMetrics(

@@ -802,6 +802,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const previousOre = this.state.rover.ore;
     const previousDronePayload = this.state.drone.payload;
     const previousNanobots = this.state.nanobots;
+    const previousSolarSeconds = this.state.solarSeconds;
     const deltaSeconds = Math.min(deltaMs / 1000, 0.08);
 
     this.state = tickContinuousWorld(this.state, this.readInput(), deltaSeconds);
@@ -814,7 +815,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       previousPhase,
       previousOre,
       previousDronePayload,
-      previousNanobots
+      previousNanobots,
+      previousSolarSeconds
     );
     this.effects = this.effects.filter((effect) => timeMs - effect.startedAt <= effect.durationMs);
     this.draw();
@@ -1086,7 +1088,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       steer,
       throttle: upHeld ? 1 : this.pointerTarget ? 0.62 : 0,
       brake: downHeld,
-      driveIntent
+      driveIntent,
+      pivotIntent: !driveIntent && Math.abs(steer) > 0.001
     };
   }
 
@@ -2188,7 +2191,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     previousPhase: ContinuousPhase,
     previousOre: number,
     previousDronePayload: number,
-    previousNanobots: number
+    previousNanobots: number,
+    previousSolarSeconds: number
   ): void {
     let deliveredPayload = 0;
     if (previousDroneStatus !== 'ready' && this.state.drone.status === 'ready') {
@@ -2225,6 +2229,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (crossedIntoLaunchPressure && this.state.drone.status === 'ready') {
       this.addEffect('crawl', this.state.rover.x, this.state.rover.y, 620);
       this.showEventMessage('Low buffer. Drone is ready.', 1450, timeMs, 2);
+    }
+
+    if (this.state.arena.extraction && this.state.phase === 'playing') {
+      const previousSolarRatio = previousSolarSeconds / Math.max(1, this.state.solarWindowSeconds);
+      const solarRatio = this.getSolarRatio();
+      if (previousSolarRatio >= 0.5 && solarRatio < 0.5) {
+        this.showEventMessage('Sun is past half. Keep the home line in sight.', 1900, timeMs, 1);
+      }
+      if (previousSolarRatio >= 0.25 && solarRatio < 0.25) {
+        this.showEventMessage('Last light closing. Turn toward extraction.', 2200, timeMs, 2);
+      }
+      if (previousSolarRatio >= 0.1 && solarRatio < 0.1) {
+        this.showEventMessage('Extraction now. No more detours.', 2400, timeMs, 3);
+      }
     }
 
     if (deliveredPayload > 0) {
@@ -2271,6 +2289,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawDrone();
     this.drawRover();
     this.drawEffects();
+    this.drawSolarWindowOverlay();
     this.drawDroneRailDebugOverlays();
     this.drawCameraDebugOverlays();
     this.drawHud();
@@ -2407,16 +2426,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
   private drawSafeReturnPath(): void {
     const path = this.state.arena.safePath;
-    if (!path || path.length < 2) return;
+    if (!path || path.length < 2) {
+      this.drawStaticText('safe-path-label', 0, 0, '', 1, '#ffffff');
+      return;
+    }
 
-    this.graphics.lineStyle(18, 0x102d33, 0.24);
+    this.graphics.lineStyle(22, 0x102d33, 0.2);
     for (let index = 0; index < path.length - 1; index += 1) {
       const from = this.project(path[index]);
       const to = this.project(path[index + 1]);
       this.graphics.lineBetween(from.x, from.y, to.x, to.y);
     }
 
-    this.graphics.lineStyle(4, 0x76ddcf, 0.42);
+    this.graphics.lineStyle(3, 0x7bc6bd, 0.36);
     for (let index = 0; index < path.length - 1; index += 1) {
       const from = this.project(path[index]);
       const to = this.project(path[index + 1]);
@@ -2425,30 +2447,110 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     for (let index = 0; index < path.length; index += 1) {
       const point = this.project(path[index]);
-      this.graphics.fillStyle(0x76ddcf, index === path.length - 1 ? 0.64 : 0.34);
-      this.graphics.fillCircle(point.x, point.y, index === path.length - 1 ? 5 : 3);
+      this.graphics.fillStyle(0x7bc6bd, index === path.length - 1 ? 0.58 : 0.26);
+      this.graphics.fillCircle(point.x, point.y, index === path.length - 1 ? 5 : 2.5);
     }
+
+    const labelPoint = this.project(path[Math.min(2, path.length - 1)]);
+    this.drawStaticText('safe-path-label', labelPoint.x + 10, labelPoint.y + 18, 'safe way home', 11, '#9ddbd2');
   }
 
   private drawExtractionZone(): void {
     const extraction = this.state.arena.extraction;
     if (!extraction) {
       this.drawStaticText('extraction-label', 0, 0, '', 1, '#ffffff');
+      this.drawStaticText('home-direction-label', 0, 0, '', 1, '#ffffff');
       return;
     }
 
     const center = this.project(extraction);
     const scale = this.projectedScale(extraction);
     const radius = extraction.radius * scale;
-    const pulse = this.state.phase === 'playing' ? 0.5 + Math.sin(this.time.now / 190) * 0.5 : 0.3;
-    this.graphics.fillStyle(0x163b34, 0.26 + pulse * 0.05);
-    this.graphics.fillCircle(center.x, center.y, radius * 1.35);
-    this.graphics.lineStyle(4, 0x77f2ca, 0.62 + pulse * 0.18);
-    this.graphics.strokeCircle(center.x, center.y, radius * 1.35);
-    this.graphics.lineStyle(2, 0xeafffb, 0.58);
+    const sunRatio = this.getSolarRatio();
+    const pulse = this.state.phase === 'playing' ? 0.5 + Math.sin(this.time.now / (sunRatio < 0.25 ? 95 : 190)) * 0.5 : 0.3;
+    const urgent = sunRatio < 0.25;
+    const color = sunRatio < 0.1 ? 0xffe0a8 : urgent ? 0x96ffe8 : 0x77f2ca;
+    this.graphics.fillStyle(urgent ? 0x31402c : 0x163b34, urgent ? 0.34 + pulse * 0.08 : 0.25 + pulse * 0.05);
+    this.graphics.fillCircle(center.x, center.y, radius * (urgent ? 1.58 : 1.35));
+    this.graphics.lineStyle(urgent ? 5 : 4, color, urgent ? 0.74 + pulse * 0.22 : 0.62 + pulse * 0.18);
+    this.graphics.strokeCircle(center.x, center.y, radius * (urgent ? 1.58 : 1.35));
+    this.graphics.lineStyle(2, 0xeafffb, urgent ? 0.72 : 0.58);
     this.graphics.lineBetween(center.x - radius * 0.72, center.y, center.x + radius * 0.72, center.y);
     this.graphics.lineBetween(center.x, center.y - radius * 0.72, center.x, center.y + radius * 0.72);
-    this.drawStaticText('extraction-label', center.x + 18, center.y - 12, extraction.label, 12, '#bfffee');
+    this.drawStaticText('extraction-label', center.x + 18, center.y - 12, urgent ? 'GO HOME' : 'HOME / EXTRACTION', 12, urgent ? '#fff0ba' : '#bfffee');
+    this.drawHomeDirectionCue(center, urgent, color);
+  }
+
+  private drawHomeDirectionCue(extractionScreen: Vec2, urgent: boolean, color: number): void {
+    const extraction = this.state.arena.extraction;
+    if (!extraction || this.state.phase !== 'playing') {
+      this.drawStaticText('home-direction-label', 0, 0, '', 1, '#ffffff');
+      return;
+    }
+
+    const distanceHome = Math.hypot(this.state.rover.x - extraction.x, this.state.rover.y - extraction.y);
+    if (distanceHome < 260) {
+      this.drawStaticText('home-direction-label', 0, 0, '', 1, '#ffffff');
+      return;
+    }
+
+    const roverScreen = this.project(this.state.rover);
+    const angle = Math.atan2(extractionScreen.y - roverScreen.y, extractionScreen.x - roverScreen.x);
+    const cue = {
+      x: roverScreen.x + Math.cos(angle) * 58,
+      y: roverScreen.y + Math.sin(angle) * 58
+    };
+    const left = {
+      x: cue.x - Math.cos(angle) * 16 + Math.cos(angle + Math.PI / 2) * 8,
+      y: cue.y - Math.sin(angle) * 16 + Math.sin(angle + Math.PI / 2) * 8
+    };
+    const right = {
+      x: cue.x - Math.cos(angle) * 16 + Math.cos(angle - Math.PI / 2) * 8,
+      y: cue.y - Math.sin(angle) * 16 + Math.sin(angle - Math.PI / 2) * 8
+    };
+    const alpha = urgent ? 0.76 + Math.sin(this.time.now / 120) * 0.12 : 0.42;
+    this.graphics.fillStyle(color, alpha);
+    this.graphics.fillTriangle(cue.x, cue.y, left.x, left.y, right.x, right.y);
+    this.graphics.lineStyle(2, color, alpha);
+    this.graphics.lineBetween(cue.x, cue.y, left.x, left.y);
+    this.graphics.lineBetween(left.x, left.y, right.x, right.y);
+    this.graphics.lineBetween(right.x, right.y, cue.x, cue.y);
+    this.drawStaticText('home-direction-label', cue.x + 12, cue.y - 8, urgent ? 'HOME NOW' : 'home', urgent ? 12 : 10, urgent ? '#fff0ba' : '#bfffee');
+  }
+
+  private drawSolarWindowOverlay(): void {
+    if (!this.state.arena.extraction) {
+      this.drawStaticText('last-light-warning', 0, 0, '', 1, '#ffffff');
+      return;
+    }
+
+    const layout = this.getLayout();
+    const sunRatio = this.getSolarRatio();
+    if (sunRatio > 0.5) {
+      this.drawStaticText('last-light-warning', 0, 0, '', 1, '#ffffff');
+      return;
+    }
+
+    const pressure = clamp((0.5 - sunRatio) / 0.5, 0, 1);
+    const urgentPulse = sunRatio < 0.25 ? 0.5 + Math.sin(this.time.now / (sunRatio < 0.1 ? 70 : 110)) * 0.5 : 0;
+    this.graphics.fillStyle(sunRatio < 0.25 ? 0x2b1615 : 0x1d1d27, 0.1 + pressure * 0.22 + urgentPulse * 0.06);
+    this.graphics.fillRect(0, layout.hudHeight, layout.width, layout.height - layout.hudHeight);
+    this.graphics.lineStyle(sunRatio < 0.1 ? 4 : 2, sunRatio < 0.25 ? 0xff9f73 : 0xa8c9ff, 0.28 + pressure * 0.34);
+    this.graphics.lineBetween(0, layout.hudHeight + 2, layout.width, layout.hudHeight + 2);
+
+    if (sunRatio <= 0.25) {
+      this.drawStaticText(
+        'last-light-warning',
+        layout.width / 2,
+        layout.hudHeight + 22,
+        sunRatio < 0.1 ? 'LAST LIGHT: EXTRACTION NOW' : 'LAST LIGHT CLOSING',
+        layout.mode === 'mobilePortrait' ? 13 : 14,
+        sunRatio < 0.1 ? '#fff0ba' : '#ffd0b8',
+        0.5
+      );
+    } else {
+      this.drawStaticText('last-light-warning', 0, 0, '', 1, '#ffffff');
+    }
   }
 
   private drawTerrainCrater(index: number, visualCalm: number): void {
@@ -3700,7 +3802,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const nanobotRatio = this.state.nanobots / this.state.maxNanobots;
     const extractionRun = Boolean(this.state.arena.extraction);
     const oreRatio = extractionRun ? clamp(this.state.rover.ore / 36, 0, 1) : this.state.rover.ore / this.state.targetOre;
-    const sunRatio = this.state.solarSeconds / this.state.solarWindowSeconds;
+    const sunRatio = this.getSolarRatio();
 
     this.drawVital(
       'Nanobots',
@@ -3727,7 +3829,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       layout.vitals[2].y + 5,
       layout.vitals[2].width,
       sunRatio,
-      this.state.solarSeconds > 28 ? 0xa8c9ff : 0xff7d77
+      sunRatio < 0.1 ? 0xffd36d : sunRatio < 0.25 ? 0xff7d77 : sunRatio < 0.5 ? 0xffb36b : 0xa8c9ff
     );
 
     this.drawStateChip(layout.stateChip.x, layout.stateChip.y, layout.stateChip.width, layout.stateChip.height);
@@ -3795,14 +3897,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     progress: number,
     color: number
   ): void {
-    const warningPulse = label === 'Nanobots' && progress < this.state.tuning.lowStockWarningRatio ? 0.5 + Math.sin(this.time.now / 105) * 0.5 : 0;
+    const nanobotWarningPulse = label === 'Nanobots' && progress < this.state.tuning.lowStockWarningRatio ? 0.5 + Math.sin(this.time.now / 105) * 0.5 : 0;
+    const sunWarningPulse = label === 'Sun' && this.state.arena.extraction && progress < 0.25 ? 0.5 + Math.sin(this.time.now / (progress < 0.1 ? 62 : 92)) * 0.5 : 0;
+    const warningPulse = Math.max(nanobotWarningPulse, sunWarningPulse);
     if (warningPulse > 0) {
-      this.graphics.fillStyle(0x451f1a, 0.52 + warningPulse * 0.18);
+      this.graphics.fillStyle(label === 'Sun' ? 0x3a2118 : 0x451f1a, 0.52 + warningPulse * 0.18);
       this.graphics.fillRoundedRect(x - 7, y - 3, width + 14, 62, 8);
-      this.graphics.lineStyle(1, 0xff765f, 0.62 + warningPulse * 0.28);
+      this.graphics.lineStyle(1, label === 'Sun' ? 0xffb36b : 0xff765f, 0.62 + warningPulse * 0.28);
       this.graphics.strokeRoundedRect(x - 7, y - 3, width + 14, 62, 8);
-      this.drawStaticText(`vital-${label}-tag`, x + width - 28, y + 2, 'LOW', 11, '#ffc7ba');
-    } else if (label === 'Nanobots') {
+      this.drawStaticText(`vital-${label}-tag`, x + width - 28, y + 2, label === 'Sun' && progress < 0.1 ? 'GO' : 'LOW', 11, label === 'Sun' ? '#fff0ba' : '#ffc7ba');
+    } else if (label === 'Nanobots' || label === 'Sun') {
       this.drawStaticText(`vital-${label}-tag`, 0, 0, '', 1, '#ffffff');
     }
 
@@ -4875,6 +4979,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.state.speedState === 'prepared') return 0.58;
     if (this.state.speedState === 'fabricating') return 0.78;
     return 1;
+  }
+
+  private getSolarRatio(): number {
+    return clamp(this.state.solarSeconds / Math.max(1, this.state.solarWindowSeconds), 0, 1);
   }
 
   private roverBodyColor(speedState: SpeedState): number {
