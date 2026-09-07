@@ -416,8 +416,8 @@ const CAMERA_PRESETS: CameraPresetDefinition[] = [
       preset: 'tractorChase',
       viewMode: 'chase',
       cameraZoom: 1.1,
-      cameraCenterY: 30,
-      roverScreenBias: 92,
+      cameraCenterY: -10,
+      roverScreenBias: 26,
       lookAheadDistance: 64,
       smoothing: 1.5,
       followDeadzone: 34,
@@ -2393,7 +2393,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.fillStyle(0x070910, 1);
     this.graphics.fillRect(0, 0, layout.width, layout.height);
 
-    this.graphics.fillStyle(0x11151e, 1);
+    this.graphics.fillStyle(this.viewMode === 'tactical' ? 0x11151e : 0x05070e, 1);
     this.graphics.fillRect(0, layout.hudHeight, layout.width, layout.height - layout.hudHeight);
 
     if (this.viewMode === 'tactical') {
@@ -2402,14 +2402,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     if (this.cameraLab.horizonVisible) {
-      const planeTopLeft = this.project(this.cameraLocalPoint(-620, 540));
-      const planeTopRight = this.project(this.cameraLocalPoint(620, 540));
-      const planeBottomRight = this.project(this.cameraLocalPoint(620, -360));
-      const planeBottomLeft = this.project(this.cameraLocalPoint(-620, -360));
-      this.graphics.fillStyle(0x141924, 0.9);
-      this.graphics.fillPoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
-      this.graphics.lineStyle(2, 0x303846, 0.85);
-      this.graphics.strokePoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
+      this.drawRegolith();
     }
 
     if (this.cameraLab.gridVisible) {
@@ -2434,6 +2427,69 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     this.graphics.lineStyle(1, 0x262e3b, 0.8);
     this.graphics.lineBetween(0, layout.hudHeight, layout.width, layout.hudHeight);
+  }
+
+  private static mixColor(from: number, to: number, amount: number): number {
+    const t = clamp(amount, 0, 1);
+    const fr = (from >> 16) & 0xff;
+    const fg = (from >> 8) & 0xff;
+    const fb = from & 0xff;
+    const tr = (to >> 16) & 0xff;
+    const tg = (to >> 8) & 0xff;
+    const tb = to & 0xff;
+    return (
+      ((Math.round(fr + (tr - fr) * t) & 0xff) << 16) |
+      ((Math.round(fg + (tg - fg) * t) & 0xff) << 8) |
+      (Math.round(fb + (tb - fb) * t) & 0xff)
+    );
+  }
+
+  // Ground used to be drawn one shade off the sky, which is why the world read
+  // as a void. Lay it down in depth bands instead: warm lit dust close to the
+  // tractor falling away to cold haze at the horizon.
+  private drawRegolith(): void {
+    const NEAR = -360;
+    const FAR = 540;
+    const BANDS = 40;
+    const nearColor = 0x7d7061;
+    const farColor = 0x1b2130;
+
+    for (let index = 0; index < BANDS; index += 1) {
+      const t0 = index / BANDS;
+      const t1 = (index + 1) / BANDS;
+      const forward0 = NEAR + (FAR - NEAR) * t0;
+      const forward1 = NEAR + (FAR - NEAR) * t1;
+      const shade = ContinuousMoonMinerScene.mixColor(nearColor, farColor, Math.pow(t0, 0.7));
+      this.graphics.fillStyle(shade, 1);
+      this.graphics.fillPoints(
+        [
+          this.project(this.cameraLocalPoint(-1400, forward0)),
+          this.project(this.cameraLocalPoint(1400, forward0)),
+          this.project(this.cameraLocalPoint(1400, forward1)),
+          this.project(this.cameraLocalPoint(-1400, forward1))
+        ],
+        true,
+        true
+      );
+    }
+
+    // Scattered grit so the surface has texture to move against.
+    for (let index = 0; index < 120; index += 1) {
+      const lateral = -1200 + ((index * 617) % 2400);
+      const forward = NEAR + ((index * 331) % (FAR - NEAR));
+      const depth = (forward - NEAR) / (FAR - NEAR);
+      if (depth > 0.72) continue;
+      const point = this.project(this.cameraLocalPoint(lateral, forward));
+      const tone = index % 4 === 0 ? 0x8a8072 : 0x4a4640;
+      this.graphics.fillStyle(tone, 0.5 * (1 - depth));
+      this.graphics.fillCircle(point.x, point.y, (1 + (index % 3)) * (1 - depth * 0.6));
+    }
+
+    // Haze band where ground meets sky.
+    const hazeNear = this.project(this.cameraLocalPoint(-1400, FAR * 0.82));
+    const hazeFar = this.project(this.cameraLocalPoint(1400, FAR));
+    this.graphics.fillStyle(0x2b3444, 0.55);
+    this.graphics.fillRect(0, hazeFar.y - 6, this.getLayout().width, Math.max(4, hazeNear.y - hazeFar.y + 10));
   }
 
   private drawTacticalBackdrop(layout: SceneLayout, visualCalm: number): void {
@@ -3592,35 +3648,58 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStateMotionCues(rover, preparedCoverage);
     this.drawArms(fertile);
 
-    const nose = this.pointFromHeading(rover, rover.heading, 36);
-    const tailLeft = this.pointFromHeading(rover, rover.heading + Math.PI * 0.78, 30);
-    const tailRight = this.pointFromHeading(rover, rover.heading - Math.PI * 0.78, 30);
-    const sideLeft = this.pointFromHeading(rover, rover.heading + Math.PI * 0.5, 22);
-    const sideRight = this.pointFromHeading(rover, rover.heading - Math.PI * 0.5, 22);
-    const projectedHull = [nose, sideLeft, tailLeft, tailRight, sideRight].map((point) => this.project(point));
     const roverScreen = this.project(rover);
-    const noseScreen = this.project(nose);
     const scale = this.projectedScale(rover);
     const yScale = this.shapeYScale();
 
-    this.graphics.fillStyle(0x02050a, 0.54);
-    this.graphics.fillEllipse(roverScreen.x - 2 * scale, roverScreen.y + 10 * scale, 72 * scale, 36 * yScale * scale);
-    this.graphics.fillStyle(this.roverBodyColor(this.state.speedState), 1);
-    this.graphics.fillPoints(projectedHull, true, true);
-    this.graphics.lineStyle(3, 0xf8fbff, 0.92);
-    this.graphics.strokePoints(projectedHull, true, true);
-
-    this.graphics.lineStyle(2, 0x7b8798, 0.78);
-    this.graphics.lineBetween(this.project(sideLeft).x, this.project(sideLeft).y, noseScreen.x, noseScreen.y);
-    this.graphics.lineBetween(this.project(sideRight).x, this.project(sideRight).y, noseScreen.x, noseScreen.y);
-    this.graphics.fillStyle(0x151b25, 1);
-    this.graphics.fillCircle(roverScreen.x, roverScreen.y, 13 * scale);
-    this.graphics.fillStyle(0xaef8ff, 0.94);
-    this.graphics.fillCircle(noseScreen.x, noseScreen.y, 5 * scale);
+    this.graphics.fillStyle(0x02050a, 0.5);
+    this.graphics.fillEllipse(roverScreen.x - 3 * scale, roverScreen.y + 11 * scale, 78 * scale, 38 * yScale * scale);
+    this.drawTractorBody(rover, scale);
 
     if (preparedCoverage > 0.2) {
       this.graphics.lineStyle(3, 0x78f7df, 0.4 + preparedCoverage * 0.5);
       this.graphics.strokeEllipse(roverScreen.x, roverScreen.y + 2, 82 * scale, 46 * yScale * scale);
+    }
+  }
+
+  // A machine with a front, a back and treads, in the one warm colour on a cold
+  // moon. Speed state moves to a roof beacon instead of recolouring the hull,
+  // so the tractor stays recognisable as the same object in every state.
+  private drawTractorBody(rover: Vec2, scale: number): void {
+    const heading = this.state.rover.heading;
+    const at = (lateral: number, forward: number): Vec2 =>
+      this.project(
+        this.pointFromHeading(this.pointFromHeading(rover, heading + Math.PI / 2, lateral), heading, forward)
+      );
+    const shape = (points: Vec2[], fill: number, alpha = 1, outline = 0x14161b): void => {
+      this.graphics.fillStyle(fill, alpha);
+      this.graphics.fillPoints(points, true, true);
+      this.graphics.lineStyle(2, outline, 0.9);
+      this.graphics.strokePoints(points, true, true);
+    };
+
+    const TREAD = 0x24262c;
+    const HULL = 0xd2a044;
+    const HULL_SHADE = 0x8d6a28;
+    const GLASS = 0x8fdcf5;
+
+    shape([at(-27, -28), at(-15, -28), at(-15, 30), at(-27, 30)], TREAD);
+    shape([at(27, -28), at(15, -28), at(15, 30), at(27, 30)], TREAD);
+
+    shape([at(-17, -27), at(17, -27), at(21, 12), at(13, 31), at(-13, 31), at(-21, 12)], HULL);
+    shape([at(-17, -27), at(17, -27), at(17, -12), at(-17, -12)], HULL_SHADE);
+    shape([at(-10, 3), at(10, 3), at(8, 22), at(-8, 22)], GLASS, 0.92);
+
+    const beaconScreen = at(0, -19);
+    this.graphics.fillStyle(this.roverBodyColor(this.state.speedState), 1);
+    this.graphics.fillCircle(beaconScreen.x, beaconScreen.y, 5 * scale);
+    this.graphics.lineStyle(2, 0x14161b, 0.9);
+    this.graphics.strokeCircle(beaconScreen.x, beaconScreen.y, 5 * scale);
+
+    for (const lateral of [-9, 9]) {
+      const lamp = at(lateral, 32);
+      this.graphics.fillStyle(0xfff3d0, 0.95);
+      this.graphics.fillCircle(lamp.x, lamp.y, 2.6 * scale);
     }
   }
 
