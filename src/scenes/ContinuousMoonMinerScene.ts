@@ -49,6 +49,7 @@ import {
 const DESKTOP_HUD_HEIGHT = 86;
 const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
+const FIELD_DECK_COLOR = 0x6d8f89;
 const MOBILE_CAMERA_CENTER_Y = 475;
 const DESKTOP_CAMERA_LOOK_AHEAD = 92;
 const MOBILE_CAMERA_LOOK_AHEAD = 138;
@@ -415,7 +416,7 @@ const CAMERA_PRESETS: CameraPresetDefinition[] = [
       ...DEFAULT_CAMERA_LAB_SETTINGS,
       preset: 'tractorChase',
       viewMode: 'chase',
-      cameraZoom: 1.1,
+      cameraZoom: 1.38,
       cameraCenterY: -10,
       roverScreenBias: 26,
       lookAheadDistance: 64,
@@ -3057,7 +3058,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const activeMiningCue = active && this.state.lastYieldRate > 0.001;
 
     const rock = this.fertilePatchPolygon(zone, zone.vein.width / 2, 5);
-    this.graphics.fillStyle(0x6d5330, 0.82);
+    const lit = rock.map((point) => ({ x: point.x - 3, y: point.y - 4 }));
+    this.graphics.fillStyle(0xa8895a, 0.9);
+    this.graphics.fillPoints(lit, true, true);
+    this.graphics.fillStyle(0x6d5330, 0.95);
     this.graphics.fillPoints(rock, true, true);
     const rim = this.fertilePatchPolygon(zone, zone.vein.width / 2.6, 73);
     this.graphics.fillStyle(active ? 0x8f6a2f : 0x7d5c2b, 0.85 + pulse * 0.1);
@@ -3294,8 +3298,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         const from = section[index];
         const to = section[index + 1];
         this.drawFieldSegment(from, to, color, reserved);
+        this.drawFieldJoint(to, reserved);
       }
 
+      this.drawFieldJoint(section[0], reserved);
       this.drawFieldCap(section[0], color, reserved, this.fieldAlpha(section[0]));
       this.drawFieldCap(section[section.length - 1], color, reserved, this.fieldAlpha(section[section.length - 1]));
       this.drawFieldCenterLine(section, color, reserved);
@@ -3344,7 +3350,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const alpha = Math.min(this.fieldAlpha(from), this.fieldAlpha(to));
     const ordinaryAlpha = alpha * (0.34 + 0.24 * this.visualCalm());
 
-    this.graphics.fillStyle(color, reserved ? alpha * 0.36 : ordinaryAlpha);
+    const shadow = [
+      { x: fromScreen.x + normal.x * (fromWidth + 4), y: fromScreen.y + normal.y * (fromWidth + 4) },
+      { x: toScreen.x + normal.x * (toWidth + 4), y: toScreen.y + normal.y * (toWidth + 4) },
+      { x: toScreen.x - normal.x * (toWidth + 4), y: toScreen.y - normal.y * (toWidth + 4) },
+      { x: fromScreen.x - normal.x * (fromWidth + 4), y: fromScreen.y - normal.y * (fromWidth + 4) }
+    ];
+    this.graphics.fillStyle(0x14201f, alpha * 0.62);
+    this.graphics.fillPoints(shadow, true, true);
+    this.graphics.fillStyle(reserved ? color : FIELD_DECK_COLOR, reserved ? alpha * 0.5 : Math.min(0.94, ordinaryAlpha + 0.4));
     this.graphics.fillPoints(points, true, true);
     if (reserved) {
       this.graphics.lineStyle(4, color, alpha * 0.88);
@@ -3359,9 +3373,22 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.graphics.lineStyle(1, 0xfff0df, alpha * 0.82);
       this.graphics.strokeCircle(scan.x, scan.y, 10);
     } else {
-      this.graphics.lineStyle(2, color, alpha * (0.32 + 0.26 * this.visualCalm()));
+      this.graphics.lineStyle(2, color, alpha * 0.5);
       this.graphics.strokePoints(points, true, true);
     }
+  }
+
+  private drawFieldJoint(
+    field: { x: number; y: number; radius: number; value: number; age: number },
+    reserved: boolean
+  ): void {
+    if (reserved) return;
+    const center = this.project(field);
+    const width = this.fieldRoadWidth(field);
+    const yScale = this.shapeYScale();
+    const alpha = Math.min(0.94, this.fieldAlpha(field) * (0.24 + 0.18 * this.visualCalm()) + 0.4);
+    this.graphics.fillStyle(FIELD_DECK_COLOR, alpha);
+    this.graphics.fillEllipse(center.x, center.y, width * 2, width * 2 * yScale);
   }
 
   private drawFieldCap(
@@ -3575,7 +3602,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         if (deliveryBurstActive) {
           this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
         } else {
-          this.drawStaticText('drone-callout', dockScreen.x + 16, dockScreen.y - 22, 'LAUNCH', 13, '#ffc7ba');
+          this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
         }
       } else {
         this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
