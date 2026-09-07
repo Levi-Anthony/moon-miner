@@ -493,6 +493,69 @@ export function getReclaimPreview(state: ContinuousWorldState): ReclaimPreview |
   };
 }
 
+export interface ContinuousGuidance {
+  objective: string;
+  nudge: string;
+}
+
+// What the player is trying to do, and what to do about it now. The scene shows
+// this whenever no event is interrupting, so there is always an answer on
+// screen to "what am I doing" -- which the game previously never stated at all.
+export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGuidance {
+  const homeArena = Boolean(state.arena.extraction);
+
+  if (state.phase === 'won') {
+    return { objective: 'Run complete', nudge: state.message };
+  }
+  if (state.phase === 'lost') {
+    return { objective: 'Run failed', nudge: state.message };
+  }
+
+  if (state.elapsedSeconds < 7) {
+    return homeArena
+      ? { objective: 'Mine ore. Reach extraction before sunset', nudge: 'W drives, A/D steer. Gold rock is ore.' }
+      : { objective: `Mine ${state.targetOre} ore before sunset`, nudge: 'W drives, A/D steer. Gold rock is ore.' };
+  }
+
+  if (state.speedState === 'crawl') {
+    return { objective: 'Out of road', nudge: 'Crawling. Press Space for nanobots.' };
+  }
+
+  const solarRatio = state.solarWindowSeconds > 0 ? state.solarSeconds / state.solarWindowSeconds : 1;
+  if (homeArena && solarRatio < 0.25) {
+    return { objective: 'Get to extraction now', nudge: 'Ore only counts if you arrive.' };
+  }
+
+  if (state.drone.status !== 'ready') {
+    return { objective: 'Drone is out', nudge: 'It comes back to wherever you are.' };
+  }
+
+  const preview = getReclaimPreview(state);
+  if (preview && state.nanobots / state.maxNanobots < state.tuning.droneUrgencyRatio) {
+    return {
+      objective: 'Nanobots low',
+      nudge: `Space sends the drone. +${preview.netPayload.toFixed(1)} net.`
+    };
+  }
+
+  if (homeArena && solarRatio < 0.5) {
+    return { objective: 'Start heading home', nudge: 'Your own road is the fast way back.' };
+  }
+
+  if (findFertileZoneAt(state, state.rover)) {
+    return { objective: 'Mining this seam', nudge: 'Stay on it. Mining runs while parked.' };
+  }
+
+  if (!homeArena && state.rover.ore >= state.targetOre) {
+    return { objective: 'Quota met', nudge: 'Keep the machine supplied.' };
+  }
+
+  return {
+    objective: homeArena ? 'Find ore on the way home' : 'Find ore',
+    nudge: 'Drive onto a gold seam. Road lays behind you.'
+  };
+}
+
 export function getPreparedCoverage(state: ContinuousWorldState, point: Vec2): number {
   let coverage = 0;
   for (const field of state.fields) {

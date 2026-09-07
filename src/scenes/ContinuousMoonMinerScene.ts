@@ -6,6 +6,7 @@ import {
   findFertileZoneAt,
   getDroneReclaimDiagnostics,
   getPreparedCoverage,
+  getContinuousGuidance,
   getReclaimPreview,
   launchReclaimDrone,
   resolveContinuousTuning,
@@ -400,11 +401,11 @@ const CAMERA_PRESETS: CameraPresetDefinition[] = [
       preset: 'tractorChase',
       viewMode: 'chase',
       cameraZoom: 1.38,
-      cameraCenterY: -10,
-      roverScreenBias: 26,
-      lookAheadDistance: 64,
-      smoothing: 1.5,
-      followDeadzone: 34,
+      cameraCenterY: -18,
+      roverScreenBias: 12,
+      lookAheadDistance: 24,
+      smoothing: 3.4,
+      followDeadzone: 30,
       followBlend: 0,
       projectedYScale: 0.7,
       projectionShear: 0,
@@ -1090,7 +1091,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
           this.time.now + this.cameraLab.returnToNormalDelay * 1000
         );
       }
-      this.showEventMessage('Drone launched. Shape the return path.', 1400, this.time.now, 2);
+      this.showEventMessage('Drone away. It will come back to you.', 1400, this.time.now, 2);
     } else {
       this.addEffect('blocked', this.state.rover.x, this.state.rover.y, 320);
       this.showEventMessage(this.formatPlayerMessage(result.message), 1100, this.time.now, 2);
@@ -2210,16 +2211,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (previousSpeedState !== this.state.speedState) {
       if (this.state.speedState === 'prepared') {
         this.addEffect('sprint', this.state.rover.x, this.state.rover.y, 620);
-        this.showEventMessage('Prepared field. Mining arms are free.', 1200, timeMs, 1);
+        this.showEventMessage('On your own road. Faster, and the arms can mine.', 1200, timeMs, 1);
       }
       if (this.state.speedState === 'fabricating') {
         this.addEffect('build', this.state.rover.x, this.state.rover.y, 620);
-        this.showEventMessage('Building field. Mining arms constrained.', 1200, timeMs, 1);
+        this.showEventMessage('Raw ground. Burning nanobots to lay road.', 1200, timeMs, 1);
       }
       if (this.state.speedState === 'crawl') {
         this.addEffect('crawl', this.state.rover.x, this.state.rover.y, 820);
         this.showEventMessage(
-          this.state.drone.status === 'ready' ? 'Crawl protocol. Launch drone now.' : 'Crawl protocol. Stay catchable.',
+          this.state.drone.status === 'ready' ? 'Out of nanobots. Press Space for a refill.' : 'Out of nanobots. Crawling until the drone returns.',
           1800,
           timeMs,
           2
@@ -2232,17 +2233,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.state.nanobots / this.state.maxNanobots < this.state.tuning.droneUrgencyRatio;
     if (crossedIntoLaunchPressure && this.state.drone.status === 'ready') {
       this.addEffect('crawl', this.state.rover.x, this.state.rover.y, 620);
-      this.showEventMessage('Low buffer. Drone is ready.', 1450, timeMs, 2);
+      this.showEventMessage('Nanobots low. Space sends the drone.', 1450, timeMs, 2);
     }
 
     if (this.state.arena.extraction && this.state.phase === 'playing') {
       const previousSolarRatio = previousSolarSeconds / Math.max(1, this.state.solarWindowSeconds);
       const solarRatio = this.getSolarRatio();
       if (previousSolarRatio >= 0.5 && solarRatio < 0.5) {
-        this.showEventMessage('Sun is past half. Keep the home line in sight.', 1900, timeMs, 1);
+        this.showEventMessage('Sun past half. Start working your way home.', 1900, timeMs, 1);
       }
       if (previousSolarRatio >= 0.25 && solarRatio < 0.25) {
-        this.showEventMessage('Last light closing. Turn toward extraction.', 2200, timeMs, 2);
+        this.showEventMessage('Last light. Turn toward extraction.', 2200, timeMs, 2);
       }
       if (previousSolarRatio >= 0.1 && solarRatio < 0.1) {
         this.showEventMessage('Extraction now. No more detours.', 2400, timeMs, 3);
@@ -2250,7 +2251,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     if (deliveredPayload > 0) {
-      this.showEventMessage(`Drone delivered +${deliveredPayload.toFixed(1)}. Field restored.`, 1800, timeMs, 2);
+      this.showEventMessage(`Drone delivered +${deliveredPayload.toFixed(1)} nanobots.`, 1800, timeMs, 2);
     }
 
     if (this.state.rover.ore > previousOre + 0.02) {
@@ -2580,11 +2581,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineStyle(2, 0xeafffb, urgent ? 0.72 : 0.58);
     this.graphics.lineBetween(center.x - radius * 0.72, center.y, center.x + radius * 0.72, center.y);
     this.graphics.lineBetween(center.x, center.y - radius * 0.72, center.x, center.y + radius * 0.72);
-    if (this.cameraLab.worldLabelsVisible) {
-      this.drawStaticText('extraction-label', center.x + 18, center.y - 12, urgent ? 'GO HOME' : 'HOME / EXTRACTION', 12, urgent ? '#fff0ba' : '#bfffee');
-    } else {
-      this.drawStaticText('extraction-label', 0, 0, '', 1, '#ffffff');
-    }
+    this.drawStaticText('extraction-label', center.x + 18, center.y - 12, urgent ? 'GO HOME' : 'EXTRACTION', 12, urgent ? '#fff0ba' : '#bfffee');
     this.drawHomeDirectionCue(center, urgent, color);
   }
 
@@ -4643,7 +4640,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.eventMessage && this.time.now > this.eventMessage.expiresAtMs) {
       this.eventMessage = undefined;
     }
-    return this.formatPlayerMessage(this.state.message);
+    const guidance = getContinuousGuidance(this.state);
+    return `${guidance.objective}. ${guidance.nudge}`;
   }
 
   private drawPhaseBanner(): void {

@@ -6,6 +6,7 @@ import {
   DEFAULT_DYNAMICS_PRESET_ID,
   DYNAMICS_PRESETS,
   getDroneReclaimDiagnostics,
+  getContinuousGuidance,
   getReclaimPreview,
   isRoverAtExtraction,
   launchReclaimDrone,
@@ -869,6 +870,27 @@ describe('continuous Moon Miner spike rules', () => {
     // multiplies crawl time by 3, because nearest-worthwhile selection recovers
     // less per trip than the old weighted scoring did.
     expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds);
+  });
+
+  it('always answers what the player is doing, starting with the goal', () => {
+    const world = createContinuousWorld('guide', undefined, 'last-light-return');
+
+    const opening = getContinuousGuidance(world);
+    expect(opening.objective).toContain('extraction');
+    expect(opening.nudge).toContain('W drives');
+
+    const later = { ...world, elapsedSeconds: 20, speedState: 'crawl' as const };
+    expect(getContinuousGuidance(later).nudge).toContain('Space');
+
+    const lateRun = { ...world, elapsedSeconds: 20, solarSeconds: world.solarWindowSeconds * 0.1 };
+    expect(getContinuousGuidance(lateRun).objective).toContain('now');
+
+    // Never silent: every phase yields a non-empty objective and nudge.
+    for (const phase of ['playing', 'won', 'lost'] as const) {
+      const guidance = getContinuousGuidance({ ...world, phase, elapsedSeconds: 20 });
+      expect(guidance.objective.length).toBeGreaterThan(0);
+      expect(guidance.nudge.length).toBeGreaterThan(0);
+    }
   });
 
   it('formats a last-light route outcome table for tuning passes', () => {
