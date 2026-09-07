@@ -134,3 +134,26 @@ drone flights are the longest at 2.1s against the safe road's 0.7s.
 The general lesson is worth more than either finding: a mechanic that looks
 impossible can be a consequence of the level's shape rather than of the
 mechanic. Check the geometry before concluding a lever does not exist.
+
+## 2026-09-07: Necessary Is Not the Same as Decidable
+
+Dropping starting stock from 12 to 6 made the drone load-bearing. Before, the
+return leg was free — your own road costs nothing to re-drive — so 12 covered
+the outbound almost exactly and the drone was decoration. At 6, a competent
+15s turnaround wins with the drone and loses without it.
+
+That fixed necessity and not much else. Sweeping launch schedules, earlier is
+monotonically better on every winning route: spam from 4s wins, every schedule
+that holds the drone back loses. The optimum is "press the moment the surcharge
+decays to zero," which is a metronome rather than a choice.
+
+The reason is structural. Waiting has exactly one upside — road accumulates, so
+a later cluster is bigger — and that upside is swamped by the crawl penalty of
+running dry. Meanwhile the 9s cooldown already enforces spacing, so waiting past
+it buys nothing and waiting inside it only pays the surcharge. There is no term
+in the model that rewards patience.
+
+A cooldown paces a button. It cannot make one interesting. For "when" to carry a
+decision, the launch itself has to be scarce — a hard budget per run rather than
+a recharging one. Ruled out: having the drone eat the road home. Reclaiming and
+reusing your own rail is the fantasy, not a cost to be charged against it.
