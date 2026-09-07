@@ -104,6 +104,8 @@ export interface DroneState extends Vec2 {
   payload: number;
   etaSeconds: number;
   reclaimSeconds: number;
+  // How much rail the drone is carrying home to lay back down in front of you.
+  liftedPatches: number;
 }
 
 export type HelperArmDuty =
@@ -164,6 +166,7 @@ export interface ContinuousTuning {
   reclaimMinDistanceFromRover: number;
   reclaimRouteHomeCorridor: number;
   reclaimYieldMultiplier: number;
+  droneRailRelayMaxPatches: number;
   reclaimLockSeconds: number;
   allowCloseReclaim: boolean;
   allowLowPayloadLaunch: boolean;
@@ -268,6 +271,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // economy from a third of the road: the ladder is unchanged and crawl is back
   // where it was. Swept 1 to 4; above 2 the tank caps and the extra is wasted.
   reclaimYieldMultiplier: 3,
+  droneRailRelayMaxPatches: 6,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
   allowCloseReclaim: false,
   allowLowPayloadLaunch: false,
@@ -412,7 +416,8 @@ export function createContinuousWorld(
       y: arena.start.y,
       payload: 0,
       etaSeconds: 0,
-      reclaimSeconds: 0
+      reclaimSeconds: 0,
+      liftedPatches: 0
     },
     fields,
     fertileZones: createArenaFertileZones(arena, seed),
@@ -489,7 +494,8 @@ export function launchReclaimDrone(state: ContinuousWorldState): ContinuousComma
     targetPatchId: patch.id,
     payload: 0,
     etaSeconds: preview.etaSeconds,
-    reclaimSeconds: 0
+    reclaimSeconds: 0,
+    liftedPatches: 0
   };
   next.message = 'Drone committed to old field. Keep the rover close enough for a clean return.';
   return ok(next, next.message);
@@ -877,10 +883,12 @@ function advanceDrone(state: ContinuousWorldState, deltaSeconds: number): void {
     state.drone.reclaimSeconds = Math.max(0, state.drone.reclaimSeconds - deltaSeconds);
     state.drone.etaSeconds = state.drone.reclaimSeconds + distance(state.drone, state.rover) / state.tuning.droneSpeed;
     if (state.drone.reclaimSeconds <= 0) {
-      state.drone.payload = reclaimFieldCluster(state, state.drone.target ?? state.drone);
+      const lift = reclaimFieldCluster(state, state.drone.target ?? state.drone);
+      state.drone.payload = lift.payload;
+      state.drone.liftedPatches = lift.count;
       state.drone.status = 'returning';
       state.drone.etaSeconds = distance(state.drone, state.rover) / state.tuning.droneSpeed;
-      state.message = `Drone recovered ${state.drone.payload.toFixed(1)} nanobots. Shape the return.`;
+      state.message = `Drone lifted ${lift.count} lengths of rail. Bringing them to you.`;
     }
     return;
   }
@@ -891,15 +899,19 @@ function advanceDrone(state: ContinuousWorldState, deltaSeconds: number): void {
     if (distance(state.drone, state.rover) <= 16) {
       const delivered = state.drone.payload - state.dronePendingLaunchCost;
       state.nanobots = clamp(state.nanobots + delivered, 0, state.maxNanobots);
+      const relaid = layReturnedRail(state, state.drone.liftedPatches);
       state.drone = {
         status: 'ready',
         x: state.rover.x,
         y: state.rover.y,
         payload: 0,
         etaSeconds: 0,
-        reclaimSeconds: 0
+        reclaimSeconds: 0,
+        liftedPatches: 0
       };
-      state.message = `Drone delivered ${delivered.toFixed(1)} nanobots. Field buffer restored.`;
+      state.message = relaid > 0
+        ? `Drone relaid ${relaid} lengths ahead of you, and topped you up ${delivered.toFixed(1)}.`
+        : `Drone delivered ${delivered.toFixed(1)} nanobots.`;
     }
   }
 }
@@ -919,7 +931,7 @@ function moveDroneToward(state: ContinuousWorldState, target: Vec2, deltaSeconds
   state.drone.y += (dy / length) * step;
 }
 
-function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): number {
+function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): { payload: number; count: number } {
   const lifted: FieldPatch[] = [];
   const remainingFields: FieldPatch[] = [];
 
@@ -932,7 +944,35 @@ function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): number 
   }
 
   state.fields = remainingFields;
-  return getClusterPayload(lifted, state.tuning.reclaimYieldMultiplier);
+  return { payload: getClusterPayload(lifted, state.tuning.reclaimYieldMultiplier), count: lifted.length };
+}
+
+// The drone brings the rail back and lays it down in front of you, mature
+// enough to drive on the moment it lands. This is the one thing in the game
+// that hands the player something instead of taking something away: every
+// other facet of the drone is a fee, a cooldown, or an eligibility rule, and a
+// tool made only of restrictions reads as a tax however well it is balanced.
+// Reclaiming and reusing rail was always the fiction; it just never did it.
+function layReturnedRail(state: ContinuousWorldState, patches: number): number {
+  if (patches <= 0) return 0;
+
+  const spacing = state.tuning.fieldEmitDistance;
+  const laid = Math.min(patches, state.tuning.droneRailRelayMaxPatches);
+  for (let index = 0; index < laid; index += 1) {
+    const reach = spacing * (index + 1);
+    state.fields.push({
+      id: state.nextFieldId,
+      x: state.rover.x + Math.cos(state.rover.heading) * reach,
+      y: state.rover.y + Math.sin(state.rover.heading) * reach,
+      radius: state.tuning.fieldRadius,
+      value: state.tuning.preparedFieldMinValue * 2,
+      // Old enough to count as prepared on arrival. A gift you have to wait
+      // for is not a gift.
+      age: state.tuning.preparedFieldMinAgeSeconds
+    });
+    state.nextFieldId += 1;
+  }
+  return laid;
 }
 
 function addFieldPatch(state: ContinuousWorldState, value: number): void {
@@ -1164,12 +1204,29 @@ function createArmAllocation(
   };
 }
 
+// Names the shape of the run rather than grading it, so a greedy near-miss on
+// the clock reads differently from a cautious early return.
+function describeRun(surplusRatio: number, marginSeconds: number): string {
+  if (surplusRatio >= 1 && marginSeconds < 5) return 'Loaded to the roof and cutting it that fine is the whole game.';
+  if (surplusRatio >= 1) return 'A heavy load brought home with room. You could have pushed further.';
+  if (marginSeconds < 5) return 'Barely. Another seam and the dark would have had you.';
+  return 'Clean and early. There was more out there.';
+}
+
 function applyContinuousWinLoss(state: ContinuousWorldState): void {
   if (state.arena.extraction) {
     const required = state.arena.extraction.oreRequired;
     if (isRoverAtExtraction(state) && state.rover.ore >= required) {
       state.phase = 'won';
-      state.message = `Delivered ${state.rover.ore.toFixed(1)} ore before sunset.`;
+      // A 33-ore run two seconds before sunset used to print the same shape of
+      // sentence as a 12-ore run with twenty seconds to spare. Nothing in the
+      // game distinguished them, which is a fair reading of "nothing mattered".
+      // Saying it is the least this can do; it is not yet a reason to want it.
+      const surplus = state.rover.ore - required;
+      const margin = state.solarSeconds;
+      state.message =
+        `${state.rover.ore.toFixed(1)} ore delivered, ${surplus.toFixed(1)} over quota, ` +
+        `${margin.toFixed(1)}s of light left. ${describeRun(surplus / Math.max(1, required), margin)}`;
       return;
     }
 

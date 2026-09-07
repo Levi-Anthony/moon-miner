@@ -743,7 +743,11 @@ describe('continuous Moon Miner spike rules', () => {
     const next = tickContinuousWorld(world, idleInput, 0.1);
 
     expect(next.phase).toBe('won');
-    expect(next.message).toContain('Delivered');
+    // The win line now reports the shape of the run -- load, surplus and margin
+    // -- rather than one sentence every winning run shared.
+    expect(next.message).toContain('ore delivered');
+    expect(next.message).toContain('over quota');
+    expect(next.message).toContain('of light left');
   });
 
   it('loses last-light-return when sunset closes before the rover gets home', () => {
@@ -881,7 +885,11 @@ describe('continuous Moon Miner spike rules', () => {
     // (shallow 4.0 -> 7.5 ore, greedy 27.3 -> 25.3), so the top of the reward
     // curve is flatter than it was. Gradient is still monotonic and clear.
     expect(greedy.oreValue).toBeGreaterThan(deep.oreValue + 6);
-    expect(greedy.solarRemaining).toBeLessThan(8);
+    // Loosened 8 -> 12 by the drone relaying rail forward: every drone route
+    // now gets home with more margin, which is the point of the change. The
+    // invariant that matters -- greedy gets home tighter than deep -- is
+    // asserted relatively above and still holds.
+    expect(greedy.solarRemaining).toBeLessThan(12);
     // Crawl no longer separates them: launched on time, neither run crawls at
     // all. What separates them is the margin they get home with.
     expect(greedy.crawlSeconds).toBeGreaterThanOrEqual(deep.crawlSeconds);

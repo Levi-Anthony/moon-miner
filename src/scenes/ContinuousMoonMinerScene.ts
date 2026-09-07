@@ -2270,7 +2270,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     if (deliveredPayload > 0) {
-      this.showEventMessage(`Drone delivered +${deliveredPayload.toFixed(1)} nanobots.`, 1800, timeMs, 2);
+      // The scene was composing its own line here and throwing away the one the
+      // simulation wrote, so the relaid rail -- the only thing the drone gives
+      // you rather than takes -- arrived unannounced.
+      this.showEventMessage(this.state.message, 1800, timeMs, 2);
     }
 
     if (this.state.rover.ore > previousOre + 0.02) {

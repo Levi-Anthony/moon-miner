@@ -189,3 +189,39 @@ first of those this game has had.
 
 Timing is still not a decision. Earlier is still monotonically better. The
 corridor answers where and how much, not when.
+
+## 2026-09-07: A Game Made Only Of Limiters
+
+A run came back with 33 ore against a quota of 12, delivered two seconds
+before sunset, and it felt like nothing. That is the best possible outcome by
+every measure this project has been tuned against, so the measures are wrong.
+
+Two findings, and the second is the one that matters.
+
+The small one: nothing in the game distinguished that run from a 12-ore
+arrival with twenty seconds to spare. Winning set a phase and printed one
+sentence. Surplus ore had no consequence of any kind. "Nothing mattered" was
+not a mood, it was an accurate description of the code.
+
+The large one: every mechanic here is a limiter. Solar clock, nanobot stock,
+ore quota, launch surcharge, launch cooldown, minimum field age, minimum
+distance from rover, route-home corridor, minimum cluster payload, pickup
+radius. Ten constraints. Nothing in the game hands the player anything.
+
+The drone is the sharpest case because six passes were spent on it, and every
+one of them made it more restrictive. Count what pressing the button did: pay a
+fee, wait out a cooldown, satisfy four eligibility rules, watch your road
+vanish, and receive in exchange the resource you needed in order not to lose.
+It only ever prevented a bad thing. A tool built entirely out of restrictions
+reads as a tax no matter how carefully it is balanced, and balancing it more
+finely cannot help -- which is exactly what six passes of evidence showed.
+
+So the drone now relays rail instead of deleting it. It lifts old road, brings
+it back, and lays it out in front of you, mature enough to drive on the moment
+it lands. Same fiction as always, which was reclaiming and reusing rail; it
+simply never did the reusing part. Every drone route in the ladder improved
+without the ladder changing shape.
+
+The general lesson: a balanced set of constraints is not a game. Constraints
+make the space; something has to be worth having inside it. When tuning stops
+producing felt improvement, check whether anything in the design gives.
