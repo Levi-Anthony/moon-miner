@@ -166,6 +166,8 @@ export interface ContinuousTuning {
   reclaimMinDistanceFromRover: number;
   reclaimRouteHomeCorridor: number;
   reclaimYieldMultiplier: number;
+  overnightFieldDecay: number;
+  overnightFieldSurvivalValue: number;
   droneRailRelayMaxPatches: number;
   reclaimLockSeconds: number;
   allowCloseReclaim: boolean;
@@ -271,6 +273,14 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // economy from a third of the road: the ladder is unchanged and crawl is back
   // where it was. Swept 1 to 4; above 2 the tank caps and the extra is wasted.
   reclaimYieldMultiplier: 3,
+  // Load-bearing, and the window is narrow. Swept 0.20 to 0.55 across six
+  // chained shifts: at 0.20 nothing survives the night and it is the old game;
+  // at 0.55 the inherited network is rich enough that a run with no drone at
+  // all WINS, which re-breaks the exact thing this session spent a day fixing.
+  // At 0.40 the network settles around 14-17 patches, the crawl beat survives
+  // (4.6s and 6.1s at shift six), and the drone stays decisive.
+  overnightFieldDecay: 0.4,
+  overnightFieldSurvivalValue: 0.1,
   droneRailRelayMaxPatches: 6,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
   allowCloseReclaim: false,
@@ -389,12 +399,14 @@ export function resolveContinuousTuning(tuning: Partial<ContinuousTuning> = {}):
 export function createContinuousWorld(
   seed = 'apollo-17',
   tuning: Partial<ContinuousTuning> = {},
-  arenaId: ContinuousArenaId = 'first-run-readable'
+  arenaId: ContinuousArenaId = 'first-run-readable',
+  carriedFields: FieldPatch[] = []
 ): ContinuousWorldState {
   const resolvedTuning = resolveContinuousTuning(tuning);
   const arena = getContinuousArena(arenaId);
   const solarWindowSeconds = arena.solarWindowSeconds ?? resolvedTuning.startingSolarSeconds;
-  const fields = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, resolvedTuning.fieldRadius);
+  const starter = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, resolvedTuning.fieldRadius);
+  const fields = [...starter, ...carriedFields.map((field, index) => ({ ...field, id: starter.length + 1 + index }))];
   const nextFieldId = fields.length + 1;
 
   const state: ContinuousWorldState = {
@@ -610,6 +622,32 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
     objective: homeArena ? 'Find ore on the way home' : 'Find ore',
     nudge: 'Drive onto a gold seam. Road lays behind you.'
   };
+}
+
+// What survives the lunar night. Not a prebuild phase and not planning -- the
+// canon's objection is to placing road in a menu, and this places nothing. It
+// is the same "live residue of smart earlier movement" the design already
+// asks for, with the word "earlier" allowed to cross a sunset.
+//
+// The night degrades nano-field, and value decides what lasts. That is doing
+// real work for free, because value already encodes how the road was laid:
+// road printed while fabricating properly is worth 0.12+, while road scraped
+// out in emergency crawl is worth 0.025. So overextension does not just cost
+// you the run's clock -- what you scraped out while dying is gone by morning,
+// and only the road you laid well is still there. Reclaiming becomes a
+// cross-run decision for the same reason: what the drone lifts is not coming
+// back tomorrow either.
+export function carryFieldsOvernight(fields: FieldPatch[], tuning: ContinuousTuning): FieldPatch[] {
+  return fields
+    .map((field) => ({
+      ...field,
+      value: field.value * tuning.overnightFieldDecay,
+      // Morning road is mature road: it is drivable from the first second,
+      // which is the entire point of having laid it yesterday.
+      age: Math.max(field.age, tuning.preparedFieldMinAgeSeconds),
+      reservedByDrone: undefined
+    }))
+    .filter((field) => field.value >= tuning.overnightFieldSurvivalValue);
 }
 
 export function getPreparedCoverage(state: ContinuousWorldState, point: Vec2): number {

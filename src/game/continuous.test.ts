@@ -7,6 +7,7 @@ import {
   DYNAMICS_PRESETS,
   getDroneReclaimDiagnostics,
   getContinuousGuidance,
+  carryFieldsOvernight,
   getReclaimPreview,
   isRoadSpendable,
   isRoverAtExtraction,
@@ -1024,6 +1025,45 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(launched).toBe(true);
     expect(checked).toBe(true);
+  });
+
+  it('carries road across shifts without letting the network make the drone optional', () => {
+    const chain = (launches?: number[]) => {
+      let carried: ReturnType<typeof carryFieldsOvernight> = [];
+      let last;
+      for (let shift = 0; shift < 6; shift += 1) {
+        const run = runContinuousSelfPlay({
+          routeId: 'deepLobe',
+          deltaSeconds: 0.05,
+          carriedFields: carried,
+          ...(launches ? { droneLaunchSeconds: launches } : {})
+        });
+        last = { metrics: run.metrics, carriedIn: carried.length };
+        carried = carryFieldsOvernight(run.state.fields, run.state.tuning);
+      }
+      return last!;
+    };
+
+    const withDrone = chain();
+    const withoutDrone = chain([]);
+
+    // The network settles instead of compounding. Overnight decay is what
+    // bounds it, and without that bound a long-lived save turns the moon into
+    // one continuous prepared field.
+    expect(withDrone.carriedIn).toBeGreaterThan(6);
+    expect(withDrone.carriedIn).toBeLessThan(30);
+
+    // The load-bearing property, and the one that fails first if the decay is
+    // made generous. Swept: at 0.55 the inherited network is rich enough that
+    // a run launching no drone at all wins, which restores the exact defect
+    // the drone work was meant to remove.
+    expect(withDrone.metrics.result).toBe('won');
+    expect(withoutDrone.metrics.result).toBe('lost');
+
+    // And overextension still has somewhere to go. If inherited road removes
+    // the crawl beat, the canon's own success test -- abundance, overextension,
+    // emergency crawl, recovery -- has lost a phase.
+    expect(withoutDrone.metrics.crawlSeconds).toBeGreaterThan(10);
   });
 
   it('always answers what the player is doing, starting with the goal', () => {

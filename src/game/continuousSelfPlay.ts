@@ -7,6 +7,7 @@ import {
   type ContinuousInput,
   type ContinuousTuning,
   type ContinuousWorldState,
+  type FieldPatch,
   type Vec2
 } from './continuous';
 import type { ContinuousArenaId } from './continuousArena';
@@ -201,12 +202,13 @@ export function runContinuousSelfPlay(options: {
   tuning?: Partial<ContinuousTuning>;
   deltaSeconds?: number;
   droneLaunchSeconds?: number[];
+  carriedFields?: FieldPatch[];
 } = {}): ContinuousSelfPlayResult {
   const routeId = options.routeId ?? getDefaultContinuousSelfPlayRouteId(options.arenaId);
   const route = getContinuousSelfPlayRoute(routeId);
   const droneLaunchSeconds = options.droneLaunchSeconds ?? route.droneLaunchSeconds;
   const deltaSeconds = options.deltaSeconds ?? 0.1;
-  let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId);
+  let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId, options.carriedFields);
   const trace = createContinuousLoopTrace(world);
   const launchedAtSeconds = new Set<number>();
   let maxDroneEta = world.drone.etaSeconds;

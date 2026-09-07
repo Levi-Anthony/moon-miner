@@ -225,3 +225,44 @@ without the ladder changing shape.
 The general lesson: a balanced set of constraints is not a game. Constraints
 make the space; something has to be worth having inside it. When tuning stops
 producing felt improvement, check whether anything in the design gives.
+
+## 2026-09-07: Shift Carry-Over, Behind A Flag
+
+Road that survives the lunar night, opt-in with `?shift=1`. Not part of the
+original concept, and worth being precise about how it sits with it.
+
+CONCEPT_REFRAME defers a prebuild/planning phase "because it risks static
+puzzle drift. Prepared field should emerge from movement already made." Carry-
+over places nothing and plans nothing: what you start with is the residue of
+how you drove yesterday. The canon's own phrase is "the live residue of smart
+earlier movement," and it never scopes "earlier" to within a run. "Short-
+session" governs a session's length, not whether anything survives it. So this
+is adjacent to a deferral rather than against it -- which is still the author's
+call, which is why it is a flag and not a default.
+
+Value does the work, and it was already there. Road printed while fabricating
+properly is worth 0.12 or more; road scraped out in emergency crawl is worth
+0.025. Decay the lot overnight and drop what falls below a floor, and what
+survives is the road you laid well. Overextension stops costing only clock
+time: what you scraped out while dying is gone by morning. Reclaim becomes a
+cross-run decision for the same reason -- what the drone lifts is not coming
+back tomorrow either.
+
+The decay constant is load-bearing and the window is narrow. Swept 0.20 to 0.55
+across six chained shifts:
+
+  0.20  nothing survives; this is the old game
+  0.40  network settles at 14-17 patches, crawl beat survives, drone decisive
+  0.55  inherited network is rich enough that a run with NO drone wins
+
+0.55 restores exactly the defect this session spent a day removing, so the
+danger is generosity, not stinginess. Locked by a test that chains six shifts
+and asserts the network settles rather than compounds, the drone still decides
+the run, and overextension still reaches crawl. Set the decay to 0.55 and it
+fails.
+
+Measurement note worth keeping: the first sweep returned identical numbers for
+every shift because `runContinuousSelfPlay` accepted `carriedFields` and never
+forwarded it to `createContinuousWorld`. A parameter threaded most of the way
+is the same disconnect as a colour argument thrown away by the function that
+takes it, and it looked exactly like a real null result.

@@ -7,6 +7,8 @@ import {
   getDroneReclaimDiagnostics,
   getPreparedCoverage,
   getContinuousGuidance,
+  carryFieldsOvernight,
+  type FieldPatch,
   getReclaimPreview,
   isRoadSpendable,
   launchReclaimDrone,
@@ -76,6 +78,7 @@ const LOW_NANOBOT_RATIO = 0.18;
 const DRONE_URGENCY_RATIO = 0.32;
 const DELIVERY_READOUT_MS = 1260;
 const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v5';
+const CARRIED_ROAD_STORAGE_KEY = 'moon-miner-carried-road-v1';
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
 const DRONE_RAIL_LAB_STORAGE_KEY = 'moon-miner-drone-rail-lab-v1';
@@ -710,7 +713,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId());
+    this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId(), this.loadCarriedRoad());
     this.cameraLab = this.loadInitialCameraLab();
     this.droneRailLab = this.loadStoredDroneRailLab();
     this.viewMode = this.cameraLab.viewMode;
@@ -901,6 +904,41 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (event.key === '\\') {
       event.preventDefault();
       this.resetCameraLab();
+    }
+  }
+
+  // Opt-in with ?shift=1, and deliberately not DEV-gated: the point is to be
+  // able to play chained shifts in a published build. Off by default, because
+  // carrying road across runs is adjacent to a documented deferral and that is
+  // the author's call to make, not a default to slip in.
+  private isShiftModeEnabled(): boolean {
+    try {
+      return new URLSearchParams(window.location.search).get('shift') === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  private loadCarriedRoad(): FieldPatch[] {
+    if (!this.isShiftModeEnabled()) return [];
+
+    try {
+      const raw = window.localStorage.getItem(CARRIED_ROAD_STORAGE_KEY);
+      const parsed = raw ? (JSON.parse(raw) as FieldPatch[]) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private saveCarriedRoad(): void {
+    if (!this.isShiftModeEnabled()) return;
+
+    try {
+      const carried = carryFieldsOvernight(this.state.fields, this.state.tuning);
+      window.localStorage.setItem(CARRIED_ROAD_STORAGE_KEY, JSON.stringify(carried));
+    } catch {
+      // Storage can be unavailable; the shift simply does not carry.
     }
   }
 
@@ -1119,7 +1157,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private resetRun(): void {
-    this.state = createContinuousWorld(this.state.seed, this.state.tuning, this.state.arenaId);
+    this.state = createContinuousWorld(this.state.seed, this.state.tuning, this.state.arenaId, this.loadCarriedRoad());
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -1142,7 +1180,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const tuning = this.state.tuning;
     const seed = this.state.seed;
-    this.state = createContinuousWorld(seed, tuning, arenaId);
+    this.state = createContinuousWorld(seed, tuning, arenaId, this.loadCarriedRoad());
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -2282,6 +2320,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     if (previousPhase !== this.state.phase) {
       this.addEffect(this.state.phase === 'won' ? 'win' : 'loss', this.state.rover.x, this.state.rover.y, 1200);
+      // The shift ends whether you made quota or not. What you laid well is
+      // still there in the morning; what you scraped out while dying is not.
+      if (this.state.phase !== 'playing') this.saveCarriedRoad();
     }
 
     this.previousDroneStatus = this.state.drone.status;
