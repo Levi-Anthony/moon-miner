@@ -289,7 +289,7 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   minReclaimClusterPayload: 0.12,
   allowCloseReclaim: false,
   allowLowPayloadLaunch: false,
-  droneSpeed: 470,
+  droneSpeed: 160,
   dronePickupRadius: 185,
   reclaimLockSeconds: 0.35,
   lowStockWarningRatio: 0.14,

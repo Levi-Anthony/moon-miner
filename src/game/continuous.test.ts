@@ -803,7 +803,12 @@ describe('continuous Moon Miner spike rules', () => {
     expect(safe.leftSafeCorridor).toBe(false);
     expect(safe.oreValue).toBeLessThan(2.5);
     expect(safe.solarRemaining).toBeGreaterThan(35);
-    expect(safe.crawlSeconds).toBe(0);
+    // Was exactly 0 with a 470-speed drone. At 160 a late launch can fail to
+    // get home before the run ends -- safeReturn now records 2 launches and 1
+    // delivery -- so the route dips into a brief crawl. That is the intended
+    // new fail state for launch timing, not the cost model taxing a sparse
+    // route as an earlier flat droneLaunchCost did.
+    expect(safe.crawlSeconds).toBeLessThan(1.5);
 
     expect(shallow.leftSafeCorridor).toBe(true);
     expect(shallow.oreValue).toBeGreaterThan(safe.oreValue + 2);
@@ -815,7 +820,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(deep.crawlSeconds).toBeGreaterThan(6);
     expect(deep.maxDroneEta).toBeGreaterThanOrEqual(shallow.maxDroneEta);
 
-    expect(greedy.oreValue).toBeGreaterThan(deep.oreValue + 8);
+    // The slower drone lifts the low-risk routes and slightly lowers max greed
+    // (shallow 4.0 -> 7.5 ore, greedy 27.3 -> 25.3), so the top of the reward
+    // curve is flatter than it was. Gradient is still monotonic and clear.
+    expect(greedy.oreValue).toBeGreaterThan(deep.oreValue + 6);
     expect(greedy.solarRemaining).toBeLessThan(8);
     expect(greedy.crawlSeconds).toBeGreaterThan(deep.crawlSeconds);
     // Route shape does not lengthen the drone's flight, and cannot under this
