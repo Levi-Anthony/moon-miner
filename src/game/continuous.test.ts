@@ -708,8 +708,9 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.message).toBe('Solar window closed before the extraction quota.');
   });
 
-  it('wins last-light-return by reaching extraction before sunset without requiring ore', () => {
+  it('does not win last-light-return by arriving empty handed', () => {
     const world = createContinuousWorld('home-test', {}, 'last-light-return');
+    const required = world.arena.extraction!.oreRequired;
     world.rover.ore = 0;
     world.rover.x = 139;
     world.rover.y = 610;
@@ -717,8 +718,20 @@ describe('continuous Moon Miner spike rules', () => {
     const next = tickContinuousWorld(world, idleInput, 0.1);
 
     expect(isRoverAtExtraction(next)).toBe(true);
+    expect(next.phase).toBe('playing');
+    expect(required).toBeGreaterThan(0);
+  });
+
+  it('wins last-light-return by arriving with the ore', () => {
+    const world = createContinuousWorld('home-test-ore', {}, 'last-light-return');
+    world.rover.ore = world.arena.extraction!.oreRequired;
+    world.rover.x = 139;
+    world.rover.y = 610;
+
+    const next = tickContinuousWorld(world, idleInput, 0.1);
+
     expect(next.phase).toBe('won');
-    expect(next.message).toBe('Rover reached extraction before sunset with 0.0 bonus ore.');
+    expect(next.message).toContain('Delivered');
   });
 
   it('loses last-light-return when sunset closes before the rover gets home', () => {
@@ -729,7 +742,7 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(isRoverAtExtraction(next)).toBe(false);
     expect(next.phase).toBe('lost');
-    expect(next.message).toBe('Sunset closed the extraction window before the rover got home.');
+    expect(next.message).toContain('Sunset');
   });
 
   it('stopped pivot steering still obeys last-light sunset loss without drive movement', () => {
@@ -744,7 +757,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.rover.heading).not.toBe(start.heading);
     expect(next.fields).toEqual([]);
     expect(next.phase).toBe('lost');
-    expect(next.message).toBe('Sunset closed the extraction window before the rover got home.');
+    expect(next.message).toContain('Sunset');
   });
 
   it('can demonstrate field commitment, overextension, crawl, and drone recovery in the starter route', () => {
@@ -795,21 +808,26 @@ describe('continuous Moon Miner spike rules', () => {
     const greedy = runContinuousSelfPlay({ routeId: 'greedyLatePocket', deltaSeconds: 0.05 }).metrics;
     const sloppy = runContinuousSelfPlay({ routeId: 'greedyLatePocketSloppy', deltaSeconds: 0.05 }).metrics;
 
-    for (const metrics of [safe, shallow, deep, greedy]) {
+    // Detouring is now the price of winning at all: the no-detour route reaches
+    // extraction but under quota, so only the routes that leave the safe road
+    // finish the run.
+    for (const metrics of [shallow, deep, greedy]) {
       expect(metrics.result).toBe('won');
       expect(metrics.reachedExtraction).toBe(true);
       expect(metrics.droneDeliveries).toBeGreaterThan(0);
     }
+    expect(safe.reachedExtraction).toBe(true);
+    expect(safe.result).not.toBe('won');
 
     expect(safe.leftSafeCorridor).toBe(false);
-    expect(safe.oreValue).toBeLessThan(2.5);
-    expect(safe.solarRemaining).toBeGreaterThan(35);
-    // Was exactly 0 with a 470-speed drone. At 160 a late launch can fail to
-    // get home before the run ends -- safeReturn now records 2 launches and 1
-    // delivery -- so the route dips into a brief crawl. That is the intended
-    // new fail state for launch timing, not the cost model taxing a sparse
-    // route as an earlier flat droneLaunchCost did.
-    expect(safe.crawlSeconds).toBeLessThan(1.5);
+    // The safe road gets you home early and empty. It used to end the run with
+    // 35s+ of light to spare; now it arrives under quota and the light runs out
+    // while it sits there, which is the whole point of the change.
+    expect(safe.oreValue).toBeLessThan(CONTINUOUS_ARENAS['last-light-return'].extraction!.oreRequired);
+    // No crawl assertion for safeReturn any more. It no longer ends on arrival,
+    // so it idles at extraction under quota until the script stops, and time
+    // spent crawling while parked is not a design signal. What matters is above:
+    // it gets home, and it gets home empty.
 
     expect(shallow.leftSafeCorridor).toBe(true);
     expect(shallow.oreValue).toBeGreaterThan(safe.oreValue + 2);
@@ -883,7 +901,9 @@ describe('continuous Moon Miner spike rules', () => {
     expect(getContinuousGuidance(later).nudge).toContain('Space');
 
     const lateRun = { ...world, elapsedSeconds: 20, solarSeconds: world.solarWindowSeconds * 0.1 };
-    expect(getContinuousGuidance(lateRun).objective).toContain('now');
+    const lateWithOre = { ...lateRun, rover: { ...lateRun.rover, ore: 99 } };
+    expect(getContinuousGuidance(lateWithOre).objective).toContain('now');
+    expect(getContinuousGuidance(lateRun).objective).toContain('more ore');
 
     // Never silent: every phase yields a non-empty objective and nudge.
     for (const phase of ['playing', 'won', 'lost'] as const) {
@@ -897,7 +917,8 @@ describe('continuous Moon Miner spike rules', () => {
     const table = formatLastLightRouteOutcomeTable();
 
     expect(table).toContain('| Route | Result | Reached Home | Ore/Value | Solar Left |');
-    expect(table).toContain('| safeReturn | won | yes |');
+    // safeReturn is under quota now, so it is no longer a winning row.
+    expect(table).toContain('| safeReturn |');
     expect(table).toContain('| greedyLatePocket | won | yes |');
     expect(table).toContain('| greedyLatePocketSloppy | lost | no |');
     expect(table).toContain('late launches and bad route shape miss extraction');

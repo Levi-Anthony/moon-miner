@@ -513,7 +513,10 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
 
   if (state.elapsedSeconds < 7) {
     return homeArena
-      ? { objective: 'Mine ore. Reach extraction before sunset', nudge: 'W drives, A/D steer. Gold rock is ore.' }
+      ? {
+          objective: `Mine ${state.arena.extraction?.oreRequired ?? 0} ore, then reach extraction before sunset`,
+          nudge: 'W drives, A/D steer. Gold rock is ore.'
+        }
       : { objective: `Mine ${state.targetOre} ore before sunset`, nudge: 'W drives, A/D steer. Gold rock is ore.' };
   }
 
@@ -522,8 +525,15 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
   }
 
   const solarRatio = state.solarWindowSeconds > 0 ? state.solarSeconds / state.solarWindowSeconds : 1;
-  if (homeArena && solarRatio < 0.25) {
-    return { objective: 'Get to extraction now', nudge: 'Ore only counts if you arrive.' };
+  if (homeArena) {
+    const required = state.arena.extraction?.oreRequired ?? 0;
+    const short = required - state.rover.ore;
+    if (solarRatio < 0.25 && short > 0) {
+      return { objective: `Need ${short.toFixed(1)} more ore`, nudge: 'And you still have to get home.' };
+    }
+    if (solarRatio < 0.25) {
+      return { objective: 'Get to extraction now', nudge: 'You have the ore. Do not lose it to the dark.' };
+    }
   }
 
   if (state.drone.status !== 'ready') {
@@ -1082,15 +1092,19 @@ function createArmAllocation(
 
 function applyContinuousWinLoss(state: ContinuousWorldState): void {
   if (state.arena.extraction) {
-    if (isRoverAtExtraction(state)) {
+    const required = state.arena.extraction.oreRequired;
+    if (isRoverAtExtraction(state) && state.rover.ore >= required) {
       state.phase = 'won';
-      state.message = `Rover reached extraction before sunset with ${state.rover.ore.toFixed(1)} bonus ore.`;
+      state.message = `Delivered ${state.rover.ore.toFixed(1)} ore before sunset.`;
       return;
     }
 
     if (state.solarSeconds <= 0) {
       state.phase = 'lost';
-      state.message = 'Sunset closed the extraction window before the rover got home.';
+      state.message =
+        state.rover.ore < required
+          ? `Sunset. Only ${state.rover.ore.toFixed(1)} of ${required} ore mined.`
+          : 'Sunset closed the extraction window before the rover got home.';
     }
     return;
   }

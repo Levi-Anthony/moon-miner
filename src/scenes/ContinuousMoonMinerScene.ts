@@ -4001,7 +4001,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const nanobotRatio = this.state.nanobots / this.state.maxNanobots;
     const extractionRun = Boolean(this.state.arena.extraction);
-    const oreRatio = extractionRun ? clamp(this.state.rover.ore / 36, 0, 1) : this.state.rover.ore / this.state.targetOre;
+    const oreTarget = extractionRun ? this.state.arena.extraction?.oreRequired ?? 1 : this.state.targetOre;
+    const oreRatio = clamp(this.state.rover.ore / Math.max(0.001, oreTarget), 0, 1);
     const sunRatio = this.getSolarRatio();
 
     this.drawVital(
@@ -4015,7 +4016,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     );
     this.drawVital(
       'Ore',
-      extractionRun ? this.state.rover.ore.toFixed(1) : `${this.state.rover.ore.toFixed(1)}/${this.state.targetOre}`,
+      extractionRun
+        ? `${this.state.rover.ore.toFixed(1)}/${this.state.arena.extraction?.oreRequired ?? 0}`
+        : `${this.state.rover.ore.toFixed(1)}/${this.state.targetOre}`,
       layout.vitals[1].x,
       layout.vitals[1].y + 5,
       layout.vitals[1].width,
@@ -4118,7 +4121,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStaticText(`vital-${label}-label`, x, y + 2, label, 12, '#9eabbc');
     this.drawStaticText(`vital-${label}-value`, x, y + 23, value, 19, '#f6f8fb');
     this.drawBar(x, y + 43, width, 10, progress, color);
-    if (label === 'Ore' && !this.state.arena.extraction) {
+    if (label === 'Ore') {
       this.graphics.lineStyle(2, 0xfff0ba, 0.84);
       this.graphics.lineBetween(x + width - 2, y + 40, x + width - 2, y + 56);
     }

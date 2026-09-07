@@ -17,6 +17,8 @@ export interface ContinuousExtractionZone extends Vec2 {
   id: string;
   label: string;
   radius: number;
+  // Arriving is not an achievement on its own. You have to bring something.
+  oreRequired: number;
 }
 
 export interface ContinuousArenaDefinition {
@@ -256,7 +258,8 @@ const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
     label: 'extraction',
     x: 135,
     y: 610,
-    radius: 46
+    radius: 46,
+    oreRequired: 4
   },
   safePath: LAST_LIGHT_SAFE_PATH,
   solarWindowSeconds: 51,
