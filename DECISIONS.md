@@ -157,3 +157,35 @@ A cooldown paces a button. It cannot make one interesting. For "when" to carry a
 decision, the launch itself has to be scarce — a hard budget per run rather than
 a recharging one. Ruled out: having the drone eat the road home. Reclaiming and
 reusing your own rail is the fantasy, not a cost to be charged against it.
+
+## 2026-09-07: One Object, Two Uses
+
+The complaint was that reclaim takes away the road you wanted to turn around
+and drive back over. The complaint under it was sharper: the game keeps trading
+one dominant pressure for another instead of asking the player to balance
+anything. Both are the same bug seen from different distances.
+
+Reclaim deletes what it lifts, and the drone took the nearest cluster. When the
+level was one-way that was fine, because you never came back. The round trip
+made the nearest cluster the worst possible pick -- it is the road you are
+about to drive home on -- and the player never chose it, so the cost read as
+the game misbehaving rather than as a price.
+
+The fix is a corridor: the drone may not take road near the line between the
+rover and extraction. That is worth more than the annoyance it removes, because
+it makes the laid road two things at once. It is stored reach and it is a fast
+way home, and only the part clear of the line home can be spent as the first.
+Nothing is being throttled. The player decides how much spendable road exists
+by the shape they choose to drive: straight out and back 22% of the run with
+something to reclaim, a wide lobe 62%, a tight loop 75%, a dead-straight line
+none at all.
+
+The general form is worth keeping. A single scarce resource does not produce a
+decision, it produces a constant -- the optimum against one pressure is always
+"as much as possible, as early as possible", which is what the drone timing
+sweep kept showing. A decision needs one object with two uses that exclude each
+other, and a player who controls the ratio. Reach against the way home is the
+first of those this game has had.
+
+Timing is still not a decision. Earlier is still monotonically better. The
+corridor answers where and how much, not when.
