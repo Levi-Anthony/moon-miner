@@ -76,7 +76,7 @@ type ArmRole = 'building' | 'mining' | 'stabilizing' | 'emergency' | 'helper';
 type LayoutMode = 'desktop' | 'mobilePortrait';
 type ViewMode = 'tactical' | 'chase' | 'hybrid';
 type TuningKey = keyof ContinuousTuning;
-type CameraPresetId = 'tacticalMap' | 'threeQuarterTactical' | 'softChase' | 'roverChase' | 'hybridAuto';
+type CameraPresetId = 'tacticalMap' | 'threeQuarterTactical' | 'tractorChase' | 'softChase' | 'roverChase' | 'hybridAuto';
 type NumericTuningKey = {
   [Key in keyof ContinuousTuning]: ContinuousTuning[Key] extends number ? Key : never;
 }[keyof ContinuousTuning];
@@ -106,6 +106,9 @@ interface CameraLabSettings {
   followBlend: number;
   followDeadzone: number;
   worldLabelsVisible: boolean;
+  cameraYawRate: number;
+  cameraMaxYawLag: number;
+  cameraYawDeadzone: number;
   projectedYScale: number;
   projectionShear: number;
   depthScaleStrength: number;
@@ -352,6 +355,13 @@ const DEFAULT_CAMERA_LAB_SETTINGS: CameraLabSettings = {
   followBlend: 0,
   followDeadzone: 90,
   worldLabelsVisible: true,
+  // The tractor turns at 2.25 rad/s. The camera turns slower on purpose, so a
+  // held turn swings the tractor out to the side of frame with its flank and
+  // the fresh track in view, and the camera never quite catches up until the
+  // turn stops.
+  cameraYawRate: 1.1,
+  cameraMaxYawLag: 74,
+  cameraYawDeadzone: 6,
   projectedYScale: 1,
   projectionShear: 0,
   depthScaleStrength: 0,
@@ -396,6 +406,30 @@ const CAMERA_PRESETS: CameraPresetDefinition[] = [
       projectedScaleStrength: 0.14,
       horizonVisible: true,
       followBlend: 0.45
+    }
+  },
+  {
+    id: 'tractorChase',
+    label: 'Tractor Chase',
+    settings: {
+      ...DEFAULT_CAMERA_LAB_SETTINGS,
+      preset: 'tractorChase',
+      viewMode: 'chase',
+      cameraZoom: 1.1,
+      cameraCenterY: 30,
+      roverScreenBias: 92,
+      lookAheadDistance: 64,
+      smoothing: 1.5,
+      followDeadzone: 34,
+      followBlend: 0,
+      projectedYScale: 0.7,
+      projectionShear: 0,
+      depthScaleStrength: 0.3,
+      projectedScaleStrength: 0.3,
+      horizonVisible: true,
+      cameraYawRate: 1.1,
+      cameraMaxYawLag: 74,
+      cameraYawDeadzone: 6
     }
   },
   {
@@ -719,6 +753,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private tacticalCameraFocus: Vec2 = { x: 420, y: 500 };
   private cameraHeading = -0.18;
   private readonly drawnBeatLabelKeys = new Set<string>();
+  private chaseCameraFocus: Vec2 = { x: 420, y: 500 };
   private hybridPullbackUntilMs = 0;
   private keys?: Record<string, Phaser.Input.Keyboard.Key>;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -2190,12 +2225,47 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       return;
     }
 
-    const response = this.state.speedState === 'crawl' ? this.cameraLab.turnResponse * 1.45 : this.cameraLab.turnResponse;
-    const blend = 1 - Math.exp(-response * deltaSeconds);
-    const targetHeading = this.cameraHeadingTarget();
-    this.cameraHeading = wrapAngle(
-      this.cameraHeading + angleDifference(targetHeading, this.cameraHeading) * blend
-    );
+    const offset = angleDifference(this.state.rover.heading, this.cameraHeading);
+    const magnitude = Math.abs(offset);
+    const direction = Math.sign(offset) || 1;
+    const deadzone = (this.cameraLab.cameraYawDeadzone * Math.PI) / 180;
+    const maxLag = (this.cameraLab.cameraMaxYawLag * Math.PI) / 180;
+    const rate = this.state.speedState === 'crawl' ? this.cameraLab.cameraYawRate * 1.45 : this.cameraLab.cameraYawRate;
+
+    if (magnitude > maxLag) {
+      // Saturated. Hold the lag steady so a sustained turn parks the tractor at
+      // the edge of frame instead of swinging it out of shot.
+      this.cameraHeading = wrapAngle(this.state.rover.heading - direction * maxLag);
+      this.updateChaseFocus(deltaSeconds);
+      return;
+    }
+
+    if (magnitude <= deadzone) {
+      this.updateChaseFocus(deltaSeconds);
+      return;
+    }
+
+    const step = Math.min(magnitude, rate * deltaSeconds);
+    this.cameraHeading = wrapAngle(this.cameraHeading + direction * step);
+    this.updateChaseFocus(deltaSeconds);
+  }
+
+  private updateChaseFocus(deltaSeconds: number): void {
+    const desired = {
+      x: this.state.rover.x + Math.cos(this.cameraHeading) * this.cameraLab.lookAheadDistance,
+      y: this.state.rover.y + Math.sin(this.cameraHeading) * this.cameraLab.lookAheadDistance
+    };
+    const offsetX = desired.x - this.chaseCameraFocus.x;
+    const offsetY = desired.y - this.chaseCameraFocus.y;
+    const distance = Math.hypot(offsetX, offsetY);
+    const deadzone = Math.max(0, this.cameraLab.followDeadzone);
+    if (distance <= deadzone) return;
+
+    const blend = 1 - Math.exp(-this.cameraLab.smoothing * deltaSeconds);
+    this.chaseCameraFocus = {
+      x: Phaser.Math.Linear(this.chaseCameraFocus.x, desired.x, blend),
+      y: Phaser.Math.Linear(this.chaseCameraFocus.y, desired.y, blend)
+    };
   }
 
   private captureTransitions(
@@ -4857,10 +4927,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private cameraFocus(): Vec2 {
     if (this.viewMode === 'tactical') return this.tacticalCameraFocus;
 
-    const chaseFocus = {
-      x: this.state.rover.x + Math.cos(this.cameraHeading) * this.cameraLab.lookAheadDistance,
-      y: this.state.rover.y + Math.sin(this.cameraHeading) * this.cameraLab.lookAheadDistance
-    };
+    const chaseFocus = this.chaseCameraFocus;
     const pullback = this.getHybridPullbackAmount() * this.cameraLab.tacticalPullbackStrength;
     const blend = clamp(this.cameraLab.followBlend + pullback, 0, 1);
     return {
@@ -4961,15 +5028,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private cameraHeadingTarget(): number {
-    const routeTarget = this.pointerTarget ?? this.getSelfPlayTarget() ?? this.tacticalCameraFocus;
-    const routeHeading = Math.atan2(routeTarget.y - this.state.rover.y, routeTarget.x - this.state.rover.x);
-    const maxRotation = (this.cameraLab.maxCameraRotation * Math.PI) / 180;
-    const desiredOffset = clamp(
-      angleDifference(routeHeading, this.state.rover.heading) * this.cameraLab.rotationBlendAmount,
-      -maxRotation,
-      maxRotation
-    );
-    return wrapAngle(this.state.rover.heading + desiredOffset);
+    return this.state.rover.heading;
   }
 
   private getProjectionModeLabel(): string {
