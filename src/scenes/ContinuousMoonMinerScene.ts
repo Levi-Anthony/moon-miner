@@ -104,6 +104,8 @@ interface CameraLabSettings {
   maxCameraRotation: number;
   rotationBlendAmount: number;
   followBlend: number;
+  followDeadzone: number;
+  worldLabelsVisible: boolean;
   projectedYScale: number;
   projectionShear: number;
   depthScaleStrength: number;
@@ -348,6 +350,8 @@ const DEFAULT_CAMERA_LAB_SETTINGS: CameraLabSettings = {
   maxCameraRotation: 42,
   rotationBlendAmount: 0.2,
   followBlend: 0,
+  followDeadzone: 90,
+  worldLabelsVisible: true,
   projectedYScale: 1,
   projectionShear: 0,
   depthScaleStrength: 0,
@@ -680,6 +684,7 @@ declare global {
       setArena: (arenaId: ContinuousArenaId) => void;
       getCameraLab: () => CameraLabSnapshot;
       setCameraPreset: (presetId: CameraPresetId) => void;
+      setCameraSettings: (settings: Partial<CameraLabSettings>) => void;
       setViewMode: (viewMode: ViewMode) => void;
       getDynamicsPresets: () => DynamicsPresetDefinition[];
       setDynamicsPreset: (presetId: DynamicsPresetId) => void;
@@ -713,6 +718,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private viewMode: ViewMode = 'tactical';
   private tacticalCameraFocus: Vec2 = { x: 420, y: 500 };
   private cameraHeading = -0.18;
+  private readonly drawnBeatLabelKeys = new Set<string>();
   private hybridPullbackUntilMs = 0;
   private keys?: Record<string, Phaser.Input.Keyboard.Key>;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -1983,6 +1989,14 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       });
   }
 
+  private applyCameraSettings(settings: Partial<CameraLabSettings>): void {
+    this.cameraLab = this.normalizeCameraLabSettings({ ...this.cameraLab, ...settings });
+    this.viewMode = this.cameraLab.viewMode;
+    this.tacticalCameraFocus = this.tacticalCameraTarget();
+    this.saveStoredCameraLab();
+    this.syncCameraLabPanel();
+  }
+
   private applyCameraPreset(presetId: CameraPresetId): void {
     const preset = this.getCameraPreset(presetId);
     this.cameraLab = this.normalizeCameraLabSettings({ ...preset.settings });
@@ -2452,7 +2466,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     const labelPoint = this.project(path[Math.min(2, path.length - 1)]);
-    this.drawStaticText('safe-path-label', labelPoint.x + 10, labelPoint.y + 18, 'safe way home', 11, '#9ddbd2');
+    if (this.cameraLab.worldLabelsVisible) {
+      this.drawStaticText('safe-path-label', labelPoint.x + 10, labelPoint.y + 18, 'safe way home', 11, '#9ddbd2');
+    } else {
+      this.drawStaticText('safe-path-label', 0, 0, '', 1, '#ffffff');
+    }
   }
 
   private drawExtractionZone(): void {
@@ -2477,7 +2495,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineStyle(2, 0xeafffb, urgent ? 0.72 : 0.58);
     this.graphics.lineBetween(center.x - radius * 0.72, center.y, center.x + radius * 0.72, center.y);
     this.graphics.lineBetween(center.x, center.y - radius * 0.72, center.x, center.y + radius * 0.72);
-    this.drawStaticText('extraction-label', center.x + 18, center.y - 12, urgent ? 'GO HOME' : 'HOME / EXTRACTION', 12, urgent ? '#fff0ba' : '#bfffee');
+    if (this.cameraLab.worldLabelsVisible) {
+      this.drawStaticText('extraction-label', center.x + 18, center.y - 12, urgent ? 'GO HOME' : 'HOME / EXTRACTION', 12, urgent ? '#fff0ba' : '#bfffee');
+    } else {
+      this.drawStaticText('extraction-label', 0, 0, '', 1, '#ffffff');
+    }
     this.drawHomeDirectionCue(center, urgent, color);
   }
 
@@ -2515,7 +2537,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineBetween(cue.x, cue.y, left.x, left.y);
     this.graphics.lineBetween(left.x, left.y, right.x, right.y);
     this.graphics.lineBetween(right.x, right.y, cue.x, cue.y);
-    this.drawStaticText('home-direction-label', cue.x + 12, cue.y - 8, urgent ? 'HOME NOW' : 'home', urgent ? 12 : 10, urgent ? '#fff0ba' : '#bfffee');
+    if (this.cameraLab.worldLabelsVisible || urgent) {
+      this.drawStaticText('home-direction-label', cue.x + 12, cue.y - 8, urgent ? 'HOME NOW' : 'home', urgent ? 12 : 10, urgent ? '#fff0ba' : '#bfffee');
+    } else {
+      this.drawStaticText('home-direction-label', 0, 0, '', 1, '#ffffff');
+    }
   }
 
   private drawSolarWindowOverlay(): void {
@@ -2790,7 +2816,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const activeZone = this.getCurrentAffordanceZone();
     const layout = this.getLayout();
-    const showLabels = layout.mode === 'desktop';
+    const showLabels = layout.mode === 'desktop' && this.cameraLab.worldLabelsVisible;
+    const liveKeys = new Set(this.state.arena.beats.map((beat) => `beat-label-${beat.id}`));
+    for (const key of [...this.drawnBeatLabelKeys]) {
+      if (liveKeys.has(key)) continue;
+      this.drawStaticText(key, 0, 0, '', 1, '#ffffff');
+      this.drawnBeatLabelKeys.delete(key);
+    }
     for (const beat of this.state.arena.beats) {
       const screen = this.project(beat);
       const active =
@@ -2806,6 +2838,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.graphics.strokeCircle(screen.x, screen.y, active ? 15 + pulse * 4 : 10);
 
       if (showLabels) {
+        this.drawnBeatLabelKeys.add(`beat-label-${beat.id}`);
         this.drawStaticText(
           `beat-label-${beat.id}`,
           screen.x + 13,
@@ -2816,14 +2849,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         );
       } else {
         this.drawStaticText(`beat-label-${beat.id}`, 0, 0, '', 1, '#ffffff');
+        this.drawnBeatLabelKeys.delete(`beat-label-${beat.id}`);
       }
     }
   }
 
   private clearBeatMarkerText(): void {
-    for (const beat of this.state.arena.beats) {
-      this.drawStaticText(`beat-label-${beat.id}`, 0, 0, '', 1, '#ffffff');
+    for (const key of this.drawnBeatLabelKeys) {
+      this.drawStaticText(key, 0, 0, '', 1, '#ffffff');
     }
+    this.drawnBeatLabelKeys.clear();
   }
 
   private drawFertileVeinPulse(
@@ -4493,6 +4528,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       setArena: (arenaId) => this.setArena(arenaId),
       getCameraLab: () => this.getCameraLabSnapshot(),
       setCameraPreset: (presetId) => this.applyCameraPreset(presetId),
+      setCameraSettings: (settings) => this.applyCameraSettings(settings),
       setViewMode: (viewMode) => this.setCameraViewMode(viewMode),
       getDynamicsPresets: () =>
         DYNAMICS_PRESETS.map((preset) => ({
@@ -4834,15 +4870,18 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private tacticalCameraTarget(): Vec2 {
-    const beats = this.state.arena.beats.length > 0 ? this.state.arena.beats : [{ ...this.state.rover, id: 'rover', label: 'rover' }];
-    const beatCenter = beats.reduce(
-      (sum, beat) => ({ x: sum.x + beat.x / beats.length, y: sum.y + beat.y / beats.length }),
-      { x: 0, y: 0 }
-    );
-    const target = {
-      x: Phaser.Math.Linear(this.state.rover.x, beatCenter.x, 0.56),
-      y: Phaser.Math.Linear(this.state.rover.y, beatCenter.y, 0.5)
-    };
+    // The camera rides with the miner. A deadzone lets ordinary maneuvering happen
+    // without the view moving at all; the camera only gives chase once the rover
+    // genuinely leaves the box.
+    const deadzone = Math.max(0, this.cameraLab.followDeadzone);
+    const anchor = this.tacticalCameraFocus;
+    const offsetX = this.state.rover.x - anchor.x;
+    const offsetY = this.state.rover.y - anchor.y;
+    const distance = Math.hypot(offsetX, offsetY);
+    const target =
+      distance <= deadzone || distance === 0
+        ? { x: anchor.x, y: anchor.y }
+        : { x: this.state.rover.x, y: this.state.rover.y };
     const layout = this.getLayout();
     const playTop = layout.hudHeight;
     const playBottom = layout.controlBandTop ?? layout.height;
@@ -4870,7 +4909,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         ? Math.floor(DESKTOP_HUD_HEIGHT + (layout.height - DESKTOP_HUD_HEIGHT) * 0.52)
         : DESKTOP_CAMERA_CENTER_Y;
     const baseCenterY = layout.mode === 'mobilePortrait' ? mobileCenterY : desktopCenterY;
-    const bias = this.viewMode === 'tactical' ? 0 : this.cameraLab.roverScreenBias;
+    const bias = this.cameraLab.roverScreenBias;
 
     return {
       x: layout.width / 2 + this.cameraLab.cameraCenterX,
