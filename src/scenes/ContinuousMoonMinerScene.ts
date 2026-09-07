@@ -2529,38 +2529,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private drawSafeReturnPath(): void {
-    const path = this.state.arena.safePath;
-    if (!path || path.length < 2) {
-      this.drawStaticText('safe-path-label', 0, 0, '', 1, '#ffffff');
-      return;
-    }
-
-    this.graphics.lineStyle(22, 0x102d33, 0.2);
-    for (let index = 0; index < path.length - 1; index += 1) {
-      const from = this.project(path[index]);
-      const to = this.project(path[index + 1]);
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
-    }
-
-    this.graphics.lineStyle(3, 0x7bc6bd, 0.36);
-    for (let index = 0; index < path.length - 1; index += 1) {
-      const from = this.project(path[index]);
-      const to = this.project(path[index + 1]);
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
-    }
-
-    for (let index = 0; index < path.length; index += 1) {
-      const point = this.project(path[index]);
-      this.graphics.fillStyle(0x7bc6bd, index === path.length - 1 ? 0.58 : 0.26);
-      this.graphics.fillCircle(point.x, point.y, index === path.length - 1 ? 5 : 2.5);
-    }
-
-    const labelPoint = this.project(path[Math.min(2, path.length - 1)]);
-    if (this.cameraLab.worldLabelsVisible) {
-      this.drawStaticText('safe-path-label', labelPoint.x + 10, labelPoint.y + 18, 'safe way home', 11, '#9ddbd2');
-    } else {
-      this.drawStaticText('safe-path-label', 0, 0, '', 1, '#ffffff');
-    }
+    // Deliberately empty. In a round trip the road home is the one you laid, so
+    // a pre-drawn line running away from the depot taught exactly the wrong
+    // lesson. The corridor data stays on the arena for self-play metrics.
+    this.drawStaticText('safe-path-label', 0, 0, '', 1, '#ffffff');
   }
 
   private drawExtractionZone(): void {

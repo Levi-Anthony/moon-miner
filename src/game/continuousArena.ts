@@ -250,15 +250,18 @@ const LAST_LIGHT_SAFE_PATH: Vec2[] = [
 const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
   id: 'last-light-return',
   label: 'Last Light Return',
-  description: 'A readable low-value road home with upward unofficial seams that tax route shape, drone timing, and sunset margin.',
+  description: 'A round trip from the depot into the seam field and back. Every second outbound is a second you also have to spend coming home.',
   start: { x: 900, y: 535 },
   startHeading: Math.PI - 0.2,
   extraction: {
     id: 'extraction-home',
-    label: 'extraction',
-    x: 135,
-    y: 610,
-    radius: 46,
+    label: 'depot',
+    // The depot is where the run starts. A one-way trip pointed the laid road
+    // permanently away from the goal, so reusing it always meant driving the
+    // wrong way and the game's central mechanic could not matter.
+    x: 900,
+    y: 535,
+    radius: 52,
     oreRequired: 4
   },
   safePath: LAST_LIGHT_SAFE_PATH,
@@ -343,7 +346,7 @@ const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
     { id: 'northern-lobe', label: 'rich high lobe', x: 632, y: 300 },
     { id: 'late-pocket', label: 'one more seam', x: 400, y: 330 },
     { id: 'lower-recovery', label: 'recovery seam', x: 400, y: 675 },
-    { id: 'home', label: 'extraction', x: 135, y: 610 }
+    { id: 'home', label: 'depot', x: 900, y: 535 }
   ]
 };
 

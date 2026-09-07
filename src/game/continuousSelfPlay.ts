@@ -99,7 +99,7 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
       { label: 'hold the safe road', x: 745, y: 565, untilSeconds: 2.6 },
       { label: 'safe center bend', x: 570, y: 530, untilSeconds: 5.4 },
       { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 8.7 },
-      { label: 'extraction', x: 135, y: 610, untilSeconds: 48 }
+      { label: 'return to depot', x: 900, y: 535, untilSeconds: 48 }
     ]
   },
   shallowLobe: {
@@ -115,7 +115,7 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
       { label: 'shallow seam sweep', x: 540, y: 455, untilSeconds: 9.0 },
       { label: 'curve back to road', x: 570, y: 530, untilSeconds: 11.8 },
       { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 15.6 },
-      { label: 'extraction', x: 135, y: 610, untilSeconds: 58 }
+      { label: 'return to depot', x: 900, y: 535, untilSeconds: 58 }
     ]
   },
   deepLobe: {
@@ -131,7 +131,7 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
       { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 17.2 },
       { label: 'bend back toward road', x: 570, y: 530, untilSeconds: 26.2 },
       { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 34.2 },
-      { label: 'extraction', x: 135, y: 610, untilSeconds: 68 }
+      { label: 'return to depot', x: 900, y: 535, untilSeconds: 68 }
     ]
   },
   greedyLatePocket: {
@@ -148,7 +148,7 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
       { label: 'one more seam', x: 400, y: 330, untilSeconds: 26.2 },
       { label: 'late recovery dive', x: 500, y: 684, untilSeconds: 36.2 },
       { label: 'lower recovery sweep', x: 300, y: 666, untilSeconds: 43.4 },
-      { label: 'extraction', x: 135, y: 610, untilSeconds: 74 }
+      { label: 'return to depot', x: 900, y: 535, untilSeconds: 74 }
     ]
   },
   greedyLatePocketSloppy: {

@@ -132,7 +132,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(world.arena.label).toBe('Last Light Return');
     expect(world.rover.x).toBeCloseTo(900);
     expect(world.rover.y).toBeCloseTo(535);
-    expect(world.arena.extraction).toMatchObject({ x: 135, y: 610, radius: 46 });
+    expect(world.arena.extraction).toMatchObject({ x: 900, y: 535, radius: 52 });
     expect(world.arena.safePath?.map((point) => [point.x, point.y])).toEqual([
       [900, 535],
       [745, 565],
@@ -712,8 +712,8 @@ describe('continuous Moon Miner spike rules', () => {
     const world = createContinuousWorld('home-test', {}, 'last-light-return');
     const required = world.arena.extraction!.oreRequired;
     world.rover.ore = 0;
-    world.rover.x = 139;
-    world.rover.y = 610;
+    world.rover.x = 900;
+    world.rover.y = 535;
 
     const next = tickContinuousWorld(world, idleInput, 0.1);
 
@@ -725,8 +725,8 @@ describe('continuous Moon Miner spike rules', () => {
   it('wins last-light-return by arriving with the ore', () => {
     const world = createContinuousWorld('home-test-ore', {}, 'last-light-return');
     world.rover.ore = world.arena.extraction!.oreRequired;
-    world.rover.x = 139;
-    world.rover.y = 610;
+    world.rover.x = 900;
+    world.rover.y = 535;
 
     const next = tickContinuousWorld(world, idleInput, 0.1);
 
@@ -736,6 +736,8 @@ describe('continuous Moon Miner spike rules', () => {
 
   it('loses last-light-return when sunset closes before the rover gets home', () => {
     const world = createContinuousWorld('late-home-test', {}, 'last-light-return');
+    world.rover.x = 400;
+    world.rover.y = 330;
     world.solarSeconds = 0.1;
 
     const next = tickContinuousWorld(world, idleInput, 0.2);
@@ -811,7 +813,7 @@ describe('continuous Moon Miner spike rules', () => {
     // Detouring is now the price of winning at all: the no-detour route reaches
     // extraction but under quota, so only the routes that leave the safe road
     // finish the run.
-    for (const metrics of [shallow, deep, greedy]) {
+    for (const metrics of [shallow, deep]) {
       expect(metrics.result).toBe('won');
       expect(metrics.reachedExtraction).toBe(true);
       expect(metrics.droneDeliveries).toBeGreaterThan(0);
@@ -821,6 +823,10 @@ describe('continuous Moon Miner spike rules', () => {
     // safeReturn no longer even reaches extraction. The assertion that still
     // means something is that the no-detour route does not win.
     expect(safe.result).not.toBe('won');
+    // The whole point of the round trip: one seam too far and you cannot get
+    // home, so the greedy route now loses carrying ore it cannot deliver.
+    expect(greedy.result).toBe('lost');
+    expect(greedy.oreValue).toBeGreaterThan(deep.oreValue);
 
     expect(safe.leftSafeCorridor).toBe(false);
     // The safe road gets you home early and empty. It used to end the run with
@@ -873,26 +879,29 @@ describe('continuous Moon Miner spike rules', () => {
     expect(sloppy.leftSafeCorridor).toBe(true);
   });
 
-  it('makes the greedy last-light route depend on drone timing instead of succeeding casually', () => {
-    const withDrone = runContinuousSelfPlay({ routeId: 'greedyLatePocket', deltaSeconds: 0.05 }).metrics;
+  it('makes the deep last-light route depend on drone timing instead of succeeding casually', () => {
+    const withDrone = runContinuousSelfPlay({ routeId: 'deepLobe', deltaSeconds: 0.05 }).metrics;
     const noDrone = runContinuousSelfPlay({
-      routeId: 'greedyLatePocket',
+      routeId: 'deepLobe',
       deltaSeconds: 0.05,
       droneLaunchSeconds: []
     }).metrics;
 
     expect(withDrone.result).toBe('won');
     expect(withDrone.reachedExtraction).toBe(true);
-    expect(withDrone.oreValue).toBeGreaterThan(25);
+    // deepLobe rather than greedyLatePocket, so the ore figure is the deep
+    // route's haul, not the overreaching one's.
+    expect(withDrone.oreValue).toBeGreaterThan(15);
     // Margin is thin now (~0.5s). Flagged as a tuning decision, not a stable target.
     expect(withDrone.solarRemaining).toBeGreaterThan(0);
 
     expect(noDrone.result).toBe('lost');
     expect(noDrone.reachedExtraction).toBe(false);
     expect(noDrone.droneLaunches).toBe(0);
-    // Ratio was 4x. With a solvable economy the no-drone run is no longer
-    // crippled from second six, so it mines more before it strands itself.
-    expect(noDrone.oreValue).toBeLessThan(withDrone.oreValue / 2);
+    // The drone is not an ore multiplier -- the no-drone run mines almost as
+    // much (18.3 against 19.2). What it decides is whether that ore gets home,
+    // which is exactly what a round trip should make it about.
+    expect(noDrone.oreValue).toBeGreaterThan(withDrone.oreValue * 0.7);
     // The drone still decides the run (won vs lost, 4x the ore). It no longer
     // multiplies crawl time by 3, because nearest-worthwhile selection recovers
     // less per trip than the old weighted scoring did.
@@ -928,7 +937,9 @@ describe('continuous Moon Miner spike rules', () => {
     expect(table).toContain('| Route | Result | Reached Home | Ore/Value | Solar Left |');
     // safeReturn is under quota now, so it is no longer a winning row.
     expect(table).toContain('| safeReturn |');
-    expect(table).toContain('| greedyLatePocket | won | yes |');
+    // greedyLatePocket is a losing row now: it is the route that goes one seam
+    // too far to get home.
+    expect(table).toContain('| greedyLatePocket | lost |');
     expect(table).toContain('| greedyLatePocketSloppy | lost | no |');
     expect(table).toContain('late launches and bad route shape miss extraction');
   });
