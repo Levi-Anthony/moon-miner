@@ -278,7 +278,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   ...CURRENT_CLASSIC_CONTINUOUS_TUNING,
-  startingNanobots: 12,
+  startingNanobots: 6,
   maxNanobots: 24,
   fabricateCostPerSecond: 1,
   fieldEmitDistance: 26,

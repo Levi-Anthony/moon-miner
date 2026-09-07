@@ -44,7 +44,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(world.nextFieldId).toBe(1);
     expect(world.speedState).toBe('fabricating');
     expect(world.message).toBe('Raw field start. Drive to lay your first line, then reclaim it.');
-    expect(world.nanobots).toBe(12);
+    expect(world.nanobots).toBe(6);
     expect(world.arms.total).toBe(8);
     expect(world.arms.industrialTotal).toBe(7);
     expect(world.arms.utilityTotal).toBe(1);
@@ -91,7 +91,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(DEFAULT_CONTINUOUS_TUNING).toEqual(stable?.tuning);
     expect(classic?.tuning).toEqual(CURRENT_CLASSIC_CONTINUOUS_TUNING);
 
-    expect(stable?.tuning.startingNanobots).toBe(12);
+    expect(stable?.tuning.startingNanobots).toBe(6);
     expect(stable?.tuning.maxNanobots).toBe(24);
     expect(stable?.tuning.reclaimMinFieldAgeSeconds).toBe(1.35);
     expect(stable?.tuning.reclaimMinDistanceFromRover).toBe(22);
@@ -890,12 +890,13 @@ describe('continuous Moon Miner spike rules', () => {
   });
 
   it('makes the drone matter in proportion to ambition', () => {
-    // Measured: shallowLobe is unaffected (8.2 ore either way, it is too timid
-    // to need the drone), deepLobe survives without it but crawls 17.6s for
-    // 14.5 ore instead of 18.6, and the greedy run flips from won to lost.
+    // The drone now pays on every run and decides the ambitious ones. On the
+    // timid route it is worth ore (8.6 against 6.0) but cannot rescue a run that
+    // is under quota regardless; on the greedy route it is the whole result.
     const timidWith = runContinuousSelfPlay({ routeId: 'shallowLobe', deltaSeconds: 0.05 }).metrics;
     const timidWithout = runContinuousSelfPlay({ routeId: 'shallowLobe', deltaSeconds: 0.05, droneLaunchSeconds: [] }).metrics;
-    expect(timidWithout.oreValue).toBeCloseTo(timidWith.oreValue, 0);
+    expect(timidWith.oreValue).toBeGreaterThan(timidWithout.oreValue);
+    expect(timidWith.result).not.toBe('won');
 
     const withDrone = runContinuousSelfPlay({ routeId: 'greedyLatePocket', deltaSeconds: 0.05 }).metrics;
     const noDrone = runContinuousSelfPlay({
