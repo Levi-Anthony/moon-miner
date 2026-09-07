@@ -8,6 +8,7 @@ import {
   getPreparedCoverage,
   getContinuousGuidance,
   getReclaimPreview,
+  isRoadSpendable,
   launchReclaimDrone,
   resolveContinuousTuning,
   tickContinuousWorld,
@@ -51,6 +52,15 @@ const DESKTOP_HUD_HEIGHT = 86;
 const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
 const FIELD_DECK_COLOR = 0x6d8f89;
+
+function mixColor(from: number, to: number, t: number): number {
+  const lerp = (shift: number) => {
+    const a = (from >> shift) & 0xff;
+    const b = (to >> shift) & 0xff;
+    return Math.round(a + (b - a) * t) << shift;
+  };
+  return lerp(16) | lerp(8) | lerp(0);
+}
 const MOBILE_CAMERA_CENTER_Y = 475;
 const DESKTOP_CAMERA_LOOK_AHEAD = 92;
 const MOBILE_CAMERA_LOOK_AHEAD = 138;
@@ -3212,7 +3222,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const ordinary = fields.filter((field) => !field.reservedByDrone);
     const reserved = fields.filter((field) => field.reservedByDrone);
 
-    this.drawFieldRibbon(ordinary, 0x6cf5dd, false);
+    // Two kinds of road, and the difference is the whole decision. Cyan is the
+    // corridor back to extraction, which the drone may not take -- your way
+    // home. Amber is road clear of that line, which the drone may lift. The
+    // rule is invisible unless the road itself shows it, so it is drawn rather
+    // than explained.
+    const spendable = ordinary.filter((field) => isRoadSpendable(this.state, field));
+    const routeHome = ordinary.filter((field) => !isRoadSpendable(this.state, field));
+
+    this.drawFieldRibbon(routeHome, 0x6cf5dd, false);
+    this.drawFieldRibbon(spendable, 0xd8a24a, false);
     this.drawFieldRibbon(reserved, 0xffa06c, true);
     this.drawFieldBirthMarkers(ordinary);
   }
@@ -3234,10 +3253,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         const from = section[index];
         const to = section[index + 1];
         this.drawFieldSegment(from, to, color, reserved);
-        this.drawFieldJoint(to, reserved);
+        this.drawFieldJoint(to, reserved, color);
       }
 
-      this.drawFieldJoint(section[0], reserved);
+      this.drawFieldJoint(section[0], reserved, color);
       this.drawFieldCap(section[0], color, reserved, this.fieldAlpha(section[0]));
       this.drawFieldCap(section[section.length - 1], color, reserved, this.fieldAlpha(section[section.length - 1]));
       this.drawFieldCenterLine(section, color, reserved);
@@ -3294,7 +3313,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     ];
     this.graphics.fillStyle(0x14201f, alpha * 0.62);
     this.graphics.fillPoints(shadow, true, true);
-    this.graphics.fillStyle(reserved ? color : FIELD_DECK_COLOR, reserved ? alpha * 0.5 : Math.min(0.94, ordinaryAlpha + 0.4));
+    // The deck used to be filled with FIELD_DECK_COLOR unconditionally, so the
+    // `color` argument was thrown away for every road that is not reserved --
+    // which is nearly all of it. That is why the road read as a scuff in the
+    // regolith: 0x6d8f89 is very close to the ground it is drawn on. Tinting
+    // the deck toward the state colour is what makes the corridor rule visible
+    // at all, and it is the only reason this function takes a colour.
+    this.graphics.fillStyle(
+      reserved ? color : mixColor(FIELD_DECK_COLOR, color, 0.5),
+      reserved ? alpha * 0.5 : Math.min(0.94, ordinaryAlpha + 0.4)
+    );
     this.graphics.fillPoints(points, true, true);
     if (reserved) {
       this.graphics.lineStyle(4, color, alpha * 0.88);
@@ -3309,21 +3337,26 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.graphics.lineStyle(1, 0xfff0df, alpha * 0.82);
       this.graphics.strokeCircle(scan.x, scan.y, 10);
     } else {
-      this.graphics.lineStyle(2, color, alpha * 0.5);
+      // The edge is where the two road states read most cheaply, so it carries
+      // the colour at full strength while the deck stays ambient.
+      this.graphics.lineStyle(3, color, Math.min(0.92, alpha * 0.95));
       this.graphics.strokePoints(points, true, true);
     }
   }
 
   private drawFieldJoint(
     field: { x: number; y: number; radius: number; value: number; age: number },
-    reserved: boolean
+    reserved: boolean,
+    color: number
   ): void {
     if (reserved) return;
     const center = this.project(field);
     const width = this.fieldRoadWidth(field);
     const yScale = this.shapeYScale();
     const alpha = Math.min(0.94, this.fieldAlpha(field) * (0.24 + 0.18 * this.visualCalm()) + 0.4);
-    this.graphics.fillStyle(FIELD_DECK_COLOR, alpha);
+    // Joints take the same tint as the segments they connect, or the ribbon
+    // reads as coloured plates strung on a grey thread.
+    this.graphics.fillStyle(mixColor(FIELD_DECK_COLOR, color, 0.5), alpha);
     this.graphics.fillEllipse(center.x, center.y, width * 2, width * 2 * yScale);
   }
 

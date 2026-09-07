@@ -8,6 +8,7 @@ import {
   getDroneReclaimDiagnostics,
   getContinuousGuidance,
   getReclaimPreview,
+  isRoadSpendable,
   isRoverAtExtraction,
   launchReclaimDrone,
   tickContinuousWorld,
@@ -846,7 +847,13 @@ describe('continuous Moon Miner spike rules', () => {
     // shallow runs the clock out now: it gets home but under quota, so the run
     // does not end on arrival.
     expect(shallow.solarRemaining).toBe(0);
-    expect(shallow.crawlSeconds).toBeLessThan(5);
+    // Loosened 5 -> 6 by the route-home corridor, and it records a real design
+    // change rather than an inconvenient measurement. The drone may no longer
+    // take road within 40 of the line home, so the shallow, nearly-straight
+    // route -- which lays most of its road on that line -- has less to spend
+    // and crawls longer for it (4.5s -> 5.3s). Punishing the straight route is
+    // the point of the corridor; the gradient below is what must hold.
+    expect(shallow.crawlSeconds).toBeLessThan(6);
 
     expect(deep.oreValue).toBeGreaterThan(shallow.oreValue + 8);
     // No longer comparable: shallow loses and runs the clock to zero, so it has
@@ -924,6 +931,42 @@ describe('continuous Moon Miner spike rules', () => {
     expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds);
   });
 
+  it('will not let the drone eat the road home, so route shape sets reclaim supply', () => {
+    const drive = (steerAt: (t: number) => number) => {
+      let world = createContinuousWorld('corridor', undefined, 'last-light-return');
+      const step = 1 / 60;
+      let available = 0;
+      let total = 0;
+
+      for (let frame = 0; frame < 60 * 30; frame += 1) {
+        world = tickContinuousWorld(world, { steer: steerAt(frame * step), throttle: 1, brake: false, driveIntent: true }, step);
+        if (world.phase !== 'playing') break;
+        total += 1;
+
+        const preview = getReclaimPreview(world);
+        if (!preview) continue;
+        available += 1;
+        // The rule itself: whatever the drone is willing to take is clear of
+        // the line between the rover and extraction.
+        expect(isRoadSpendable(world, preview.target)).toBe(true);
+      }
+
+      return (available / total) * 100;
+    };
+
+    // A straight line home-and-out lays all of its road on the corridor, so it
+    // has nothing to spend. Arcing away from that line is what creates supply.
+    // This is the balance the player authors by driving: reach and the way
+    // home are the same object, and only the part off the line can be spent.
+    const straight = drive(() => 0);
+    const outAndBack = drive((t) => (t > 15 && t < 17.6 ? 1 : 0));
+    const lobe = drive((t) => (t > 6 ? 0.42 : 0));
+
+    expect(straight).toBeLessThan(2);
+    expect(outAndBack).toBeGreaterThan(straight);
+    expect(lobe).toBeGreaterThan(outAndBack + 20);
+  });
+
   it('always answers what the player is doing, starting with the goal', () => {
     const world = createContinuousWorld('guide', undefined, 'last-light-return');
 
@@ -931,8 +974,19 @@ describe('continuous Moon Miner spike rules', () => {
     expect(opening.objective).toContain('extraction');
     expect(opening.nudge).toContain('W drives');
 
-    const later = { ...world, elapsedSeconds: 20, speedState: 'crawl' as const };
-    expect(getContinuousGuidance(later).nudge).toContain('Space');
+    // Crawling with nothing the drone may take is a real state now that the
+    // corridor protects the line home, and it is the one the player most needs
+    // an answer for. Both branches must say what to do, not just name the key.
+    const starved = { ...world, elapsedSeconds: 20, speedState: 'crawl' as const };
+    expect(getContinuousGuidance(starved).nudge).toContain('line home');
+
+    const supplied = {
+      ...world,
+      elapsedSeconds: 20,
+      speedState: 'crawl' as const,
+      fields: [{ id: 1, x: 300, y: 200, radius: 46, value: 3, age: 10 }]
+    };
+    expect(getContinuousGuidance(supplied).nudge).toContain('Space');
 
     const lateRun = { ...world, elapsedSeconds: 20, solarSeconds: world.solarWindowSeconds * 0.1 };
     const lateWithOre = { ...lateRun, rover: { ...lateRun.rover, ore: 99 } };

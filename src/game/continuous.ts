@@ -162,6 +162,7 @@ export interface ContinuousTuning {
   droneLaunchCost: number;
   droneLaunchCooldownSeconds: number;
   reclaimMinDistanceFromRover: number;
+  reclaimRouteHomeCorridor: number;
   reclaimLockSeconds: number;
   allowCloseReclaim: boolean;
   allowLowPayloadLaunch: boolean;
@@ -260,6 +261,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   droneLaunchCost: 2.2,
   droneLaunchCooldownSeconds: 9,
   reclaimMinDistanceFromRover: 26,
+  reclaimRouteHomeCorridor: 40,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
   allowCloseReclaim: false,
   allowLowPayloadLaunch: false,
@@ -523,7 +525,9 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
   }
 
   if (state.speedState === 'crawl') {
-    return { objective: 'Out of road', nudge: 'Crawling. Press Space for nanobots.' };
+    return getReclaimPreview(state)
+      ? { objective: 'Out of road', nudge: 'Crawling. Space sends the drone.' }
+      : { objective: 'Out of road', nudge: 'Nothing to reclaim. Cut away from your line home.' };
   }
 
   const solarRatio = state.solarWindowSeconds > 0 ? state.solarSeconds / state.solarWindowSeconds : 1;
@@ -543,7 +547,12 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
   }
 
   const preview = getReclaimPreview(state);
-  if (preview && state.nanobots / state.maxNanobots < state.tuning.droneUrgencyRatio) {
+  if (state.nanobots / state.maxNanobots < state.tuning.droneUrgencyRatio) {
+    // The corridor rule only teaches if the game says it at the moment it
+    // bites -- when you want nanobots and the drone has nothing it may take.
+    if (!preview) {
+      return { objective: 'Nanobots low', nudge: 'Every seam is on your line home. Swing wide to make some spare.' };
+    }
     return {
       objective: 'Nanobots low',
       nudge: `Space sends the drone. +${preview.netPayload.toFixed(1)} net.`
@@ -1206,6 +1215,14 @@ function getDroneBlockedReason(
     return `Oldest field age ${oldestFieldAge.toFixed(1)}s / need ${state.tuning.reclaimMinFieldAgeSeconds.toFixed(1)}s`;
   }
   if (!state.fields.some((field) => !field.reservedByDrone)) return 'No unreserved reclaim target';
+  // Say the rule rather than a threshold. This is the one blocked state the
+  // player can act on directly -- by driving somewhere off the line home.
+  if (
+    state.arena.extraction &&
+    !state.fields.some((field) => getRouteHomeClearance(state, field) >= state.tuning.reclaimRouteHomeCorridor)
+  ) {
+    return 'All your road is on the way home';
+  }
   if (!state.fields.some((field) => !field.reservedByDrone && field.value >= state.tuning.reclaimMinFieldValue)) {
     return `Best cluster payload ${bestClusterPayload.toFixed(2)} / need ${state.tuning.minReclaimClusterPayload.toFixed(2)}`;
   }
@@ -1282,8 +1299,30 @@ function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatc
     !field.reservedByDrone &&
     field.age >= state.tuning.reclaimMinFieldAgeSeconds &&
     field.value >= state.tuning.reclaimMinFieldValue &&
+    getRouteHomeClearance(state, field) >= state.tuning.reclaimRouteHomeCorridor &&
     (state.tuning.allowCloseReclaim || distance(field, state.rover) >= state.tuning.reclaimMinDistanceFromRover)
   );
+}
+
+// The drone will not eat the road you are coming home along. Reclaim deletes
+// the field it lifts, so on a round trip the nearest cluster -- the road just
+// behind you -- was always the worst possible pick: it paid for reach by
+// removing the route back. Protecting the corridor between the rover and
+// extraction turns that into the game's one real balance. Your laid road is
+// two things at once, stored reach and a fast way home, and only road that is
+// off the line home can be spent. So the shape you drive decides how much you
+// have to spend: an out-and-back on a single line feeds the drone nothing, and
+// a loop feeds it well but costs the distance to make the loop.
+// Single source of truth for the corridor, so what the road is drawn as cannot
+// drift from what the drone is allowed to take.
+export function isRoadSpendable(state: ContinuousWorldState, point: Vec2): boolean {
+  return getRouteHomeClearance(state, point) >= state.tuning.reclaimRouteHomeCorridor;
+}
+
+function getRouteHomeClearance(state: ContinuousWorldState, point: Vec2): number {
+  const extraction = state.arena.extraction;
+  if (!extraction) return Number.POSITIVE_INFINITY;
+  return distanceToSegment(point, state.rover, extraction);
 }
 
 function getReclaimCluster(state: ContinuousWorldState, target: Vec2): FieldPatch[] {
