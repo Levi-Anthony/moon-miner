@@ -77,7 +77,7 @@ type ArmRole = 'building' | 'mining' | 'stabilizing' | 'emergency' | 'helper';
 type LayoutMode = 'desktop' | 'mobilePortrait';
 type ViewMode = 'tactical' | 'chase' | 'hybrid';
 type TuningKey = keyof ContinuousTuning;
-type CameraPresetId = 'tacticalMap' | 'threeQuarterTactical' | 'tractorChase' | 'softChase' | 'roverChase' | 'hybridAuto';
+type CameraPresetId = 'tacticalMap' | 'tractorChase';
 type NumericTuningKey = {
   [Key in keyof ContinuousTuning]: ContinuousTuning[Key] extends number ? Key : never;
 }[keyof ContinuousTuning];
@@ -393,23 +393,6 @@ const CAMERA_PRESETS: CameraPresetDefinition[] = [
     settings: { ...DEFAULT_CAMERA_LAB_SETTINGS }
   },
   {
-    id: 'threeQuarterTactical',
-    label: '3/4 Tactical',
-    settings: {
-      ...DEFAULT_CAMERA_LAB_SETTINGS,
-      preset: 'threeQuarterTactical',
-      viewMode: 'tactical',
-      tacticalZoom: 0.78,
-      cameraCenterY: 18,
-      projectedYScale: 0.72,
-      projectionShear: -0.08,
-      depthScaleStrength: 0.16,
-      projectedScaleStrength: 0.14,
-      horizonVisible: true,
-      followBlend: 0.45
-    }
-  },
-  {
     id: 'tractorChase',
     label: 'Tractor Chase',
     settings: {
@@ -433,78 +416,6 @@ const CAMERA_PRESETS: CameraPresetDefinition[] = [
       cameraYawDeadzone: 6
     }
   },
-  {
-    id: 'softChase',
-    label: 'Soft Chase',
-    settings: {
-      ...DEFAULT_CAMERA_LAB_SETTINGS,
-      preset: 'softChase',
-      viewMode: 'chase',
-      cameraZoom: 1.02,
-      cameraCenterY: 22,
-      roverScreenBias: 34,
-      lookAheadDistance: 96,
-      smoothing: 1.9,
-      turnResponse: 1.2,
-      maxCameraRotation: 38,
-      rotationBlendAmount: 0.28,
-      followBlend: 0.24,
-      projectedYScale: PROJECTED_Y_SCALE,
-      projectionShear: PROJECTED_SHEAR,
-      depthScaleStrength: 0.24,
-      projectedScaleStrength: 0.26,
-      horizonVisible: true
-    }
-  },
-  {
-    id: 'roverChase',
-    label: 'Rover Chase',
-    settings: {
-      ...DEFAULT_CAMERA_LAB_SETTINGS,
-      preset: 'roverChase',
-      viewMode: 'chase',
-      cameraZoom: 1.22,
-      cameraCenterY: 54,
-      roverScreenBias: 84,
-      lookAheadDistance: 152,
-      smoothing: 2.4,
-      turnResponse: 2.55,
-      maxCameraRotation: 70,
-      rotationBlendAmount: 0.72,
-      followBlend: 0.04,
-      projectedYScale: 0.7,
-      projectionShear: -0.13,
-      depthScaleStrength: 0.36,
-      projectedScaleStrength: 0.38,
-      horizonVisible: true
-    }
-  },
-  {
-    id: 'hybridAuto',
-    label: 'Hybrid Auto',
-    settings: {
-      ...DEFAULT_CAMERA_LAB_SETTINGS,
-      preset: 'hybridAuto',
-      viewMode: 'hybrid',
-      cameraZoom: 1,
-      tacticalZoom: 0.7,
-      cameraCenterY: 32,
-      roverScreenBias: 52,
-      lookAheadDistance: 118,
-      smoothing: 1.85,
-      turnResponse: 1.65,
-      maxCameraRotation: 54,
-      rotationBlendAmount: 0.46,
-      followBlend: 0.34,
-      projectedYScale: 0.76,
-      projectionShear: -0.1,
-      depthScaleStrength: 0.28,
-      projectedScaleStrength: 0.28,
-      horizonVisible: true,
-      returnToNormalDelay: 1.8,
-      tacticalPullbackStrength: 0.72
-    }
-  }
 ];
 
 const CAMERA_CONTROL_GROUPS: Array<{ label: string; controls: CameraControlDefinition[] }> = [
@@ -755,6 +666,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private cameraHeading = -0.18;
   private readonly drawnBeatLabelKeys = new Set<string>();
   private chaseCameraFocus: Vec2 = { x: 420, y: 500 };
+  private droneClaimAtMs = -10000;
   private hybridPullbackUntilMs = 0;
   private keys?: Record<string, Phaser.Input.Keyboard.Key>;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -2128,18 +2040,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (!urlViewMode) return stored;
 
     const presetId: CameraPresetId =
-      urlViewMode === 'chase' ? 'roverChase' : urlViewMode === 'hybrid' ? 'hybridAuto' : 'tacticalMap';
+      urlViewMode === 'tactical' ? 'tacticalMap' : 'tractorChase';
     return this.normalizeCameraLabSettings({ ...this.getCameraPreset(presetId).settings });
   }
 
   private loadStoredCameraLab(): CameraLabSettings {
-    if (!import.meta.env.DEV) return { ...DEFAULT_CAMERA_LAB_SETTINGS };
+    if (!import.meta.env.DEV) return this.normalizeCameraLabSettings({ ...this.getCameraPreset('tractorChase').settings });
 
     try {
       const raw = window.localStorage.getItem(CAMERA_LAB_STORAGE_KEY);
-      return this.normalizeCameraLabSettings(raw ? (JSON.parse(raw) as Partial<CameraLabSettings>) : undefined);
+      if (!raw) return this.normalizeCameraLabSettings({ ...this.getCameraPreset('tractorChase').settings });
+      return this.normalizeCameraLabSettings(JSON.parse(raw) as Partial<CameraLabSettings>);
     } catch {
-      return { ...DEFAULT_CAMERA_LAB_SETTINGS };
+      return this.normalizeCameraLabSettings({ ...this.getCameraPreset('tractorChase').settings });
     }
   }
 
@@ -2279,6 +2192,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     previousNanobots: number,
     previousSolarSeconds: number
   ): void {
+    if (previousDroneStatus === 'ready' && this.state.drone.status !== 'ready') {
+      this.droneClaimAtMs = timeMs;
+    }
+
     let deliveredPayload = 0;
     if (previousDroneStatus !== 'ready' && this.state.drone.status === 'ready') {
       this.addEffect('recovery', this.state.rover.x, this.state.rover.y, 980);
@@ -3489,37 +3406,32 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const radius = this.droneReservationRadius(targetScreen, reservedFields);
     const reclaiming = this.state.drone.status === 'reclaiming';
 
-    this.graphics.fillStyle(0xff9a68, reclaiming ? 0.12 + pulse * 0.05 : 0.08 + pulse * 0.04);
-    this.graphics.fillCircle(targetScreen.x, targetScreen.y, radius + 14 + pulse * 4);
-    this.graphics.lineStyle(5, 0x5a2a20, 0.54);
-    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + 9);
-    this.graphics.lineStyle(3, reclaiming ? 0xffd2b7 : 0xff9a68, 0.82 + pulse * 0.14);
-    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + pulse * 6);
+    this.clearDroneReservationText();
 
-    const bracket = 13;
-    const outer = radius + 18;
-    this.graphics.lineStyle(3, 0xfff0df, 0.84);
-    for (const sx of [-1, 1]) {
-      for (const sy of [-1, 1]) {
-        const x = targetScreen.x + sx * outer;
-        const y = targetScreen.y + sy * outer;
-        this.graphics.lineBetween(x, y, x - sx * bracket, y);
-        this.graphics.lineBetween(x, y, x, y - sy * bracket);
+    // Beat one: "I took that one." A hard mark on the claimed field at the
+    // moment of reservation, gone within a second and a bit.
+    const claimAge = (this.time.now - this.droneClaimAtMs) / 1000;
+    if (claimAge < 1.15) {
+      const fade = 1 - claimAge / 1.15;
+      const bracket = 13;
+      const outer = radius + 18 + (1 - fade) * 12;
+      this.graphics.lineStyle(3, 0xfff0df, 0.9 * fade);
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          const x = targetScreen.x + sx * outer;
+          const y = targetScreen.y + sy * outer;
+          this.graphics.lineBetween(x, y, x - sx * bracket, y);
+          this.graphics.lineBetween(x, y, x, y - sy * bracket);
+        }
       }
+      this.graphics.lineStyle(3, 0xff9a68, 0.85 * fade);
+      this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + (1 - fade) * 10);
     }
 
-    const droneScreen = this.project(this.state.drone);
-    this.graphics.lineStyle(2, 0xffd2b7, 0.52 + pulse * 0.18);
-    this.graphics.lineBetween(droneScreen.x, droneScreen.y, targetScreen.x, targetScreen.y);
-
-    const label = reclaiming ? 'RECLAIMING' : 'RESERVED FIELD';
-    const outboundSeconds = Math.hypot(this.state.drone.x - target.x, this.state.drone.y - target.y) / this.state.tuning.droneSpeed;
-    const detail = reclaiming
-      ? `${Math.ceil(this.state.drone.reclaimSeconds * 10) / 10}s lock`
-      : `${outboundSeconds.toFixed(1)}s outbound`;
-    const labelPoint = this.clampScreenPoint({ x: targetScreen.x + radius + 22, y: targetScreen.y - radius - 10 }, 128, 28);
-    this.drawStaticText('drone-target-readout', labelPoint.x, labelPoint.y, label, 12, '#ffd2b7');
-    this.drawStaticText('drone-target-detail', labelPoint.x, labelPoint.y + 16, detail, 10, '#ffeddf');
+    // The rest of the flight is ambient: a quiet ring holding the claim, so the
+    // field reads as spoken for without narrating itself.
+    this.graphics.lineStyle(2, reclaiming ? 0xffd2b7 : 0xff9a68, reclaiming ? 0.34 + pulse * 0.12 : 0.24);
+    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + 4);
   }
 
   private clearDroneReservationText(): void {
@@ -3662,7 +3574,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.state.drone.status === 'reclaiming') label = 'RECLAIM';
     if (this.state.drone.status === 'outbound') label = 'TARGET';
 
-    this.drawStaticText('drone-callout', droneScreen.x + 16, droneScreen.y - 24, label, 12, '#ffd2b7');
+    this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
   }
 
   private drawProgressRing(center: Vec2, radius: number, progress: number, color: number): void {
@@ -4076,15 +3988,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawDroneHudButton();
     this.drawResetButton();
     this.drawLoopDebugPanel();
-    this.drawStaticText(
-      'yield-readout',
-      layout.yieldReadout.x,
-      layout.yieldReadout.y,
-      `Yield ${this.state.lastYieldRate.toFixed(1)}/s | U ${this.state.arms.helper.miningAssistRate.toFixed(1)}/s`,
-      layout.yieldReadout.fontSize,
-      '#aeb9c8'
-    );
-    if (layout.mode === 'desktop') this.drawArmRoleStrip(128, layout.yieldReadout.y);
+    if (this.debugOverlayVisible) {
+      this.drawStaticText(
+        'yield-readout',
+        layout.yieldReadout.x,
+        layout.yieldReadout.y,
+        `Yield ${this.state.lastYieldRate.toFixed(1)}/s | U ${this.state.arms.helper.miningAssistRate.toFixed(1)}/s`,
+        layout.yieldReadout.fontSize,
+        '#aeb9c8'
+      );
+      if (layout.mode === 'desktop') this.drawArmRoleStrip(128, layout.yieldReadout.y);
+    } else {
+      this.drawStaticText('yield-readout', 0, 0, '', 1, '#ffffff');
+      this.clearArmRoleStrip();
+    }
   }
 
   private syncMessageLayout(layout: SceneLayout): void {
@@ -4175,6 +4092,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       cursor += 48;
     }
     this.drawStaticText('arm-role-helper-duty', cursor + 2, y, this.getHelperArmHudLabel(), 11, '#aeb9c8');
+  }
+
+  private clearArmRoleStrip(): void {
+    for (const label of ['B', 'M', 'E', 'U']) {
+      this.drawStaticText(`arm-role-${label}`, 0, 0, '', 1, '#ffffff');
+    }
+    this.drawStaticText('arm-role-helper-duty', 0, 0, '', 1, '#ffffff');
   }
 
   private getHelperArmHudColor(): number {
@@ -5137,7 +5061,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private tacticalPerspectiveEnabled(): boolean {
     return (
       this.viewMode === 'tactical' &&
-      (this.cameraLab.preset === 'threeQuarterTactical' ||
+      (
         Math.abs(this.cameraLab.projectedYScale - 1) > 0.001 ||
         Math.abs(this.cameraLab.projectionShear) > 0.001)
     );
