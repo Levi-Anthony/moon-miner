@@ -118,3 +118,19 @@ it is the one the player can see.
 
 Do not reintroduce latency-based reclaim pressure without changing the
 selection rule or the road's persistence first. The two are coupled.
+
+## 2026-09-07: The Round Trip Restores Reclaim Latency
+
+Amends the entry above. That entry concluded, from measurement, that route
+shape could not control reclaim latency: a greedier route laid more road on the
+way past, so a target was always nearby and greedy flights were the shortest at
+every pickup radius and drone speed.
+
+That was true of a one-way level and only of a one-way level. Going out and
+back inverts it, because depth now means distance from your own road rather
+than more road alongside you. Measured on the round trip, the greedy route's
+drone flights are the longest at 2.1s against the safe road's 0.7s.
+
+The general lesson is worth more than either finding: a mechanic that looks
+impossible can be a consequence of the level's shape rather than of the
+mechanic. Check the geometry before concluding a lever does not exist.

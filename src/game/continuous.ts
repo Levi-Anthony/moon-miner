@@ -658,12 +658,14 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
 
 function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, deltaSeconds: number): number {
   if (!input.driveIntent) {
-    if (input.pivotIntent && Math.abs(input.steer) > 0.001) {
+    if (input.pivotIntent && (Math.abs(input.steer) > 0.001 || input.reverseIntent)) {
       const turnMultiplier = state.speedState === 'prepared' ? 1.0 : state.speedState === 'crawl' ? 0.54 : 0.82;
       state.rover.heading = wrapAngle(
         state.rover.heading + resolveSteer(state, input) * TURN_RATE * turnMultiplier * deltaSeconds
       );
-      state.message = 'Chassis pivoting in place. Field fabrication is idle.';
+      state.message = input.reverseIntent
+        ? 'Coming about. Tracks counter-rotating.'
+        : 'Chassis pivoting in place. Field fabrication is idle.';
     }
     state.rover.speed = 0;
     return 0;

@@ -92,80 +92,71 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
     id: 'safeReturn',
     label: 'Last Light Safe Return',
     arenaId: 'last-light-return',
-    durationSeconds: 48,
-    droneLaunchSeconds: [4.2, 9.2],
+    durationSeconds: 36,
+    droneLaunchSeconds: [6, 15],
     safeCorridorLeaveThreshold: 120,
     waypoints: [
-      { label: 'hold the safe road', x: 745, y: 565, untilSeconds: 2.6 },
-      { label: 'safe center bend', x: 570, y: 530, untilSeconds: 5.4 },
-      { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 8.7 },
-      { label: 'return to depot', x: 900, y: 535, untilSeconds: 48 }
+      { label: 'hold the safe road', x: 745, y: 565, untilSeconds: 3 },
+      { label: 'scrap seam on the road', x: 655, y: 548, untilSeconds: 7 },
+      { label: 'come home early', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   shallowLobe: {
     id: 'shallowLobe',
     label: 'Last Light Shallow Lobe',
     arenaId: 'last-light-return',
-    durationSeconds: 58,
-    droneLaunchSeconds: [4.9, 11.8],
+    durationSeconds: 36,
+    droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
       { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
-      { label: 'shallow seam entry', x: 690, y: 430, untilSeconds: 5.4 },
-      { label: 'shallow seam sweep', x: 540, y: 455, untilSeconds: 9.0 },
-      { label: 'curve back to road', x: 570, y: 530, untilSeconds: 11.8 },
-      { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 15.6 },
-      { label: 'return to depot', x: 900, y: 535, untilSeconds: 58 }
+      { label: 'shallow seam entry', x: 690, y: 430, untilSeconds: 5.5 },
+      { label: 'shallow seam sweep', x: 540, y: 455, untilSeconds: 15 },
+      { label: 'come about for home', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   deepLobe: {
     id: 'deepLobe',
     label: 'Last Light Deep Northern Lobe',
     arenaId: 'last-light-return',
-    durationSeconds: 68,
-    droneLaunchSeconds: [5.3, 21.8, 34.6],
+    durationSeconds: 36,
+    droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 3.2 },
-      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 10.8 },
-      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 17.2 },
-      { label: 'bend back toward road', x: 570, y: 530, untilSeconds: 26.2 },
-      { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 34.2 },
-      { label: 'return to depot', x: 900, y: 535, untilSeconds: 68 }
+      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
+      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 7 },
+      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 18 },
+      { label: 'come about for home', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   greedyLatePocket: {
     id: 'greedyLatePocket',
     label: 'Last Light Greedy Late Pocket',
     arenaId: 'last-light-return',
-    durationSeconds: 74,
-    droneLaunchSeconds: [5.3, 21.8, 36.2],
+    durationSeconds: 36,
+    droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 3.0 },
-      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 10.6 },
-      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 16.5 },
-      { label: 'one more seam', x: 400, y: 330, untilSeconds: 26.2 },
-      { label: 'late recovery dive', x: 500, y: 684, untilSeconds: 36.2 },
-      { label: 'lower recovery sweep', x: 300, y: 666, untilSeconds: 43.4 },
-      { label: 'return to depot', x: 900, y: 535, untilSeconds: 74 }
+      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
+      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 7 },
+      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 13 },
+      { label: 'one more seam', x: 400, y: 330, untilSeconds: 21 },
+      { label: 'come about too late', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   greedyLatePocketSloppy: {
     id: 'greedyLatePocketSloppy',
     label: 'Last Light Sloppy Greedy Pocket',
     arenaId: 'last-light-return',
-    durationSeconds: 76,
-    droneLaunchSeconds: [17.8, 37.4],
+    durationSeconds: 36,
+    droneLaunchSeconds: [20],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 3.0 },
-      { label: 'climb too high', x: 720, y: 285, untilSeconds: 10.6 },
-      { label: 'overstay rich seam', x: 545, y: 315, untilSeconds: 18.4 },
-      { label: 'drive away from return', x: 742, y: 260, untilSeconds: 25.4 },
-      { label: 'late one more seam', x: 400, y: 330, untilSeconds: 36.8 },
-      { label: 'bad recovery angle', x: 520, y: 690, untilSeconds: 47.6 },
-      { label: 'late extraction dive', x: 135, y: 610, untilSeconds: 76 }
+      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
+      { label: 'climb too high', x: 720, y: 285, untilSeconds: 7 },
+      { label: 'overstay rich seam', x: 545, y: 315, untilSeconds: 15 },
+      { label: 'drive away from return', x: 400, y: 330, untilSeconds: 25 },
+      { label: 'far too late for home', x: 900, y: 535, untilSeconds: 36 }
     ]
   }
 } satisfies Record<string, ContinuousSelfPlayRoute>;

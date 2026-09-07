@@ -262,10 +262,10 @@ const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
     x: 900,
     y: 535,
     radius: 52,
-    oreRequired: 4
+    oreRequired: 12
   },
   safePath: LAST_LIGHT_SAFE_PATH,
-  solarWindowSeconds: 51,
+  solarWindowSeconds: 36,
   starterFieldPoints: [],
   fertileZones: [
     {

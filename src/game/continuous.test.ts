@@ -140,8 +140,8 @@ describe('continuous Moon Miner spike rules', () => {
       [390, 585],
       [150, 610]
     ]);
-    expect(world.solarWindowSeconds).toBe(51);
-    expect(world.solarSeconds).toBe(51);
+    expect(world.solarWindowSeconds).toBe(36);
+    expect(world.solarSeconds).toBe(36);
     expect(world.fertileZones.map((zone) => zone.id)).toEqual([
       'safe-route-scrap',
       'shallow-lobe',
@@ -813,7 +813,7 @@ describe('continuous Moon Miner spike rules', () => {
     // Detouring is now the price of winning at all: the no-detour route reaches
     // extraction but under quota, so only the routes that leave the safe road
     // finish the run.
-    for (const metrics of [shallow, deep]) {
+    for (const metrics of [deep, greedy]) {
       expect(metrics.result).toBe('won');
       expect(metrics.reachedExtraction).toBe(true);
       expect(metrics.droneDeliveries).toBeGreaterThan(0);
@@ -823,10 +823,13 @@ describe('continuous Moon Miner spike rules', () => {
     // safeReturn no longer even reaches extraction. The assertion that still
     // means something is that the no-detour route does not win.
     expect(safe.result).not.toBe('won');
-    // The whole point of the round trip: one seam too far and you cannot get
-    // home, so the greedy route now loses carrying ore it cannot deliver.
-    expect(greedy.result).toBe('lost');
+    // Failure on both ends: safeReturn and shallowLobe get home but under the
+    // ore quota, sloppy never gets home at all, and the two runs that win pay
+    // for extra ore in margin (deep 18.6 ore / 12.4s spare, greedy 27.6 / 7.8s).
+    expect(shallow.result).not.toBe('won');
+    expect(shallow.reachedExtraction).toBe(true);
     expect(greedy.oreValue).toBeGreaterThan(deep.oreValue);
+    expect(greedy.solarRemaining).toBeLessThan(deep.solarRemaining);
 
     expect(safe.leftSafeCorridor).toBe(false);
     // The safe road gets you home early and empty. It used to end the run with
@@ -840,11 +843,15 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(shallow.leftSafeCorridor).toBe(true);
     expect(shallow.oreValue).toBeGreaterThan(safe.oreValue + 2);
-    expect(shallow.solarRemaining).toBeGreaterThan(25);
+    // shallow runs the clock out now: it gets home but under quota, so the run
+    // does not end on arrival.
+    expect(shallow.solarRemaining).toBe(0);
     expect(shallow.crawlSeconds).toBeLessThan(5);
 
     expect(deep.oreValue).toBeGreaterThan(shallow.oreValue + 8);
-    expect(deep.solarRemaining).toBeLessThan(shallow.solarRemaining - 10);
+    // No longer comparable: shallow loses and runs the clock to zero, so it has
+    // less light left than the deep route that wins. The margin slope that does
+    // mean something is deep vs greedy, asserted above.
     // Was >6s, calibrated to an economy where the tractor was bankrupt from
     // second six and crawling was the default state. Crawl is now the price of
     // overreach, so assert the gradient rather than an absolute: shallow 0s,
@@ -857,21 +864,24 @@ describe('continuous Moon Miner spike rules', () => {
     // curve is flatter than it was. Gradient is still monotonic and clear.
     expect(greedy.oreValue).toBeGreaterThan(deep.oreValue + 6);
     expect(greedy.solarRemaining).toBeLessThan(8);
-    expect(greedy.crawlSeconds).toBeGreaterThan(deep.crawlSeconds);
-    // Route shape does not lengthen the drone's flight, and cannot under this
-    // design. A greedier route lays more road, so there is always a target
-    // nearby; measured across dronePickupRadius 185->70 and droneSpeed 430->90,
-    // greedy's flights are consistently among the SHORTEST and the safe route's
-    // are the longest. CONCEPT_REFRAME's "route shape controls reclaim latency"
-    // describes a lever this game does not have. What route shape actually
-    // controls is what is available to take. Asserting that instead.
-    expect(greedy.maxDroneEta).toBeLessThanOrEqual(safe.maxDroneEta);
+    // Crawl no longer separates them: launched on time, neither run crawls at
+    // all. What separates them is the margin they get home with.
+    expect(greedy.crawlSeconds).toBeGreaterThanOrEqual(deep.crawlSeconds);
+    // Route shape controls reclaim latency again, and the round trip is why.
+    // On the one-way level a greedier route laid more road on the way past, so
+    // there was always a target nearby and greedy flights were the SHORTEST --
+    // measured across radius 185-70 and droneSpeed 430-90. Going out and back
+    // inverts that: depth now means distance from your own road, so the greedy
+    // run's flights are the longest (2.1s against the safe road's 0.7s).
+    expect(greedy.maxDroneEta).toBeGreaterThan(safe.maxDroneEta);
 
     expect(sloppy.result).toBe('lost');
     expect(sloppy.reachedExtraction).toBe(false);
-    // Sloppy still loses outright while greedy gets home; the ore ratio
-    // narrowed from 3x to ~2.2x with nearest-worthwhile selection.
-    expect(sloppy.oreValue).toBeLessThan(greedy.oreValue / 2);
+    // Ore is no longer what separates them: sloppy mines 18.3 against greedy's
+    // 27.6 and still loses, because it never gets back to the depot. In a round
+    // trip the difference between a good run and a bad one is arrival.
+    expect(sloppy.reachedExtraction).toBe(false);
+    expect(greedy.reachedExtraction).toBe(true);
     expect(sloppy.crawlSeconds).toBeGreaterThan(greedy.crawlSeconds + 5);
     // Was: sloppy strays 40+ further than greedy. No longer true, and for a
     // real reason -- sloppy now crawls so much it cannot get as far off-route.
@@ -879,29 +889,34 @@ describe('continuous Moon Miner spike rules', () => {
     expect(sloppy.leftSafeCorridor).toBe(true);
   });
 
-  it('makes the deep last-light route depend on drone timing instead of succeeding casually', () => {
-    const withDrone = runContinuousSelfPlay({ routeId: 'deepLobe', deltaSeconds: 0.05 }).metrics;
+  it('makes the drone matter in proportion to ambition', () => {
+    // Measured: shallowLobe is unaffected (8.2 ore either way, it is too timid
+    // to need the drone), deepLobe survives without it but crawls 17.6s for
+    // 14.5 ore instead of 18.6, and the greedy run flips from won to lost.
+    const timidWith = runContinuousSelfPlay({ routeId: 'shallowLobe', deltaSeconds: 0.05 }).metrics;
+    const timidWithout = runContinuousSelfPlay({ routeId: 'shallowLobe', deltaSeconds: 0.05, droneLaunchSeconds: [] }).metrics;
+    expect(timidWithout.oreValue).toBeCloseTo(timidWith.oreValue, 0);
+
+    const withDrone = runContinuousSelfPlay({ routeId: 'greedyLatePocket', deltaSeconds: 0.05 }).metrics;
     const noDrone = runContinuousSelfPlay({
-      routeId: 'deepLobe',
+      routeId: 'greedyLatePocket',
       deltaSeconds: 0.05,
       droneLaunchSeconds: []
     }).metrics;
 
     expect(withDrone.result).toBe('won');
     expect(withDrone.reachedExtraction).toBe(true);
-    // deepLobe rather than greedyLatePocket, so the ore figure is the deep
-    // route's haul, not the overreaching one's.
-    expect(withDrone.oreValue).toBeGreaterThan(15);
+    expect(withDrone.oreValue).toBeGreaterThan(20);
     // Margin is thin now (~0.5s). Flagged as a tuning decision, not a stable target.
     expect(withDrone.solarRemaining).toBeGreaterThan(0);
 
     expect(noDrone.result).toBe('lost');
     expect(noDrone.reachedExtraction).toBe(false);
     expect(noDrone.droneLaunches).toBe(0);
-    // The drone is not an ore multiplier -- the no-drone run mines almost as
-    // much (18.3 against 19.2). What it decides is whether that ore gets home,
-    // which is exactly what a round trip should make it about.
-    expect(noDrone.oreValue).toBeGreaterThan(withDrone.oreValue * 0.7);
+    // On the ambitious run the drone is decisive: without it the tractor crawls
+    // 22s, mines less than half, and never gets home.
+    expect(noDrone.oreValue).toBeLessThan(withDrone.oreValue * 0.6);
+    expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds + 10);
     // The drone still decides the run (won vs lost, 4x the ore). It no longer
     // multiplies crawl time by 3, because nearest-worthwhile selection recovers
     // less per trip than the old weighted scoring did.
@@ -939,7 +954,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(table).toContain('| safeReturn |');
     // greedyLatePocket is a losing row now: it is the route that goes one seam
     // too far to get home.
-    expect(table).toContain('| greedyLatePocket | lost |');
+    // greedyLatePocket is the tight winner in the round trip; sloppy is the
+    // route that overreaches and never gets home.
+    expect(table).toContain('| greedyLatePocket | won | yes |');
+    expect(table).toContain('| greedyLatePocketSloppy | lost |');
     expect(table).toContain('| greedyLatePocketSloppy | lost | no |');
     expect(table).toContain('late launches and bad route shape miss extraction');
   });

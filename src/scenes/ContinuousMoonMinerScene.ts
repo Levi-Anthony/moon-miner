@@ -1040,15 +1040,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       steer = clamp(angleDifference(desiredAngle, this.state.rover.heading) / 0.85, -1, 1);
     }
 
-    const driveIntent = upHeld || downHeld || Boolean(this.pointerTarget);
+    // S is a tank turn: tracks counter-rotate and the machine comes about on
+    // the spot. It costs time rather than distance, which is the real currency.
+    const comingAbout = downHeld && !upHeld;
+    const driveIntent = upHeld || Boolean(this.pointerTarget);
     return {
       steer,
-      // S comes about rather than braking, and keeps driving while it does.
-      throttle: upHeld || downHeld ? 1 : this.pointerTarget ? 0.62 : 0,
+      throttle: upHeld ? 1 : this.pointerTarget ? 0.62 : 0,
       brake: false,
-      reverseIntent: downHeld,
-      driveIntent,
-      pivotIntent: !driveIntent && Math.abs(steer) > 0.001
+      reverseIntent: comingAbout,
+      driveIntent: comingAbout ? false : driveIntent,
+      pivotIntent: comingAbout || (!driveIntent && Math.abs(steer) > 0.001)
     };
   }
 
@@ -1073,10 +1075,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const forwardBias = clamp((-dy - deadzone) / (radius - deadzone), 0, 1);
     const pullingBack = dy > deadzone && Math.abs(dy) > Math.abs(dx);
 
+    if (pullingBack) {
+      return { steer: 0, throttle: 0, reverseIntent: true, driveIntent: false, pivotIntent: true };
+    }
+
     return {
       steer: clamp(dx / radius, -1, 1),
       throttle: clamp(Math.max(commitment, forwardBias), 0, 1),
-      reverseIntent: pullingBack,
       driveIntent: true
     };
   }
