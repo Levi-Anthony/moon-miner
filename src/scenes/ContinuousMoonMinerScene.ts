@@ -257,10 +257,6 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
   {
     label: 'Target Scoring',
     controls: [
-      { key: 'dronePayloadScoreMultiplier', label: 'Payload score', min: 0, max: 16, step: 0.1, precision: 1 },
-      { key: 'droneAgeScoreMultiplier', label: 'Age score', min: 0, max: 4, step: 0.05, precision: 2 },
-      { key: 'droneTravelScoreMultiplier', label: 'Travel cost', min: 0, max: 8, step: 0.1, precision: 1 },
-      { key: 'droneClusterSpreadScoreDivisor', label: 'Spread divisor', min: 20, max: 260, step: 5 }
     ]
   },
   {
@@ -1705,7 +1701,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       lines.push(
         `Best #${best.targetPatchId}: +${best.payload.toFixed(2)} / ${best.fieldCount} fields / ${best.distanceFromRover.toFixed(0)}u`,
         `ETA: out ${best.eta.outboundSeconds.toFixed(2)} + lock ${best.eta.reclaimLockSeconds.toFixed(2)} + return ${best.eta.returnSeconds.toFixed(2)} = ${best.eta.totalSeconds.toFixed(2)}s`,
-        `Score ${best.score.toFixed(2)} = payload ${best.components.payloadValue.toFixed(2)} + age ${best.components.ageBonus.toFixed(2)} - travel ${best.components.travelCost.toFixed(2)} - spread ${best.components.spreadPenalty.toFixed(2)}`
+        `Nearest set road: ${best.distanceFromRover.toFixed(0)} away, +${best.payload.toFixed(1)} in ${best.refillEtaSeconds.toFixed(1)}s`
       );
     }
 

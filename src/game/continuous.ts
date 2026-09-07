@@ -54,13 +54,6 @@ export interface ReclaimEtaBreakdown {
   totalSeconds: number;
 }
 
-export interface DroneTargetScoreBreakdown {
-  payloadValue: number;
-  ageBonus: number;
-  travelCost: number;
-  spreadPenalty: number;
-}
-
 export interface ReclaimCandidateDiagnostics {
   targetPatchId: number;
   target: Vec2;
@@ -72,7 +65,6 @@ export interface ReclaimCandidateDiagnostics {
   refillEtaSeconds: number;
   eta: ReclaimEtaBreakdown;
   score: number;
-  components: DroneTargetScoreBreakdown;
 }
 
 export interface DroneReclaimDiagnostics {
@@ -163,16 +155,13 @@ export interface ContinuousTuning {
   trimmableCrawlFieldValue: number;
   reclaimMinFieldAgeSeconds: number;
   reclaimMinFieldValue: number;
+  reclaimMinClusterPayload: number;
   reclaimMinDistanceFromRover: number;
   reclaimLockSeconds: number;
   allowCloseReclaim: boolean;
   allowLowPayloadLaunch: boolean;
   minReclaimClusterPayload: number;
   minReclaimCandidateCount: number;
-  dronePayloadScoreMultiplier: number;
-  droneAgeScoreMultiplier: number;
-  droneTravelScoreMultiplier: number;
-  droneClusterSpreadScoreDivisor: number;
   preparedCoverageThreshold: number;
   preparedFieldMinValue: number;
   preparedMagnetInfluenceMultiplier: number;
@@ -259,16 +248,13 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   trimmableCrawlFieldValue: 0.045,
   reclaimMinFieldAgeSeconds: 2.2,
   reclaimMinFieldValue: 0.08,
-  reclaimMinDistanceFromRover: 74,
+  reclaimMinClusterPayload: 1.8,
+  reclaimMinDistanceFromRover: 26,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
   allowCloseReclaim: false,
   allowLowPayloadLaunch: false,
   minReclaimClusterPayload: 0.08,
   minReclaimCandidateCount: 1,
-  dronePayloadScoreMultiplier: 6,
-  droneAgeScoreMultiplier: 0.6,
-  droneTravelScoreMultiplier: 1.8,
-  droneClusterSpreadScoreDivisor: 100,
   preparedCoverageThreshold: 0.24,
   preparedFieldMinValue: 0.08,
   preparedMagnetInfluenceMultiplier: 1.35,
@@ -289,18 +275,15 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   fieldRadius: 46,
   fieldValueMultiplierFromSpentStock: 1.05,
   reclaimMinFieldAgeSeconds: 1.35,
-  reclaimMinDistanceFromRover: 52,
+  reclaimMinDistanceFromRover: 22,
   reclaimMinFieldValue: 0.06,
+  reclaimMinClusterPayload: 1.8,
   minReclaimClusterPayload: 0.12,
   allowCloseReclaim: false,
   allowLowPayloadLaunch: false,
   droneSpeed: 470,
   dronePickupRadius: 185,
   reclaimLockSeconds: 0.35,
-  dronePayloadScoreMultiplier: 7.5,
-  droneAgeScoreMultiplier: 0.45,
-  droneTravelScoreMultiplier: 2.2,
-  droneClusterSpreadScoreDivisor: 120,
   lowStockWarningRatio: 0.14,
   droneUrgencyRatio: 0.24,
   preparedCoverageThreshold: 0.22,
@@ -348,8 +331,7 @@ export const DYNAMICS_PRESETS: DynamicsPresetDefinition[] = [
     tuning: {
       ...STABLE_FIRST_RUN_CONTINUOUS_TUNING,
       reclaimMinFieldAgeSeconds: 2.4,
-      reclaimMinDistanceFromRover: 92,
-      droneTravelScoreMultiplier: 3.6,
+      reclaimMinDistanceFromRover: 34,
       dronePickupRadius: 140,
       allowCloseReclaim: false
     }
@@ -1037,7 +1019,9 @@ function applyContinuousWinLoss(state: ContinuousWorldState): void {
 }
 
 export function getDroneReclaimDiagnostics(state: ContinuousWorldState): DroneReclaimDiagnostics {
-  const candidates = getReclaimCandidateDiagnostics(state);
+  const allCandidates = getReclaimCandidateDiagnostics(state);
+  const worthwhile = allCandidates.filter((candidate) => candidate.payload >= state.tuning.reclaimMinClusterPayload);
+  const candidates = worthwhile.length > 0 ? worthwhile : [];
   const topCandidates = [...candidates].sort(compareReclaimCandidates).slice(0, 3);
   const bestTarget = topCandidates[0];
   const oldestFieldAge = state.fields.reduce((oldest, field) => Math.max(oldest, field.age), 0);
@@ -1123,8 +1107,10 @@ function createReclaimCandidateDiagnostics(
   const weightedAge = getClusterWeightedAge(cluster, payload);
   const spread = getClusterAverageDistanceFromTarget(cluster, field, payload);
   const eta = estimateReclaimRefillEtaBreakdown(state, field);
-  const components = droneTargetScoreComponents(state, cluster, payload, weightedAge, spread, eta.totalSeconds);
-  const score = components.payloadValue + components.ageBonus - components.travelCost - components.spreadPenalty;
+  // One rule the player can learn and steer: the drone flies to the nearest
+  // cluster of set road. Payload is then a consequence of where you launched
+  // from, which is what makes driving somewhere else a real decision.
+  const score = -distance(field, state.rover);
   return {
     targetPatchId: field.id,
     target: { x: field.x, y: field.y },
@@ -1135,8 +1121,7 @@ function createReclaimCandidateDiagnostics(
     spread,
     refillEtaSeconds: eta.totalSeconds,
     eta,
-    score,
-    components
+    score
   };
 }
 
@@ -1168,24 +1153,6 @@ function getReclaimCluster(state: ContinuousWorldState, target: Vec2): FieldPatc
 
 function isInReclaimCluster(state: ContinuousWorldState, field: FieldPatch, target: Vec2): boolean {
   return field.value >= state.tuning.reclaimMinFieldValue && distance(field, target) <= state.tuning.dronePickupRadius;
-}
-
-function droneTargetScoreComponents(
-  state: ContinuousWorldState,
-  cluster: FieldPatch[],
-  payload: number,
-  weightedAge: number,
-  spread: number,
-  refillEtaSeconds: number
-): DroneTargetScoreBreakdown {
-  return {
-    payloadValue: payload * state.tuning.dronePayloadScoreMultiplier,
-    ageBonus:
-      clamp(weightedAge - state.tuning.reclaimMinFieldAgeSeconds, 0, 18) *
-      state.tuning.droneAgeScoreMultiplier,
-    travelCost: refillEtaSeconds * state.tuning.droneTravelScoreMultiplier,
-    spreadPenalty: spread / Math.max(1, state.tuning.droneClusterSpreadScoreDivisor)
-  };
 }
 
 function getClusterPayload(cluster: FieldPatch[]): number {
