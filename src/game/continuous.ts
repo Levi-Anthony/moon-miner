@@ -23,6 +23,7 @@ export interface ContinuousInput {
   brake?: boolean;
   driveIntent?: boolean;
   pivotIntent?: boolean;
+  reverseIntent?: boolean;
 }
 
 export interface RoverMotionState extends Vec2 {
@@ -204,6 +205,7 @@ export interface ContinuousWorldState {
   elapsedSeconds: number;
   lastDroneLaunchAtSeconds: number;
   dronePendingLaunchCost: number;
+  reverseTargetHeading?: number;
   phase: ContinuousPhase;
   speedState: SpeedState;
   arms: ArmAllocation;
@@ -234,7 +236,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   maxNanobots: 32,
   targetOre: 42,
   startingSolarSeconds: 165,
-  preparedSpeed: 88,
+  preparedSpeed: 100,
   fabricatingSpeed: 74,
   crawlSpeed: 16,
   fabricateCostPerSecond: 1.48,
@@ -515,7 +517,7 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
     return homeArena
       ? {
           objective: `Mine ${state.arena.extraction?.oreRequired ?? 0} ore, then reach extraction before sunset`,
-          nudge: 'W drives, A/D steer. Gold rock is ore.'
+          nudge: 'W drives, A/D steer, S turns you around.'
         }
       : { objective: `Mine ${state.targetOre} ore before sunset`, nudge: 'W drives, A/D steer. Gold rock is ore.' };
   }
@@ -549,7 +551,7 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
   }
 
   if (homeArena && solarRatio < 0.5) {
-    return { objective: 'Start heading home', nudge: 'Your own road is the fast way back.' };
+    return { objective: 'Start heading home', nudge: 'S turns you around. Your road is free to drive.' };
   }
 
   if (findFertileZoneAt(state, state.rover)) {
@@ -658,7 +660,9 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   if (!input.driveIntent) {
     if (input.pivotIntent && Math.abs(input.steer) > 0.001) {
       const turnMultiplier = state.speedState === 'prepared' ? 1.0 : state.speedState === 'crawl' ? 0.54 : 0.82;
-      state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * turnMultiplier * deltaSeconds);
+      state.rover.heading = wrapAngle(
+        state.rover.heading + resolveSteer(state, input) * TURN_RATE * turnMultiplier * deltaSeconds
+      );
       state.message = 'Chassis pivoting in place. Field fabrication is idle.';
     }
     state.rover.speed = 0;
@@ -666,7 +670,7 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   }
 
   const turnMultiplier = state.speedState === 'prepared' ? 1.24 : state.speedState === 'crawl' ? 0.62 : 0.94;
-  const playerTurn = input.steer * TURN_RATE * turnMultiplier;
+  const playerTurn = resolveSteer(state, input) * TURN_RATE * turnMultiplier;
   const magnetTurn = getPreparedMagnetTurn(state, input);
   state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + magnetTurn) * deltaSeconds);
 
@@ -914,6 +918,30 @@ function preserveFieldPatches(state: ContinuousWorldState): void {
     .map((field) => field.id);
   const removableIds = new Set(removable);
   state.fields = state.fields.filter((field) => !removableIds.has(field.id));
+}
+
+// Holding the turn-around key steers hard toward the reverse of the current
+// heading until the machine has come about, so a route out becomes a route
+// home along ground that is already laid.
+function resolveSteer(state: ContinuousWorldState, input: ContinuousInput): number {
+  if (!input.reverseIntent) {
+    state.reverseTargetHeading = undefined;
+    return input.steer;
+  }
+
+  // The target is captured once, when the key goes down. Recomputing
+  // heading + PI every frame makes the difference permanently PI, so the
+  // machine spins forever instead of coming about.
+  if (state.reverseTargetHeading === undefined) {
+    state.reverseTargetHeading = wrapAngle(state.rover.heading + Math.PI);
+  }
+
+  // Hold the captured target until the key is released. Clearing it on arrival
+  // let the second call site of this function re-capture a fresh target from
+  // the new heading, so the machine came about and then kept going, forever.
+  const remaining = angleDifference(state.reverseTargetHeading, state.rover.heading);
+  if (Math.abs(remaining) < 0.06) return input.steer;
+  return remaining > 0 ? 1 : -1;
 }
 
 function resolveSpeedState(state: ContinuousWorldState): SpeedState {
@@ -1334,12 +1362,14 @@ function getFertileZoneMiningFlowMultiplier(state: ContinuousWorldState, zone: F
 function normalizeInput(input: ContinuousInput): ContinuousInput {
   const throttle = clamp(input.throttle, 0, 1);
   const brake = Boolean(input.brake);
+  const reverseIntent = Boolean(input.reverseIntent);
   const steer = clamp(input.steer, -1, 1);
   const driveIntent = input.driveIntent ?? (throttle > 0 || brake);
   return {
     steer,
     throttle,
     brake,
+    reverseIntent,
     driveIntent,
     pivotIntent: input.pivotIntent ?? (!driveIntent && Math.abs(steer) > 0.001)
   };

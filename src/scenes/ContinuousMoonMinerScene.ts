@@ -1043,8 +1043,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const driveIntent = upHeld || downHeld || Boolean(this.pointerTarget);
     return {
       steer,
-      throttle: upHeld ? 1 : this.pointerTarget ? 0.62 : 0,
-      brake: downHeld,
+      // S comes about rather than braking, and keeps driving while it does.
+      throttle: upHeld || downHeld ? 1 : this.pointerTarget ? 0.62 : 0,
+      brake: false,
+      reverseIntent: downHeld,
       driveIntent,
       pivotIntent: !driveIntent && Math.abs(steer) > 0.001
     };
@@ -1069,10 +1071,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const commitment = clamp((distance - deadzone) / (radius - deadzone), 0, 1);
     const forwardBias = clamp((-dy - deadzone) / (radius - deadzone), 0, 1);
+    const pullingBack = dy > deadzone && Math.abs(dy) > Math.abs(dx);
 
     return {
       steer: clamp(dx / radius, -1, 1),
       throttle: clamp(Math.max(commitment, forwardBias), 0, 1),
+      reverseIntent: pullingBack,
       driveIntent: true
     };
   }
@@ -2211,11 +2215,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (previousSpeedState !== this.state.speedState) {
       if (this.state.speedState === 'prepared') {
         this.addEffect('sprint', this.state.rover.x, this.state.rover.y, 620);
-        this.showEventMessage('On your own road. Faster, and the arms can mine.', 1200, timeMs, 1);
+        this.showEventMessage('Your own road. Free to drive, and the arms can mine.', 1200, timeMs, 1);
       }
       if (this.state.speedState === 'fabricating') {
         this.addEffect('build', this.state.rover.x, this.state.rover.y, 620);
-        this.showEventMessage('Raw ground. Burning nanobots to lay road.', 1200, timeMs, 1);
+        this.showEventMessage('Raw ground. Every second here costs nanobots.', 1200, timeMs, 1);
       }
       if (this.state.speedState === 'crawl') {
         this.addEffect('crawl', this.state.rover.x, this.state.rover.y, 820);
