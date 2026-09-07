@@ -2714,14 +2714,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const width = radius * (1.45 + (index % 4) * 0.12) * scale;
     const height = radius * (0.72 + (index % 3) * 0.1) * yScale * scale;
 
-    this.graphics.fillStyle(index % 3 === 0 ? 0x1b211f : 0x161d24, 0.1 + visualCalm * 0.06);
-    this.graphics.fillEllipse(screen.x, screen.y, width, height);
-    this.graphics.lineStyle(1, index % 3 === 0 ? 0x58614e : 0x485467, 0.14 + visualCalm * 0.16);
-    this.graphics.strokeEllipse(screen.x, screen.y, width, height);
-    if (index % 4 === 0) {
-      this.graphics.lineStyle(1, 0x222a30, 0.32);
-      this.graphics.strokeEllipse(screen.x - width * 0.08, screen.y + height * 0.04, width * 0.54, height * 0.44);
-    }
+    // Lit from the upper left: a bright rim on the sun side, the bowl in shadow
+    // on the other, so craters read as holes in the ground instead of outlines
+    // drawn over it.
+    const lift = Math.max(2, height * 0.13);
+    this.graphics.fillStyle(0x8d8371, 0.5 + visualCalm * 0.14);
+    this.graphics.fillEllipse(screen.x - lift * 0.7, screen.y - lift, width * 1.04, height * 1.06);
+    this.graphics.fillStyle(0x231f1b, 0.62 + visualCalm * 0.12);
+    this.graphics.fillEllipse(screen.x + lift * 0.35, screen.y + lift * 0.4, width, height);
+    this.graphics.fillStyle(0x4a4339, 0.72);
+    this.graphics.fillEllipse(screen.x + lift * 0.1, screen.y + lift * 0.15, width * 0.74, height * 0.7);
   }
 
   private drawTerrainFissure(index: number, visualCalm: number): void {
@@ -2742,6 +2744,44 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineBetween(from.x + 2, from.y - 2, mid.x + 2, mid.y - 2);
   }
 
+  private static hashNoise(seed: number): number {
+    const value = Math.sin(seed * 127.1) * 43758.5453;
+    return value - Math.floor(value);
+  }
+
+  // An irregular patch hugging the vein, tapered at both ends, so ore reads as
+  // mineral in the ground rather than a rectangle laid on top of it.
+  private fertilePatchPolygon(zone: FertileZone, halfWidth: number, salt: number): Vec2[] {
+    if (!zone.vein) return [];
+    const from = zone.vein.from;
+    const to = zone.vein.to;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    const normalX = -dy / length;
+    const normalY = dx / length;
+    const STEPS = 10;
+    const seedBase = salt + zone.id.length * 17 + zone.radius;
+    const points: Vec2[] = [];
+
+    for (const side of [1, -1]) {
+      for (let index = 0; index <= STEPS; index += 1) {
+        const step = index / STEPS;
+        const t = side === 1 ? step : 1 - step;
+        const noise = ContinuousMoonMinerScene.hashNoise(seedBase + index * 3.7 + (side === 1 ? 0 : 51));
+        const taper = Math.pow(Math.max(0.001, Math.sin(Math.PI * clamp(t, 0, 1))), 0.34);
+        const width = halfWidth * (0.6 + noise * 0.75) * taper;
+        points.push(
+          this.project({
+            x: from.x + dx * t + normalX * width * side,
+            y: from.y + dy * t + normalY * width * side
+          })
+        );
+      }
+    }
+    return points;
+  }
+
   private drawFertileTerrainBed(zone: FertileZone, visualCalm: number): void {
     if (!zone.vein) {
       const center = this.project(zone);
@@ -2754,27 +2794,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       return;
     }
 
-    const polygon = this.fertileVeinScreenPolygon(zone, zone.vein.width + 76);
-    this.graphics.fillStyle(0x22281d, 0.18 + visualCalm * 0.07);
-    this.graphics.fillPoints(polygon.points, true, true);
-    this.graphics.lineStyle(1, 0x596342, 0.2 + visualCalm * 0.12);
-    this.graphics.strokePoints(polygon.points, true, true);
+    const outer = this.fertilePatchPolygon(zone, (zone.vein.width + 92) / 2, 11);
+    this.graphics.fillStyle(0x3d382c, 0.5 + visualCalm * 0.12);
+    this.graphics.fillPoints(outer, true, true);
 
-    const from = this.project(zone.vein.from);
-    const to = this.project(zone.vein.to);
-    const width = Math.max(polygon.fromWidth, polygon.toWidth);
-    for (const offset of [-0.46, -0.18, 0.2, 0.48]) {
-      const fromOffset = {
-        x: from.x + polygon.normal.x * width * offset,
-        y: from.y + polygon.normal.y * width * offset
-      };
-      const toOffset = {
-        x: to.x + polygon.normal.x * width * offset,
-        y: to.y + polygon.normal.y * width * offset
-      };
-      this.graphics.lineStyle(1, offset > 0 ? 0x445642 : 0x343224, 0.12 + visualCalm * 0.1);
-      this.graphics.lineBetween(fromOffset.x, fromOffset.y, toOffset.x, toOffset.y);
-    }
+    const inner = this.fertilePatchPolygon(zone, (zone.vein.width + 34) / 2, 29);
+    this.graphics.fillStyle(0x4a422f, 0.5 + visualCalm * 0.1);
+    this.graphics.fillPoints(inner, true, true);
   }
 
   private drawPreparedFieldTerrainBeds(visualCalm: number): void {
@@ -3030,10 +3056,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const pulse = active ? 0.5 + Math.sin(this.time.now / 145) * 0.5 : 0;
     const activeMiningCue = active && this.state.lastYieldRate > 0.001;
 
-    this.graphics.fillStyle(0x664525, 0.14 + visualCalm * 0.1);
-    this.graphics.fillPoints(polygon.points, true, true);
-    this.graphics.lineStyle(active ? 5 : 3, active ? 0xffe48a : 0xbf9145, 0.34 + visualCalm * 0.22 + pulse * 0.18);
-    this.graphics.strokePoints(polygon.points, true, true);
+    const rock = this.fertilePatchPolygon(zone, zone.vein.width / 2, 5);
+    this.graphics.fillStyle(0x6d5330, 0.82);
+    this.graphics.fillPoints(rock, true, true);
+    const rim = this.fertilePatchPolygon(zone, zone.vein.width / 2.6, 73);
+    this.graphics.fillStyle(active ? 0x8f6a2f : 0x7d5c2b, 0.85 + pulse * 0.1);
+    this.graphics.fillPoints(rim, true, true);
 
     if (depletedRatio > 0.025) {
       this.drawVeinDepletionBand(zone, depletedRatio, polygon);
@@ -3041,12 +3069,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     if (remainingRatio > 0.025) {
       const richStart = depletedRatio;
-      const lineWidth = active ? 5 + richnessRatio * 4 : 3 + richnessRatio * 4;
-      const start = this.pointOnSegment(fromScreen, toScreen, richStart);
-      this.graphics.lineStyle(lineWidth + 5, 0x21170f, 0.54);
-      this.graphics.lineBetween(start.x, start.y, toScreen.x, toScreen.y);
-      this.graphics.lineStyle(lineWidth, active ? 0xfff0a8 : 0xffcf61, 0.72 + pulse * 0.2);
-      this.graphics.lineBetween(start.x, start.y, toScreen.x, toScreen.y);
       this.drawOreRichnessPips(zone, richStart, remainingRatio, richnessRatio, active);
     }
 
@@ -3117,16 +3139,22 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       const local = (index + 0.5) / visiblePips;
       const progress = clamp(richStart + local * remainingRatio, 0.04, 0.98);
       const center = this.pointOnSegment(fromScreen, toScreen, progress);
-      const offset = ((index % 3) - 1) * (3 + richnessRatio * 5);
+      const span = Math.max(1, Math.hypot(toScreen.x - fromScreen.x, toScreen.y - fromScreen.y));
+      const normalX = (toScreen.y - fromScreen.y) / span;
+      const normalY = -(toScreen.x - fromScreen.x) / span;
+      const scatter = ContinuousMoonMinerScene.hashNoise(index * 7.3 + zone.radius) - 0.5;
+      const along = (ContinuousMoonMinerScene.hashNoise(index * 13.1 + zone.richness) - 0.5) * 12;
+      const offset = scatter * (14 + richnessRatio * 16);
       const pip = {
-        x: center.x + ((toScreen.y - fromScreen.y) / Math.max(1, Math.hypot(toScreen.x - fromScreen.x, toScreen.y - fromScreen.y))) * offset,
-        y: center.y - ((toScreen.x - fromScreen.x) / Math.max(1, Math.hypot(toScreen.x - fromScreen.x, toScreen.y - fromScreen.y))) * offset
+        x: center.x + normalX * offset + (normalY * along),
+        y: center.y + normalY * offset - (normalX * along)
       };
-      const radius = 3.8 + richnessRatio * 3 + (active ? pulse * 1.8 : 0);
-      this.graphics.fillStyle(index % 2 === 0 ? 0xffdc75 : 0xffb84c, 0.86);
+      const grade = ContinuousMoonMinerScene.hashNoise(index * 3.9 + zone.radius * 2);
+      const radius = 2.2 + grade * (3.4 + richnessRatio * 3) + (active ? pulse * 1.2 : 0);
+      this.graphics.fillStyle(grade > 0.62 ? 0xffd166 : 0xc9913c, 0.95);
       this.graphics.fillCircle(pip.x, pip.y, radius);
-      this.graphics.lineStyle(1, 0xfff2b8, active ? 0.72 + pulse * 0.18 : 0.5);
-      this.graphics.strokeCircle(pip.x, pip.y, radius + 3);
+      this.graphics.fillStyle(0x2a1e10, 0.5);
+      this.graphics.fillCircle(pip.x + radius * 0.32, pip.y + radius * 0.34, radius * 0.55);
     }
   }
 
