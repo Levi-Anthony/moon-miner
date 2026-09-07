@@ -3364,22 +3364,33 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const pulse = 0.5 + Math.sin(this.time.now / 260) * 0.5;
     const radius = this.droneReservationRadius(targetScreen, previewFields);
 
-    this.graphics.fillStyle(0xffb36d, 0.05 + pulse * 0.03);
+    const previewThin = preview.netPayload < preview.payload * 0.55;
+    this.graphics.fillStyle(previewThin ? 0x8a6a5c : 0xffb36d, 0.05 + pulse * 0.03);
     this.graphics.fillCircle(targetScreen.x, targetScreen.y, radius + 10 + pulse * 3);
-    this.graphics.lineStyle(2, 0xffb36d, 0.38 + pulse * 0.18);
+    this.graphics.lineStyle(2, previewThin ? 0x8a6a5c : 0xffb36d, 0.38 + pulse * 0.18);
     this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + pulse * 4);
     this.graphics.lineStyle(1, 0xffeddf, 0.28 + pulse * 0.14);
     this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + 12);
 
     const labelPoint = this.clampScreenPoint({ x: targetScreen.x + radius + 16, y: targetScreen.y - radius - 8 }, 118, 28);
-    this.drawStaticText('drone-preview-readout', labelPoint.x, labelPoint.y, 'NEXT RECLAIM', 11, '#ffd2b7');
+    const thin = preview.netPayload < preview.payload * 0.55;
+    this.drawStaticText(
+      'drone-preview-readout',
+      labelPoint.x,
+      labelPoint.y,
+      `${preview.netPayload > 0 ? '+' : ''}${preview.netPayload.toFixed(1)} NET`,
+      14,
+      thin ? '#f0a58c' : '#ffd2b7'
+    );
     this.drawStaticText(
       'drone-preview-detail',
       labelPoint.x,
-      labelPoint.y + 15,
-      `+${preview.payload.toFixed(1)} refill ${preview.etaSeconds.toFixed(1)}s`,
+      labelPoint.y + 17,
+      preview.surcharge > 0.05
+        ? `${preview.payload.toFixed(1)} haul - ${preview.surcharge.toFixed(1)} fuel`
+        : `${preview.payload.toFixed(1)} haul, full tank`,
       10,
-      '#ffeddf'
+      thin ? '#dba894' : '#ffeddf'
     );
   }
 
@@ -4196,7 +4207,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       'button-launch-status',
       button.rect.x + 14,
       button.rect.y + 36,
-      this.getDroneStatusLine(),
+      this.getDroneFuelDetail() ?? this.getDroneStatusLine(),
       11,
       urgent ? '#ffd2b7' : ready ? '#bcfff3' : returning ? '#a8f7e9' : '#ffd2b7'
     );
@@ -4506,6 +4517,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
   private clearCameraDebugOverlayText(): void {
     this.drawStaticText('camera-projection-label', 0, 0, '', 1, '#ffffff');
+  }
+
+  private getDroneFuelDetail(): string | undefined {
+    if (this.state.drone.status !== 'ready') return undefined;
+    const preview = getReclaimPreview(this.state);
+    if (!preview) return undefined;
+    if (preview.surcharge <= 0.05) return `+${preview.netPayload.toFixed(1)} NET`;
+    if (preview.netPayload < preview.payload * 0.55) return 'THIN - FUEL STILL HOT';
+    return `+${preview.netPayload.toFixed(1)} NET AFTER FUEL`;
   }
 
   private getDroneActionLabel(): string {

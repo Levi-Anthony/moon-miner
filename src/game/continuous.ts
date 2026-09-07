@@ -40,6 +40,8 @@ export interface FieldPatch extends Vec2 {
 }
 
 export interface ReclaimPreview {
+  surcharge: number;
+  netPayload: number;
   target: Vec2;
   targetPatchId: number;
   payload: number;
@@ -443,9 +445,7 @@ export function launchReclaimDrone(state: ContinuousWorldState): ContinuousComma
   // The drone burns stock to fly. Without this the button is free, and every
   // measurement said the same thing: launching more was monotonically better,
   // so there was never a reason not to press it the instant it lit.
-  const sinceLast = state.elapsedSeconds - state.lastDroneLaunchAtSeconds;
-  const window = Math.max(0.001, state.tuning.droneLaunchCooldownSeconds);
-  const surcharge = state.tuning.droneLaunchCost * clamp(1 - sinceLast / window, 0, 1);
+  const surcharge = getDroneLaunchSurcharge(state);
 
   const next = cloneContinuousWorld(state);
   next.lastDroneLaunchAtSeconds = state.elapsedSeconds;
@@ -468,6 +468,12 @@ export function launchReclaimDrone(state: ContinuousWorldState): ContinuousComma
   return ok(next, next.message);
 }
 
+export function getDroneLaunchSurcharge(state: ContinuousWorldState): number {
+  const sinceLast = state.elapsedSeconds - state.lastDroneLaunchAtSeconds;
+  const window = Math.max(0.001, state.tuning.droneLaunchCooldownSeconds);
+  return state.tuning.droneLaunchCost * clamp(1 - sinceLast / window, 0, 1);
+}
+
 export function getReclaimPreview(state: ContinuousWorldState): ReclaimPreview | undefined {
   if (state.phase !== 'playing') return undefined;
   if (state.drone.status !== 'ready') return undefined;
@@ -475,10 +481,13 @@ export function getReclaimPreview(state: ContinuousWorldState): ReclaimPreview |
   const target = selectDroneTarget(state);
   if (!target) return undefined;
 
+  const surcharge = getDroneLaunchSurcharge(state);
   return {
     target: { ...target.target },
     targetPatchId: target.targetPatchId,
     payload: target.payload,
+    surcharge,
+    netPayload: target.payload - surcharge,
     fieldCount: target.fieldCount,
     etaSeconds: target.refillEtaSeconds
   };
