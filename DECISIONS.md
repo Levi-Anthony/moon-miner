@@ -101,3 +101,20 @@ The starter arena should be authored as calibration runway, rich overextension l
 ## 2026-07-01: Flat Tactical Is The Default View
 
 Use a stable, wide, map-like tactical camera as the default presentation. Keep diagonal energy through authored level composition and framing, not through heading-relative rotation, Y squash, projection shear, or screen-Y scaling. Preserve the old chase projection only as a dev comparison via `?view=chase`.
+
+## 2026-09-07: Route Shape Controls What Is Available, Not Reclaim Latency
+
+`CONCEPT_REFRAME.md` claims route shape and launch timing control reclaim
+latency. Measurement says that lever does not exist. Across `dronePickupRadius`
+185 down to 70 and `droneSpeed` 430 down to 90, the greedy route's drone
+flights are consistently among the shortest and the safe route's are the
+longest, because a greedier route lays more road and therefore always has a
+target nearby. Greed makes reclaim easier, not harder.
+
+What route shape does control is what is worth taking. With nearest-cluster
+selection, where you launch from decides the payload, and the decaying fuel
+charge decides whether the trip pays for itself. That is the real decision, and
+it is the one the player can see.
+
+Do not reintroduce latency-based reclaim pressure without changing the
+selection rule or the road's persistence first. The two are coupled.
