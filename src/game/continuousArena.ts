@@ -350,7 +350,7 @@ export const CONTINUOUS_ARENAS = {
   'last-light-return': LAST_LIGHT_RETURN
 } satisfies Record<ContinuousArenaId, ContinuousArenaDefinition>;
 
-export const DEFAULT_CONTINUOUS_ARENA_ID: ContinuousArenaId = 'first-run-readable';
+export const DEFAULT_CONTINUOUS_ARENA_ID: ContinuousArenaId = 'last-light-return';
 
 export function getContinuousArena(arenaId: ContinuousArenaId = DEFAULT_CONTINUOUS_ARENA_ID): ContinuousArenaDefinition {
   return CONTINUOUS_ARENAS[arenaId];
