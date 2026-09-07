@@ -94,7 +94,7 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(stable?.tuning.startingNanobots).toBe(6);
     expect(stable?.tuning.maxNanobots).toBe(24);
-    expect(stable?.tuning.reclaimMinFieldAgeSeconds).toBe(1.35);
+    expect(stable?.tuning.reclaimMinFieldAgeSeconds).toBe(4);
     expect(stable?.tuning.reclaimMinDistanceFromRover).toBe(22);
     expect(stable?.tuning.reclaimMinFieldValue).toBe(0.06);
     expect(stable?.tuning.minReclaimClusterPayload).toBe(0.12);
@@ -528,7 +528,9 @@ describe('continuous Moon Miner spike rules', () => {
     expect(preview).toBeDefined();
     expect(preview?.targetPatchId).toBe(launched.drone.targetPatchId);
     expect(preview?.fieldCount).toBe(2);
-    expect(preview?.payload).toBeCloseTo(9);
+    // Doubled by reclaimYieldMultiplier. What this assertion is actually for is
+    // that the preview and the launch read the same number, which still holds.
+    expect(preview?.payload).toBeCloseTo(18);
     expect(preview?.etaSeconds).toBeCloseTo(
       (distance(world.rover, launched.drone.target ?? world.rover) * 2) / world.tuning.droneSpeed + world.tuning.reclaimLockSeconds
     );
@@ -946,8 +948,7 @@ describe('continuous Moon Miner spike rules', () => {
         const preview = getReclaimPreview(world);
         if (!preview) continue;
         available += 1;
-        // The rule itself: whatever the drone is willing to take is clear of
-        // the line between the rover and extraction.
+
         expect(isRoadSpendable(world, preview.target)).toBe(true);
       }
 
@@ -965,6 +966,47 @@ describe('continuous Moon Miner spike rules', () => {
     expect(straight).toBeLessThan(2);
     expect(outAndBack).toBeGreaterThan(straight);
     expect(lobe).toBeGreaterThan(outAndBack + 20);
+  });
+
+  it('lifts only road that is old and clear of the line home, not the trail behind you', () => {
+    let world = createContinuousWorld('lift', undefined, 'last-light-return');
+    const step = 1 / 60;
+    let launched = false;
+    let checked = false;
+
+    for (let frame = 0; frame < 60 * 30; frame += 1) {
+      const before = new Map(world.fields.map((field) => [field.id, field]));
+      const roverAtTick = { ...world.rover };
+      world = tickContinuousWorld(world, { steer: frame > 360 ? 0.42 : 0, throttle: 1, brake: false, driveIntent: true }, step);
+      if (world.phase !== 'playing') break;
+
+      if (!launched && frame > 60 * 12 && getReclaimPreview(world)) {
+        const result = launchReclaimDrone(world);
+        if (result.state !== world) {
+          world = result.state;
+          launched = true;
+        }
+        continue;
+      }
+
+      if (!launched) continue;
+      const now = new Set(world.fields.map((field) => field.id));
+      const lifted = [...before.values()].filter((field) => !now.has(field.id));
+      if (lifted.length < 2) continue;
+
+      // What the pickup takes, not what it aimed at. Selection was gated and
+      // the cluster was not, so the drone lifted the patch under the tractor
+      // while its target sat legally outside the corridor.
+      for (const field of lifted) {
+        expect(field.age).toBeGreaterThanOrEqual(world.tuning.reclaimMinFieldAgeSeconds);
+        expect(isRoadSpendable({ ...world, rover: roverAtTick }, field)).toBe(true);
+      }
+      checked = true;
+      break;
+    }
+
+    expect(launched).toBe(true);
+    expect(checked).toBe(true);
   });
 
   it('always answers what the player is doing, starting with the goal', () => {

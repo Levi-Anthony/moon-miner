@@ -163,6 +163,7 @@ export interface ContinuousTuning {
   droneLaunchCooldownSeconds: number;
   reclaimMinDistanceFromRover: number;
   reclaimRouteHomeCorridor: number;
+  reclaimYieldMultiplier: number;
   reclaimLockSeconds: number;
   allowCloseReclaim: boolean;
   allowLowPayloadLaunch: boolean;
@@ -262,6 +263,11 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   droneLaunchCooldownSeconds: 9,
   reclaimMinDistanceFromRover: 26,
   reclaimRouteHomeCorridor: 40,
+  // Gating the cluster cut a landing from ~15 patches to ~3, which is the point
+  // -- but it cut the payload with it. Doubling the recovery restores the same
+  // economy from a third of the road: the ladder is unchanged and crawl is back
+  // where it was. Swept 1 to 4; above 2 the tank caps and the extra is wasted.
+  reclaimYieldMultiplier: 2,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
   allowCloseReclaim: false,
   allowLowPayloadLaunch: false,
@@ -286,7 +292,11 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   fieldEmitDistance: 26,
   fieldRadius: 46,
   fieldValueMultiplierFromSpentStock: 1.05,
-  reclaimMinFieldAgeSeconds: 1.35,
+  // Raised from 1.35s. Geometry alone is not enough: on a tight loop the road
+  // laid under two seconds ago is already clear of the line home, so it was
+  // legal to lift and still felt exactly like "it takes the road behind me".
+  // The freshest stretch of trail is never spendable, whatever its shape.
+  reclaimMinFieldAgeSeconds: 4,
   reclaimMinDistanceFromRover: 22,
   reclaimMinFieldValue: 0.06,
   reclaimMinClusterPayload: 1.8,
@@ -342,7 +352,9 @@ export const DYNAMICS_PRESETS: DynamicsPresetDefinition[] = [
     name: 'Strict Logistics',
     tuning: {
       ...STABLE_FIRST_RUN_CONTINUOUS_TUNING,
-      reclaimMinFieldAgeSeconds: 2.4,
+      // Kept above the shipped value, which is the whole point of this preset:
+      // it demands older road than the default does.
+      reclaimMinFieldAgeSeconds: 6,
       reclaimMinDistanceFromRover: 34,
       dronePickupRadius: 140,
       allowCloseReclaim: false
@@ -891,19 +903,19 @@ function moveDroneToward(state: ContinuousWorldState, target: Vec2, deltaSeconds
 }
 
 function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): number {
-  let payload = 0;
+  const lifted: FieldPatch[] = [];
   const remainingFields: FieldPatch[] = [];
 
   for (const field of state.fields) {
     if (isInReclaimCluster(state, field, target)) {
-      payload += field.value;
+      lifted.push(field);
     } else {
       remainingFields.push({ ...field, reservedByDrone: undefined });
     }
   }
 
   state.fields = remainingFields;
-  return payload;
+  return getClusterPayload(lifted, state.tuning.reclaimYieldMultiplier);
 }
 
 function addFieldPatch(state: ContinuousWorldState, value: number): void {
@@ -1245,7 +1257,7 @@ function getReclaimCandidateDiagnostics(state: ContinuousWorldState): ReclaimCan
     if (!isSelectableReclaimTarget(state, field)) continue;
 
     const cluster = getReclaimCluster(state, field);
-    const payload = getClusterPayload(cluster);
+    const payload = getClusterPayload(cluster, state.tuning.reclaimYieldMultiplier);
     if (!state.tuning.allowLowPayloadLaunch && payload < state.tuning.minReclaimClusterPayload) continue;
 
     candidates.push(createReclaimCandidateDiagnostics(state, field, cluster, payload));
@@ -1294,12 +1306,24 @@ function compareReclaimCandidates(a: ReclaimCandidateDiagnostics, b: ReclaimCand
   return a.targetPatchId - b.targetPatchId;
 }
 
+// Every protection on the road used to live in target selection, and none of
+// them applied to what the drone actually lifted -- the cluster only checked
+// value and radius. So a legal target let a 185-unit sweep carry off fresh
+// road, protected road, everything. One predicate now decides what may be
+// lifted at all, and selection only adds the rules that are about the target
+// specifically rather than about the road.
+function isLiftableRoad(state: ContinuousWorldState, field: FieldPatch): boolean {
+  return (
+    field.value >= state.tuning.reclaimMinFieldValue &&
+    field.age >= state.tuning.reclaimMinFieldAgeSeconds &&
+    isRoadSpendable(state, field)
+  );
+}
+
 function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatch): boolean {
   return (
     !field.reservedByDrone &&
-    field.age >= state.tuning.reclaimMinFieldAgeSeconds &&
-    field.value >= state.tuning.reclaimMinFieldValue &&
-    getRouteHomeClearance(state, field) >= state.tuning.reclaimRouteHomeCorridor &&
+    isLiftableRoad(state, field) &&
     (state.tuning.allowCloseReclaim || distance(field, state.rover) >= state.tuning.reclaimMinDistanceFromRover)
   );
 }
@@ -1330,11 +1354,11 @@ function getReclaimCluster(state: ContinuousWorldState, target: Vec2): FieldPatc
 }
 
 function isInReclaimCluster(state: ContinuousWorldState, field: FieldPatch, target: Vec2): boolean {
-  return field.value >= state.tuning.reclaimMinFieldValue && distance(field, target) <= state.tuning.dronePickupRadius;
+  return isLiftableRoad(state, field) && distance(field, target) <= state.tuning.dronePickupRadius;
 }
 
-function getClusterPayload(cluster: FieldPatch[]): number {
-  return cluster.reduce((total, field) => total + field.value, 0);
+function getClusterPayload(cluster: FieldPatch[], yieldMultiplier = 1): number {
+  return cluster.reduce((total, field) => total + field.value, 0) * yieldMultiplier;
 }
 
 function getClusterWeightedAge(cluster: FieldPatch[], payload: number): number {
