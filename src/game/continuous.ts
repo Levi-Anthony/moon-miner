@@ -276,9 +276,9 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   ...CURRENT_CLASSIC_CONTINUOUS_TUNING,
-  startingNanobots: 8,
+  startingNanobots: 12,
   maxNanobots: 24,
-  fabricateCostPerSecond: 1.35,
+  fabricateCostPerSecond: 1,
   fieldEmitDistance: 26,
   fieldRadius: 46,
   fieldValueMultiplierFromSpentStock: 1.05,
@@ -918,7 +918,13 @@ function preserveFieldPatches(state: ContinuousWorldState): void {
 
 function resolveSpeedState(state: ContinuousWorldState): SpeedState {
   if (getPreparedCoverage(state, state.rover) >= state.tuning.preparedCoverageThreshold) return 'prepared';
-  if (state.nanobots >= 0.85) return 'fabricating';
+  // Hysteresis. Crawl recovery trickles up to 1.2 while the exit threshold was
+  // 0.85, so stock crossed the boundary every few frames and the speed state --
+  // the most basic readout in the game -- strobed between crawl and fabricating
+  // several times a second. Climbing out now costs more than falling in did, so
+  // crawl is a state you are rescued from rather than a flicker.
+  const exitThreshold = state.speedState === 'crawl' ? 2 : 0.85;
+  if (state.nanobots >= exitThreshold) return 'fabricating';
   return 'crawl';
 }
 
