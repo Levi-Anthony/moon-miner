@@ -355,7 +355,7 @@ const DEFAULT_CAMERA_LAB_SETTINGS: CameraLabSettings = {
   rotationBlendAmount: 0.2,
   followBlend: 0,
   followDeadzone: 90,
-  worldLabelsVisible: true,
+  worldLabelsVisible: false,
   // The tractor turns at 2.25 rad/s. The camera turns slower on purpose, so a
   // held turn swings the tractor out to the side of frame with its flank and
   // the fresh track in view, and the camera never quite catches up until the
@@ -5121,7 +5121,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private getCameraZoom(forceMode?: ViewMode): number {
     const mode = forceMode ?? this.viewMode;
     const layout = this.getLayout();
-    const mobileMultiplier = layout.mode === 'mobilePortrait' ? 1.12 : 1;
+    const mobileMultiplier =
+      layout.mode === 'mobilePortrait' ? (mode === 'tactical' ? 1.12 : 0.72) : 1;
     if (mode === 'tactical') return this.cameraLab.tacticalZoom * mobileMultiplier;
 
     const pullback = mode === 'hybrid' ? this.getHybridPullbackAmount() * this.cameraLab.tacticalPullbackStrength : 0;
