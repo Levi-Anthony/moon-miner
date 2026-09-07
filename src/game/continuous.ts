@@ -156,6 +156,8 @@ export interface ContinuousTuning {
   reclaimMinFieldAgeSeconds: number;
   reclaimMinFieldValue: number;
   reclaimMinClusterPayload: number;
+  droneLaunchCost: number;
+  droneLaunchCooldownSeconds: number;
   reclaimMinDistanceFromRover: number;
   reclaimLockSeconds: number;
   allowCloseReclaim: boolean;
@@ -198,6 +200,8 @@ export interface ContinuousWorldState {
   solarSeconds: number;
   solarWindowSeconds: number;
   elapsedSeconds: number;
+  lastDroneLaunchAtSeconds: number;
+  dronePendingLaunchCost: number;
   phase: ContinuousPhase;
   speedState: SpeedState;
   arms: ArmAllocation;
@@ -249,6 +253,8 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   reclaimMinFieldAgeSeconds: 2.2,
   reclaimMinFieldValue: 0.08,
   reclaimMinClusterPayload: 1.8,
+  droneLaunchCost: 2.2,
+  droneLaunchCooldownSeconds: 9,
   reclaimMinDistanceFromRover: 26,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
   allowCloseReclaim: false,
@@ -387,6 +393,8 @@ export function createContinuousWorld(
     solarSeconds: solarWindowSeconds,
     solarWindowSeconds,
     elapsedSeconds: 0,
+    lastDroneLaunchAtSeconds: -1000,
+    dronePendingLaunchCost: 0,
     phase: 'playing',
     speedState: 'fabricating',
     arms: allocateArms('fabricating', false, false, 'ready'),
@@ -432,7 +440,16 @@ export function launchReclaimDrone(state: ContinuousWorldState): ContinuousComma
   const preview = getReclaimPreview(state);
   if (!preview) return fail(state, diagnostics.blockedReason ?? 'No reclaimable field yet.');
 
+  // The drone burns stock to fly. Without this the button is free, and every
+  // measurement said the same thing: launching more was monotonically better,
+  // so there was never a reason not to press it the instant it lit.
+  const sinceLast = state.elapsedSeconds - state.lastDroneLaunchAtSeconds;
+  const window = Math.max(0.001, state.tuning.droneLaunchCooldownSeconds);
+  const surcharge = state.tuning.droneLaunchCost * clamp(1 - sinceLast / window, 0, 1);
+
   const next = cloneContinuousWorld(state);
+  next.lastDroneLaunchAtSeconds = state.elapsedSeconds;
+  next.dronePendingLaunchCost = surcharge;
   const patch = next.fields.find((field) => field.id === preview.targetPatchId);
   if (!patch) return fail(state, 'No old field is far enough to reclaim.');
 
@@ -746,8 +763,8 @@ function advanceDrone(state: ContinuousWorldState, deltaSeconds: number): void {
     moveDroneToward(state, state.rover, deltaSeconds);
     state.drone.etaSeconds = distance(state.drone, state.rover) / state.tuning.droneSpeed;
     if (distance(state.drone, state.rover) <= 16) {
-      const delivered = state.drone.payload;
-      state.nanobots = Math.min(state.maxNanobots, state.nanobots + delivered);
+      const delivered = state.drone.payload - state.dronePendingLaunchCost;
+      state.nanobots = clamp(state.nanobots + delivered, 0, state.maxNanobots);
       state.drone = {
         status: 'ready',
         x: state.rover.x,
