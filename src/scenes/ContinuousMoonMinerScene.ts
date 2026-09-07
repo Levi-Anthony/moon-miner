@@ -110,6 +110,8 @@ interface CameraLabSettings {
   cameraYawRate: number;
   cameraMaxYawLag: number;
   cameraYawDeadzone: number;
+  cameraPitchDegrees: number;
+  cameraRigDistance: number;
   projectedYScale: number;
   projectionShear: number;
   depthScaleStrength: number;
@@ -359,6 +361,8 @@ const DEFAULT_CAMERA_LAB_SETTINGS: CameraLabSettings = {
   cameraYawRate: 1.1,
   cameraMaxYawLag: 74,
   cameraYawDeadzone: 6,
+  cameraPitchDegrees: 32,
+  cameraRigDistance: 250,
   projectedYScale: 1,
   projectionShear: 0,
   depthScaleStrength: 0,
@@ -409,7 +413,9 @@ const CAMERA_PRESETS: CameraPresetDefinition[] = [
       horizonVisible: true,
       cameraYawRate: 1.1,
       cameraMaxYawLag: 74,
-      cameraYawDeadzone: 6
+      cameraYawDeadzone: 6,
+      cameraPitchDegrees: 32,
+      cameraRigDistance: 250
     }
   },
 ];
@@ -2361,26 +2367,64 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // Ground used to be drawn one shade off the sky, which is why the world read
   // as a void. Lay it down in depth bands instead: warm lit dust close to the
   // tractor falling away to cold haze at the horizon.
+  private horizonScreenY(): number {
+    const rig = this.cameraRig();
+    return this.getCameraCenter().y - (rig.focal * rig.sin) / rig.cos;
+  }
+
+  // Sky only exists once there is a horizon to put it under: dusty just above
+  // the ground, falling to deep black overhead, with stars thinning downward.
+  private drawSky(): void {
+    const layout = this.getLayout();
+    const horizon = this.horizonScreenY();
+    const top = layout.hudHeight;
+    if (horizon <= top) return;
+
+    const SKY_BANDS = 18;
+    for (let index = 0; index < SKY_BANDS; index += 1) {
+      const t0 = index / SKY_BANDS;
+      const t1 = (index + 1) / SKY_BANDS;
+      const shade = ContinuousMoonMinerScene.mixColor(0x05070e, 0x2f3444, Math.pow(t0, 1.6));
+      this.graphics.fillStyle(shade, 1);
+      this.graphics.fillRect(0, top + (horizon - top) * t0, layout.width, (horizon - top) * (t1 - t0) + 1);
+    }
+
+    for (let index = 0; index < 90; index += 1) {
+      const x = (((index * 373) % 1000) / 1000) * layout.width;
+      const bias = Math.pow(((index * 173) % 1000) / 1000, 1.5);
+      const y = top + (horizon - top) * bias;
+      const twinkle = 0.25 + (((index * 37) % 100) / 100) * 0.5;
+      this.graphics.fillStyle(index % 7 === 0 ? 0xcfe6ff : 0x8fa3bd, twinkle * (1 - bias * 0.75));
+      this.graphics.fillCircle(x, y, index % 11 === 0 ? 1.6 : 1);
+    }
+  }
+
   private drawRegolith(): void {
+    this.drawSky();
     const NEAR = -360;
-    const FAR = 540;
-    const BANDS = 40;
+    const FAR = 2600;
+    const BANDS = 34;
     const nearColor = 0x7d7061;
     const farColor = 0x1b2130;
 
+    const layout = this.getLayout();
+    const horizon = this.horizonScreenY();
+    this.graphics.fillStyle(farColor, 1);
+    this.graphics.fillRect(0, horizon, layout.width, layout.height - horizon);
+
     for (let index = 0; index < BANDS; index += 1) {
-      const t0 = index / BANDS;
-      const t1 = (index + 1) / BANDS;
+      const t0 = Math.pow(index / BANDS, 2.1);
+      const t1 = Math.pow((index + 1) / BANDS, 2.1);
       const forward0 = NEAR + (FAR - NEAR) * t0;
       const forward1 = NEAR + (FAR - NEAR) * t1;
-      const shade = ContinuousMoonMinerScene.mixColor(nearColor, farColor, Math.pow(t0, 0.7));
+      const shade = ContinuousMoonMinerScene.mixColor(nearColor, farColor, Math.pow(index / BANDS, 0.55));
       this.graphics.fillStyle(shade, 1);
       this.graphics.fillPoints(
         [
-          this.project(this.cameraLocalPoint(-1400, forward0)),
-          this.project(this.cameraLocalPoint(1400, forward0)),
-          this.project(this.cameraLocalPoint(1400, forward1)),
-          this.project(this.cameraLocalPoint(-1400, forward1))
+          this.project(this.cameraLocalPoint(-(900 + forward0 * 2.2), forward0)),
+          this.project(this.cameraLocalPoint(900 + forward0 * 2.2, forward0)),
+          this.project(this.cameraLocalPoint(900 + forward1 * 2.2, forward1)),
+          this.project(this.cameraLocalPoint(-(900 + forward1 * 2.2), forward1))
         ],
         true,
         true
@@ -2400,10 +2444,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     // Haze band where ground meets sky.
-    const hazeNear = this.project(this.cameraLocalPoint(-1400, FAR * 0.82));
-    const hazeFar = this.project(this.cameraLocalPoint(1400, FAR));
-    this.graphics.fillStyle(0x2b3444, 0.55);
-    this.graphics.fillRect(0, hazeFar.y - 6, this.getLayout().width, Math.max(4, hazeNear.y - hazeFar.y + 10));
+    for (let index = 0; index < 7; index += 1) {
+      const spread = 4 + index * 7;
+      this.graphics.fillStyle(0x39414f, 0.16 - index * 0.02);
+      this.graphics.fillRect(0, horizon - spread * 0.35, this.getLayout().width, spread);
+    }
   }
 
   private drawTacticalBackdrop(layout: SceneLayout, visualCalm: number): void {
@@ -4937,6 +4982,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     };
   }
 
+  private cameraRig(): { sin: number; cos: number; distance: number; height: number; focal: number } {
+    const pitch = (clamp(this.cameraLab.cameraPitchDegrees, 8, 80) * Math.PI) / 180;
+    const distance = Math.max(40, this.cameraLab.cameraRigDistance);
+    const sin = Math.sin(pitch);
+    const cos = Math.cos(pitch);
+    const height = distance * (sin / cos);
+    const depthAtFocus = distance / cos;
+    return { sin, cos, distance, height, focal: this.getCameraZoom() * depthAtFocus };
+  }
+
   private project(point: Vec2): Vec2 {
     const center = this.getCameraCenter();
     const zoom = this.getCameraZoom();
@@ -4955,9 +5010,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const offset = { x: point.x - camera.x, y: point.y - camera.y };
     const lateral = offset.x * axes.right.x + offset.y * axes.right.y;
     const forward = offset.x * axes.forward.x + offset.y * axes.forward.y;
+    const rig = this.cameraRig();
+    const along = forward + rig.distance;
+    const depth = Math.max(24, along * rig.cos + rig.height * rig.sin);
+    const up = along * rig.sin - rig.height * rig.cos;
     return {
-      x: center.x + (lateral + forward * this.cameraLab.projectionShear) * zoom,
-      y: center.y - forward * this.cameraLab.projectedYScale * zoom
+      x: center.x + (rig.focal * lateral) / depth,
+      y: center.y - (rig.focal * up) / depth
     };
   }
 
@@ -4976,8 +5035,18 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     const axes = this.cameraAxes();
-    const forward = (center.y - point.y) / (this.cameraLab.projectedYScale * zoom);
-    const lateral = (point.x - center.x) / zoom - forward * this.cameraLab.projectionShear;
+    const rig = this.cameraRig();
+    const normalizedX = (point.x - center.x) / rig.focal;
+    const normalizedY = (center.y - point.y) / rig.focal;
+    const denominator = rig.sin - normalizedY * rig.cos;
+    // At or above the horizon the ray never meets the ground; hold it far out.
+    const along = Math.abs(denominator) < 1e-4
+      ? 100000
+      : (rig.height * (rig.cos + normalizedY * rig.sin)) / denominator;
+    const clampedAlong = clamp(along, 1, 100000);
+    const depth = clampedAlong * rig.cos + rig.height * rig.sin;
+    const forward = clampedAlong - rig.distance;
+    const lateral = normalizedX * depth;
     return {
       x: camera.x + axes.right.x * lateral + axes.forward.x * forward,
       y: camera.y + axes.right.y * lateral + axes.forward.y * forward
@@ -4987,15 +5056,28 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private projectedScale(point: Vec2): number {
     const zoom = this.getCameraZoom();
     if (this.usesTacticalProjection() && !this.tacticalPerspectiveEnabled()) return zoom;
-    const layout = this.getLayout();
-    const screen = this.project(point);
-    const normalizedDepth = clamp((screen.y - layout.hudHeight) / (layout.height - layout.hudHeight), 0, 1);
-    const perspective = 1 - this.cameraLab.projectedScaleStrength * 0.5 + normalizedDepth * this.cameraLab.projectedScaleStrength;
-    return zoom * clamp(perspective, 0.45, 1.8);
+    if (this.usesTacticalProjection()) {
+      const layout = this.getLayout();
+      const screen = this.project(point);
+      const normalizedDepth = clamp((screen.y - layout.hudHeight) / (layout.height - layout.hudHeight), 0, 1);
+      const perspective = 1 - this.cameraLab.projectedScaleStrength * 0.5 + normalizedDepth * this.cameraLab.projectedScaleStrength;
+      return zoom * clamp(perspective, 0.45, 1.8);
+    }
+
+    const camera = this.cameraFocus();
+    const axes = this.cameraAxes();
+    const offset = { x: point.x - camera.x, y: point.y - camera.y };
+    const forward = offset.x * axes.forward.x + offset.y * axes.forward.y;
+    const rig = this.cameraRig();
+    const depth = Math.max(24, (forward + rig.distance) * rig.cos + rig.height * rig.sin);
+    return clamp(rig.focal / depth, zoom * 0.25, zoom * 3);
   }
 
   private shapeYScale(): number {
-    return this.usesTacticalProjection() && !this.tacticalPerspectiveEnabled() ? 1 : this.cameraLab.projectedYScale;
+    if (this.usesTacticalProjection()) {
+      return this.tacticalPerspectiveEnabled() ? this.cameraLab.projectedYScale : 1;
+    }
+    return this.cameraRig().sin;
   }
 
   private cameraFocus(): Vec2 {
