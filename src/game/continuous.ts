@@ -267,7 +267,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // -- but it cut the payload with it. Doubling the recovery restores the same
   // economy from a third of the road: the ladder is unchanged and crawl is back
   // where it was. Swept 1 to 4; above 2 the tank caps and the extra is wasted.
-  reclaimYieldMultiplier: 2,
+  reclaimYieldMultiplier: 3,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
   allowCloseReclaim: false,
   allowLowPayloadLaunch: false,
@@ -297,14 +297,25 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // legal to lift and still felt exactly like "it takes the road behind me".
   // The freshest stretch of trail is never spendable, whatever its shape.
   reclaimMinFieldAgeSeconds: 4,
-  reclaimMinDistanceFromRover: 22,
+  // 22 put the drone at the tractor's elbow -- it landed 44 to 66 units away,
+  // about one road width, which is why reclaim kept reading as "too close" even
+  // after the corridor stopped it taking the trail. The drone should visibly go
+  // somewhere else. Swept against the route ladder with the radius and yield
+  // below: every combination holds the ladder, so these are chosen on feel
+  // rather than economy. Nothing here was load-bearing; it only looked it.
+  // 90 and not more: it roughly doubles the landing distance (48 -> 96) while
+  // every route shape keeps its supply. At 150 a tight loop can never reclaim
+  // at all, which would kill the best answer the corridor has.
+  reclaimMinDistanceFromRover: 90,
   reclaimMinFieldValue: 0.06,
   reclaimMinClusterPayload: 1.8,
   minReclaimClusterPayload: 0.12,
   allowCloseReclaim: false,
   allowLowPayloadLaunch: false,
   droneSpeed: 160,
-  dronePickupRadius: 185,
+  // 185 was four field-radii -- a swathe rather than a stretch. 70 lifts a
+  // short run of road you can see disappear as a piece.
+  dronePickupRadius: 70,
   reclaimLockSeconds: 0.35,
   lowStockWarningRatio: 0.14,
   droneUrgencyRatio: 0.24,
@@ -537,6 +548,12 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
   }
 
   if (state.speedState === 'crawl') {
+    // The drone check has to come first. Crawling with the drone already out
+    // read as "Nothing to reclaim" on screen while the HUD beside it counted
+    // down the haul it was bringing back.
+    if (state.drone.status !== 'ready') {
+      return { objective: 'Out of road', nudge: 'Drone is inbound. It meets you wherever you are.' };
+    }
     return getReclaimPreview(state)
       ? { objective: 'Out of road', nudge: 'Crawling. Space sends the drone.' }
       : { objective: 'Out of road', nudge: 'Nothing to reclaim. Cut away from your line home.' };

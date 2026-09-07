@@ -95,7 +95,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(stable?.tuning.startingNanobots).toBe(6);
     expect(stable?.tuning.maxNanobots).toBe(24);
     expect(stable?.tuning.reclaimMinFieldAgeSeconds).toBe(4);
-    expect(stable?.tuning.reclaimMinDistanceFromRover).toBe(22);
+    expect(stable?.tuning.reclaimMinDistanceFromRover).toBe(90);
     expect(stable?.tuning.reclaimMinFieldValue).toBe(0.06);
     expect(stable?.tuning.minReclaimClusterPayload).toBe(0.12);
     expect(stable?.tuning.droneUrgencyRatio).toBe(0.24);
@@ -528,9 +528,9 @@ describe('continuous Moon Miner spike rules', () => {
     expect(preview).toBeDefined();
     expect(preview?.targetPatchId).toBe(launched.drone.targetPatchId);
     expect(preview?.fieldCount).toBe(2);
-    // Doubled by reclaimYieldMultiplier. What this assertion is actually for is
+    // Scaled by reclaimYieldMultiplier. What this assertion is actually for is
     // that the preview and the launch read the same number, which still holds.
-    expect(preview?.payload).toBeCloseTo(18);
+    expect(preview?.payload).toBeCloseTo(27);
     expect(preview?.etaSeconds).toBeCloseTo(
       (distance(world.rover, launched.drone.target ?? world.rover) * 2) / world.tuning.droneSpeed + world.tuning.reclaimLockSeconds
     );
@@ -548,12 +548,21 @@ describe('continuous Moon Miner spike rules', () => {
     expect(getReclaimPreview(world)).toBeUndefined();
   });
 
-  it('will claim set road close behind the tractor, not only field it did not need', () => {
+  it('will not claim road close behind the tractor, however old it is', () => {
+    // This test used to assert the opposite, from a time when a reclaim at the
+    // tractor's elbow was the point. In play it reads as the drone eating the
+    // ground under you, so the rule is inverted: age does not buy proximity.
     const world = createContinuousWorld();
     world.fields = [{ id: 1, x: world.rover.x - 40, y: world.rover.y, radius: 44, value: 1, age: 8 }];
     world.nextFieldId = 2;
 
-    expect(getReclaimPreview(world)?.targetPatchId).toBe(1);
+    expect(getReclaimPreview(world)).toBeUndefined();
+
+    const further = createContinuousWorld();
+    further.fields = [{ id: 1, x: further.rover.x - 200, y: further.rover.y, radius: 44, value: 1, age: 8 }];
+    further.nextFieldId = 2;
+
+    expect(getReclaimPreview(further)?.targetPatchId).toBe(1);
   });
 
   it('reports a precise drone launch blocked reason when no reclaim target exists', () => {
@@ -974,13 +983,13 @@ describe('continuous Moon Miner spike rules', () => {
     let launched = false;
     let checked = false;
 
-    for (let frame = 0; frame < 60 * 30; frame += 1) {
+    for (let frame = 0; frame < 60 * 34; frame += 1) {
       const before = new Map(world.fields.map((field) => [field.id, field]));
       const roverAtTick = { ...world.rover };
       world = tickContinuousWorld(world, { steer: frame > 360 ? 0.42 : 0, throttle: 1, brake: false, driveIntent: true }, step);
       if (world.phase !== 'playing') break;
 
-      if (!launched && frame > 60 * 12 && getReclaimPreview(world)) {
+      if (!launched && frame > 60 * 10 && getReclaimPreview(world)) {
         const result = launchReclaimDrone(world);
         if (result.state !== world) {
           world = result.state;
