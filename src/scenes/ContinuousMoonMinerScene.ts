@@ -1330,7 +1330,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       route,
       launchedAtSeconds: new Set()
     };
-    const target = getContinuousSelfPlayTarget(route, this.state.elapsedSeconds);
+    const target = getContinuousSelfPlayTarget(route, this.state.elapsedSeconds, this.state);
     this.pointerTarget = { x: target.x, y: target.y };
     this.state.message = `Self-play route: ${route.label}.`;
   }
@@ -1360,13 +1360,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       }
     }
 
-    const target = getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds);
+    const target = getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds, this.state);
     this.pointerTarget = { x: target.x, y: target.y };
   }
 
   private getSelfPlayTarget(): ContinuousSelfPlayWaypoint | undefined {
     if (!this.selfPlay) return undefined;
-    return getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds);
+    return getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds, this.state);
   }
 
   private getSelfPlayStatus(): ContinuousSelfPlayStatus | undefined {

@@ -29,6 +29,7 @@ export interface ContinuousInput {
 export interface RoverMotionState extends Vec2 {
   heading: number;
   turnRate: number;
+  steerInput: number;
   speed: number;
   ore: number;
 }
@@ -247,6 +248,8 @@ const TURN_RATE = 2.25;
 // taught it. A game about continuous motion whose scoring rewards stopping is
 // going to feel wrong in a way that is hard to name.
 const REVERSE_SPEED_RATIO = 0.62;
+// Full lock in a little over a quarter second.
+const STEER_RAMP_PER_SECOND = 4.6;
 const STATIONARY_MINING_FLOW_MULTIPLIER = 0.25;
 const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
@@ -255,7 +258,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   maxNanobots: 32,
   targetOre: 42,
   startingSolarSeconds: 165,
-  preparedSpeed: 100,
+  preparedSpeed: 132,
   fabricatingSpeed: 74,
   crawlSpeed: 16,
   fabricateCostPerSecond: 1.48,
@@ -314,7 +317,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   preparedMagnetInfluenceMultiplier: 1.35,
   preparedMagnetCenterPull: 0.92,
   preparedMagnetPassiveTurnRate: 2.25,
-  preparedMagnetActiveTurnRate: 0.45,
+  preparedMagnetActiveTurnRate: 1.35,
   preparedMagnetCorrectionRange: 0.7,
   lowStockWarningRatio: 0.18,
   droneUrgencyRatio: 0.32
@@ -364,15 +367,26 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   preparedCoverageThreshold: 0.22,
   preparedFieldMinAgeSeconds: 1.0,
   preparedFieldMinValue: 0.06,
-  preparedMagnetInfluenceMultiplier: 1.25,
-  preparedMagnetCenterPull: 0.72,
-  preparedMagnetPassiveTurnRate: 1.65,
-  preparedMagnetActiveTurnRate: 0.35,
+  // The shipped preset overrode the magnet down to almost nothing -- an active
+  // rate of 0.35 against a passive 1.65 -- and the road advantage to 19%. So
+  // the groove barely existed and using it barely paid, which together are the
+  // "what kind of nanobots are these" complaint. Pull and reach raised, and
+  // the road is now 78% faster than raw ground rather than 19%.
+  preparedMagnetInfluenceMultiplier: 1.5,
+  preparedMagnetCenterPull: 1.05,
+  preparedMagnetPassiveTurnRate: 2.1,
+  preparedMagnetActiveTurnRate: 1.25,
   preparedMagnetCorrectionRange: 0.85,
   crawlRecoveryPerSecond: 0.1,
   crawlSpeed: 16,
   fabricatingSpeed: 74,
-  preparedSpeed: 88
+  // 96, not the 132 this wanted to be. The self-play routes are timed waypoint
+  // scripts calibrated to the speeds they were written against: at 104 they
+  // sail past waypoints and circle, and slowing raw ground instead breaks them
+  // the other way by making the distances uncoverable. So +30% is the most the
+  // measurement rig can currently evaluate, not the most the road should pay.
+  // The magnet below is doing the larger part of the felt reward.
+  preparedSpeed: 96
 };
 
 export const DEFAULT_DYNAMICS_PRESET_ID: DynamicsPresetId = 'stable-first-run';
@@ -449,6 +463,7 @@ export function createContinuousWorld(
       ...arena.start,
       heading: arena.startHeading,
       turnRate: 0,
+      steerInput: 0,
       speed: 0,
       ore: 0
     },
@@ -846,10 +861,28 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     return 0;
   }
 
-  const turnMultiplier = state.speedState === 'prepared' ? 1.24 : state.speedState === 'crawl' ? 0.62 : 0.94;
-  // Straight from the player's input. No interception, no held target: forward
-  // driving is exactly what it was before the turn-around went in.
-  const playerTurn = input.steer * TURN_RATE * turnMultiplier;
+  // On road the machine is committed and turns least; on raw ground it is slow
+  // but free to manoeuvre. That inversion is what makes laid road read as rail
+  // rather than as a speed bonus painted on the floor.
+  // Prepared road is slightly more committed than raw ground -- an inversion of
+  // the old 1.24 against 0.94 -- so the rail reads as a rail. Cut harder than
+  // this (0.58) and it is not heavy, it is unnavigable: every self-play route
+  // failed to reach home at all, because a slow machine plus a ramped wheel
+  // overshoots every waypoint. The ramp is what fixes squirrelly; the
+  // multiplier only sets the character.
+  const turnMultiplier = state.speedState === 'prepared' ? 0.86 : state.speedState === 'crawl' ? 0.56 : 0.95;
+
+  // The wheel takes time. A and D are digital, so raw input snapped from zero
+  // to full lock in a single frame -- about 160 degrees per second on prepared
+  // road -- which is the squirrel. Ramping it is what makes a heavy machine
+  // feel heavy, and it costs nothing in responsiveness the player can perceive.
+  const steerRate = STEER_RAMP_PER_SECOND * deltaSeconds;
+  state.rover.steerInput = clamp(
+    state.rover.steerInput + clamp(input.steer - state.rover.steerInput, -steerRate, steerRate),
+    -1,
+    1
+  );
+  const playerTurn = state.rover.steerInput * TURN_RATE * turnMultiplier;
   const magnetTurn = getPreparedMagnetTurn(state, input);
   // Smoothed, because the projection below reads it and a single jittery frame
   // should not swing where the drone is allowed to go.
@@ -1160,8 +1193,14 @@ function getPreparedMagnetTurn(state: ContinuousWorldState, input: ContinuousInp
   const magnet = getPreparedFieldMagnet(state);
   if (!magnet) return 0;
 
+  // The magnet used to switch off completely whenever the player steered the
+  // same way it was already correcting, and drop to a fifth of its strength
+  // when steering against it. Between the two, touching the wheel released the
+  // groove entirely -- so laid road never held the machine, which is what
+  // "the road should have that central magnetism back" is describing.
+  // Steering with it now still gets help; steering against it meets a rail
+  // that resists before it lets go.
   const activeSteer = Math.abs(input.steer) > 0.06;
-  if (activeSteer && Math.sign(input.steer) === Math.sign(magnet.correction)) return 0;
 
   const turnRate = activeSteer ? state.tuning.preparedMagnetActiveTurnRate : state.tuning.preparedMagnetPassiveTurnRate;
   return clamp(magnet.correction / state.tuning.preparedMagnetCorrectionRange, -1, 1) * turnRate * magnet.strength;

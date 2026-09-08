@@ -185,8 +185,13 @@ export function getDefaultContinuousSelfPlayRouteId(arenaId: ContinuousArenaId =
 
 export function getContinuousSelfPlayTarget(
   route: ContinuousSelfPlayRoute,
-  elapsedSeconds: number
+  elapsedSeconds: number,
+  world?: ContinuousWorldState
 ): ContinuousSelfPlayWaypoint {
+  // Time-based, deliberately. An arrival-based advance was tried to make the
+  // routes survive a faster machine, and it defeated dwelling: a route that
+  // skips a waypoint the moment it arrives never stays on a seam long enough
+  // to mine it, and every rung collapsed. The dwell IS the time gate.
   return route.waypoints.find((waypoint) => elapsedSeconds <= waypoint.untilSeconds) ?? route.waypoints[route.waypoints.length - 1];
 }
 
@@ -231,7 +236,7 @@ export function runContinuousSelfPlay(options: {
       }
     }
 
-    const target = getContinuousSelfPlayTarget(route, world.elapsedSeconds);
+    const target = getContinuousSelfPlayTarget(route, world.elapsedSeconds, world);
     const previous = world;
     world = tickContinuousWorld(world, getContinuousSelfPlayInput(world, target), deltaSeconds);
     recordContinuousLoopTick(trace, previous, world, deltaSeconds);

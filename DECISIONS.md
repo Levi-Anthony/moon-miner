@@ -629,3 +629,46 @@ richness pips and scar marks were all already there. Every constant in them was
 calibrated against the old five-seam strip, and none of them was re-checked
 when the field became three graded rings. Numbers survive the thing they were
 measured against, and they do not announce it.
+
+## 2026-09-08: The Wheel Takes Time, And The Groove Holds
+
+Squirrelly forward steering was mine, from the turn-around cleanup. A and D are
+digital, so raw input snapped from zero to full lock in one frame -- about 160
+degrees per second on prepared road. There was no ramp anywhere. The wheel now
+takes a little over a quarter second to reach lock: 2 degrees at 0.1s, 11 at
+0.25s, 83 at one second. That is the whole of the squirrel.
+
+Turn rates on top of it, cut but not as far as the first attempt. Prepared road
+turns least and raw ground most, inverting the old 1.24 against 0.94, so laid
+road reads as commitment rather than as a speed bonus painted on the floor. The
+first cut went to 0.58 and was not heavy, it was unnavigable -- every self-play
+route failed to reach home, because a slow machine plus a ramped wheel
+overshoots every waypoint.
+
+The magnetism was not missing, it was disabled by its own conditions. It
+returned zero outright whenever the player steered the same way it was already
+correcting, and the shipped preset set its active rate to 0.35 against a
+passive 1.65. Between the two, touching the wheel released the groove
+completely. It now applies whether or not you are steering, at 1.25 active
+against 2.1 passive, with more reach and pull. Isolated, the stronger magnet is
+worth 22.2 ore against 10.9 on the same route -- it helps the machine hold its
+own road rather than fighting it.
+
+Now the uncomfortable part, recorded because it constrains the answer. The road
+should pay much more than it does. It pays 30%. It wanted to pay 78%, and the
+measurement rig cannot evaluate that: the self-play routes are timed waypoint
+scripts calibrated to the speeds they were authored against, and raising
+prepared speed from 96 to 104 flips deepLobe from 22.8 ore to a loss -- not
+because the game got worse but because the script sails past a waypoint it is
+still steering at and circles for the rest of the run. Slowing raw ground to
+widen the same ratio breaks them the other way, by making the distances
+uncoverable.
+
+An arrival-based waypoint advance was tried to fix that and made it worse: a
+route that skips a waypoint the moment it arrives never dwells long enough to
+mine, and every rung collapsed. The dwell IS the time gate. Reverted.
+
+So 96 is what the instrument can currently see, not what the road should pay.
+The honest next step for this is a self-play controller that steers toward a
+waypoint and holds until the seam is worked, rather than until the clock says
+so -- at which point the road can pay what it should.
