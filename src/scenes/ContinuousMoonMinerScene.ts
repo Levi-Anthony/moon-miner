@@ -3932,10 +3932,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         color = 0xffd35a;
         width = 4;
       } else if (role === 'emergency') {
-        target = this.pointFromHeading(rover, rover.heading + angle, 25 + (index % 2) * 8);
-        target.y += 8;
+        // Canon calls these "tiny millipede-like emergency reclaim legs". At a
+        // reach of 25 to 33 they sat inside the chassis silhouette and were
+        // simply invisible -- the whole humiliating-crawl beat rendered as a
+        // red arc. Out past the body, splayed wide, and scuttling out of phase
+        // with each other so the machine looks like it is dragging itself.
+        const scuttle = Math.sin(this.time.now / 105 + index * 2.1) * 6;
+        target = this.pointFromHeading(rover, rover.heading + angle * 1.12, 46 + (index % 2) * 9 + scuttle);
+        target.y += 10;
         color = 0xff765f;
-        width = 3;
+        width = 2.6;
       } else {
         target = this.pointFromHeading(rover, rover.heading + angle, 40);
       }
@@ -4025,7 +4031,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // The business end. Each duty gets a silhouette you can tell apart at a
   // glance, because telling them apart at a glance is the entire job.
   private drawArmTool(tip: { x: number; y: number }, color: number, scale: number, role: ArmRole, index: number): void {
-    const size = Math.max(2.6, 4.6 * scale);
+    const size = Math.max(2.3, 3.9 * scale);
 
     if (role === 'building') {
       // A printing head: a square nozzle laying field.
