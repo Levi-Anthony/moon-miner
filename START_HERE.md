@@ -254,6 +254,8 @@ Two things not to assume from that:
 
 Do not let an agent say "all checks pass" unless it names the date, the branch, and the commit it measured. Re-run the commands; do not quote this section as evidence.
 
+Since September 8, 2026 these checks also run in GitHub Actions on every push and pull request, so a red result shows up on the pull request instead of waiting for someone to notice. That is the actual fix for how this section went stale: it was hand-maintained, and nothing re-ran the commands for two months.
+
 ## When Something Goes Wrong
 
 If `npm run dev` fails:

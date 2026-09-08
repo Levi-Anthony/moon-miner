@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes an in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Tests, build, smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The smoke check resolves a browser in this order: CHROME_PATH, a system
+      # browser, PLAYWRIGHT_BROWSERS_PATH, then Playwright's own install. This
+      # step feeds the last of those.
+      - name: Install Chromium for the smoke check
+        run: npx playwright install --with-deps chromium
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      # Runs even when the build fails, so one red step does not hide the other.
+      - name: Browser smoke
+        if: '!cancelled()'
+        run: npm run smoke:continuous
+
+      # Deterministic, so it belongs on every change. npm audit does not, and
+      # lives in audit.yml on a schedule instead.
+      - name: Last Light route report
+        if: '!cancelled()'
+        run: npm run report:last-light

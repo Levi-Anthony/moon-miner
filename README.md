@@ -51,6 +51,8 @@ npm run verify:full
 
 Current proof status as of 2026-09-08, measured on `main` at `787d502` plus the lockfile fix in this change: `npm test` (62 tests), `npm run build`, `npm audit`, and `npm run smoke:continuous` all pass. `npm run verify`, `npm run verify:known-green`, and `npm run verify:full` all exit 0.
 
+These also run automatically. `.github/workflows/ci.yml` runs tests, build, browser smoke and the Last Light report on every push and pull request; `.github/workflows/audit.yml` runs `npm audit` weekly on a schedule, deliberately separate so a newly published advisory cannot turn a code change red.
+
 Proof status is per branch and per day. Smoke passes on `main` but fails on the open PR #1 branch with `Expected tactical view mode, got chase.`, and `npm audit` can turn red with no code change when new advisories publish. Re-run the commands rather than quoting this paragraph.
 
 The current acceptance loop is: rally through extraction seams, mine most average deposits during the first traversal or while briefly parked on prepared seam, use prepared nano-field as a faster/cleaner road with medium magnetic grip through forks and turns, launch the drone to reclaim old field, recover from starvation through emergency crawl, and meet the ore quota before the solar window closes.

@@ -1,0 +1,32 @@
+name: Audit
+
+# Deliberately not part of CI. npm audit reads a live advisory feed, so it can
+# turn red with no code change at all - which is exactly what happened here
+# between July and September 2026, while the docs still claimed it was clean.
+# Gating every change on it would make a green run mean "nothing broke, and
+# also nobody published an advisory today." Those are different questions, so
+# they get different workflows.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: npm audit
+        run: npm run verify:audit
