@@ -11,6 +11,7 @@ import {
   type FieldPatch,
   getReclaimPreview,
   isRoadSpendable,
+  isRoverAtExtraction,
   launchReclaimDrone,
   resolveContinuousTuning,
   tickContinuousWorld,
@@ -931,6 +932,73 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       return new URLSearchParams(window.location.search).get('shift') !== '0';
     } catch {
       return true;
+    }
+  }
+
+  // Every finished run writes itself somewhere I can read. The loop trace has
+  // always recorded exactly the right things -- the canon's own success test,
+  // fieldCommit / overextension / emergencyCrawl / droneRecovery, with position,
+  // stock, ore and time in each speed state -- and it lived in memory, was
+  // reachable only from the player's own console, and was wiped at the start of
+  // the next run. So six passes of tuning were argued from self-play routes
+  // instead of from how the game is actually played. This closes that.
+  private async recordRunTrace(): Promise<void> {
+    const claude = (window as unknown as { claude?: { use?: (name: string) => Promise<unknown> } }).claude;
+    if (!claude?.use) return;
+
+    try {
+      const db = (await claude.use('db')) as
+        | { doc: (path: string) => { set: (value: Record<string, unknown>) => Promise<unknown> } }
+        | null;
+      if (!db) return;
+
+      const summary = getContinuousLoopSummary(this.loopTrace);
+      const id = `${Date.now()}`;
+      await db.doc(`runs/${id}`).set({
+        recordedAt: new Date().toISOString(),
+        shift: this.shiftNumber,
+        carriedIn: this.carriedIn,
+        survivedTheNight: this.survivedTheNight,
+        arenaId: this.state.arenaId,
+        result: this.state.phase,
+        message: this.state.message,
+        ore: Number(this.state.rover.ore.toFixed(2)),
+        oreRequired: this.state.arena.extraction?.oreRequired ?? this.state.targetOre,
+        solarRemaining: Number(this.state.solarSeconds.toFixed(2)),
+        solarWindow: this.state.solarWindowSeconds,
+        elapsed: Number(this.state.elapsedSeconds.toFixed(2)),
+        reachedExtraction: isRoverAtExtraction(this.state),
+        // The four beats the design says the run has to have.
+        milestones: summary.milestones.map((milestone) => ({
+          id: milestone.id,
+          hit: milestone.hit,
+          atSeconds: milestone.atSeconds === undefined ? null : Number(milestone.atSeconds.toFixed(2))
+        })),
+        hitLoop: summary.hitLoop,
+        lowestNanobots: Number(summary.lowestNanobots.toFixed(2)),
+        deliveredNanobots: Number(summary.deliveredNanobots.toFixed(2)),
+        droneLaunches: summary.droneLaunches,
+        droneDeliveries: summary.droneDeliveries,
+        // Where the time actually went, which is the question every "it feels
+        // weird" report has really been about.
+        secondsCrawling: Number(summary.speedSeconds.crawl.toFixed(2)),
+        secondsFabricating: Number(summary.speedSeconds.fabricating.toFixed(2)),
+        secondsPrepared: Number(summary.speedSeconds.prepared.toFixed(2)),
+        // Trimmed so one document can never approach the size limit.
+        events: this.loopTrace.events.slice(-60).map((event) => ({
+          kind: event.kind,
+          at: Number(event.atSeconds.toFixed(2)),
+          speed: event.speedState,
+          drone: event.droneStatus,
+          nanobots: Number(event.nanobots.toFixed(2)),
+          ore: Number(event.ore.toFixed(2)),
+          x: Math.round(event.x),
+          y: Math.round(event.y)
+        }))
+      });
+    } catch {
+      // No store in this view, or the write was refused. A run that cannot be
+      // recorded still has to be playable.
     }
   }
 
@@ -2351,7 +2419,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.addEffect(this.state.phase === 'won' ? 'win' : 'loss', this.state.rover.x, this.state.rover.y, 1200);
       // The shift ends whether you made quota or not. What you laid well is
       // still there in the morning; what you scraped out while dying is not.
-      if (this.state.phase !== 'playing') this.saveCarriedRoad();
+      if (this.state.phase !== 'playing') {
+        this.saveCarriedRoad();
+        void this.recordRunTrace();
+      }
     }
 
     this.previousDroneStatus = this.state.drone.status;
