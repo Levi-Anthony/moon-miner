@@ -3168,18 +3168,26 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const toScreen = this.project(zone.vein.to);
     const remainingRatio = this.fertileZoneRemainingRatio(zone);
     const depletedRatio = 1 - remainingRatio;
-    const richnessRatio = clamp(zone.richness / 2.1, 0.45, 1);
+    // Floor lowered from 0.45 and the divisor raised to the actual top of the
+    // range, so pip size and scatter track richness across the whole field
+    // instead of across its upper half.
+    const richnessRatio = clamp(zone.richness / 3.1, 0.16, 1);
     const pulse = active ? 0.5 + Math.sin(this.time.now / 145) * 0.5 : 0;
     const activeMiningCue = active && this.state.lastYieldRate > 0.001;
 
+    // A worked-out seam goes grey. Depletion carries between shifts now, so
+    // "have I already stripped this" is a question the player asks on sight
+    // from across the map, and the ore-bearing rock has to stop looking
+    // ore-bearing once it isn't.
+    const spent = clamp(depletedRatio, 0, 1);
     const rock = this.fertilePatchPolygon(zone, zone.vein.width / 2, 5);
     const lit = rock.map((point) => ({ x: point.x - 3, y: point.y - 4 }));
-    this.graphics.fillStyle(0xa8895a, 0.9);
+    this.graphics.fillStyle(mixColor(0xa8895a, 0x7c7970, spent), 0.9);
     this.graphics.fillPoints(lit, true, true);
-    this.graphics.fillStyle(0x6d5330, 0.95);
+    this.graphics.fillStyle(mixColor(0x6d5330, 0x4b4a46, spent), 0.95);
     this.graphics.fillPoints(rock, true, true);
     const rim = this.fertilePatchPolygon(zone, zone.vein.width / 2.6, 73);
-    this.graphics.fillStyle(active ? 0x8f6a2f : 0x7d5c2b, 0.85 + pulse * 0.1);
+    this.graphics.fillStyle(mixColor(active ? 0x8f6a2f : 0x7d5c2b, 0x55534e, spent), 0.85 + pulse * 0.1);
     this.graphics.fillPoints(rim, true, true);
 
     if (depletedRatio > 0.025) {
@@ -3355,8 +3363,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return clamp(zone.remaining / initial, 0, 1);
   }
 
+  // Widened hard. The field is three rings whose whole point is that richness
+  // rises with distance -- 0.85 near, 3.1 far -- and this compressed that 3.6x
+  // spread into 5 pips against 8, so a poor seam and a rich one looked the
+  // same from the tractor. The decision the level is built around was invisible
+  // in the one place the player looks.
   private fertileZoneRichnessPipCount(zone: FertileZone): number {
-    return clamp(Math.round(3 + zone.richness * 2.35), 4, 8);
+    return clamp(Math.round(1 + zone.richness * 3.8), 2, 15);
   }
 
   private fertileZoneDepletionScarCount(zone: FertileZone): number {

@@ -604,3 +604,28 @@ covers the trip and the flight is pure cost. It still pays across a mixed
 campaign (5 wins of 8 and 118 ore against 3 and 94). So repeating one long
 route is the case where launching is wrong -- a real decision, as long as the
 game eventually says so somewhere.
+
+## 2026-09-08: Make Richness And Spentness Visible
+
+Looked at the rebuilt field pulled back, and the level's entire design was
+invisible. Three rings whose whole point is that richness rises with distance
+-- 0.85 at the near ring against 3.1 at the far, a 3.6x spread -- and a poor
+seam and a rich one were drawn the same. The pip count compressed that spread
+into 5 against 8, and the richness ratio was clamped to a 0.45 floor over a
+2.1 divisor, so the signal only worked across the upper half of the range.
+
+Pip count is now 1 + richness * 3.8 clamped to 2..15, which puts 4 nodes on a
+near seam and 13 on a far one. The ratio divides by the real top of the range
+with a 0.16 floor, so pip size and scatter track richness the whole way down.
+
+Worked-out rock goes grey. Depletion carries between shifts now, so "have I
+already stripped this" is a question asked on sight from across the map, and
+ore-bearing rock has to stop looking ore-bearing once it is not. The patch and
+its rim lerp toward stone as the seam empties.
+
+The general note, since this is the fourth time this session: the machinery
+existed and was tuned for a level that no longer exists. Depletion rendering,
+richness pips and scar marks were all already there. Every constant in them was
+calibrated against the old five-seam strip, and none of them was re-checked
+when the field became three graded rings. Numbers survive the thing they were
+measured against, and they do not announce it.
