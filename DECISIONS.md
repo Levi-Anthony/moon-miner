@@ -393,3 +393,43 @@ End-of-run field values are cleanly bimodal -- 0.025 for crawl scrapings and
 of 0.10 against a 0.4 decay keeps exactly the well-laid road and drops exactly
 the desperate road. A first browser run carried nothing at all, which was
 correct: that run crawled almost the whole day and had nothing worth keeping.
+
+## 2026-09-08: Draw The Arms, And Stop Hiding The Next Day
+
+Two reports, one of which was a mistake of mine repeated twice.
+
+The next day was unreachable because I shipped carry-over behind `?shift=1`. A
+published artifact does not necessarily pass a query string through to the page,
+so the flag could not be set at all: the feature existed and nobody could turn
+it on. It is on by default now, with `?shift=0` to opt out. Caution that makes a
+feature unreachable is not caution.
+
+It is also louder. Any tap or click ends a finished run, the run-end panel
+carries a pulsing "Tap or press R for shift 2" call to action under the line
+naming what survived the night, and the HUD button relabels itself Next Day.
+Previously the only route forward was a small button marked Reset, which reads
+as start-over rather than continue.
+
+The arms: allocation was fully simulated and the renderer ran, but what it drew
+was one straight line per arm capped with a dot, which at the shipped camera is
+a cluster of dots. Now each arm is two segments with a knee. The elbow is the
+whole trick -- breaking the silhouette is what makes a shape read as articulated
+rather than radial -- and the knee bends away from the centre line so the flanks
+mirror and the machine reads as a spider rather than a starburst. Working arms
+flex faster than idle ones. Widths track the projection with a floor so the
+limbs never fall under a pixel when the camera pulls back.
+
+Each duty gets a tool you can tell apart at a glance, because telling them apart
+at a glance is the entire job of a "visible scheduler": a square printing head
+for building, a two-prong claw that opens and closes for mining, a flat planted
+foot for emergency scraping.
+
+Two things found by looking rather than reasoning. Roles filled the eight angle
+slots in order, so all four building arms landed on the left flank and the right
+side was bare; they are interleaved across both flanks now. And every arm drew
+behind the chassis, so only the far ones were visible and they read as roof
+antennae; arms whose tip lands nearer the camera are now drawn after the body.
+
+Guessed on purpose and open to steering: reach lengths, the size of the tool
+heads, and the fact that every duty currently reaches forward rather than some
+arms working to the side or behind.

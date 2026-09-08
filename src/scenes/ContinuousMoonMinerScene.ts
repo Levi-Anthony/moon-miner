@@ -802,6 +802,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
     const layout = this.getLayout();
+
+    // When the run is over, anything starts the next day. A small button
+    // labelled Reset in the corner of the HUD was the only way forward, and it
+    // reads as start-over rather than continue -- so the day after was there
+    // and unreachable. Tap anywhere, or press R.
+    if (this.state.phase !== 'playing') {
+      this.resetRun();
+      return;
+    }
+
     const button = this.buttons.find((candidate) => Phaser.Geom.Rectangle.Contains(candidate.rect, pointer.x, pointer.y));
     if (button) {
       if (button.id === 'launch') this.launchDrone();
@@ -907,19 +917,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  // Opt-in with ?shift=1, and deliberately not DEV-gated: the point is to be
-  // able to play chained shifts in a published build. Off by default, because
-  // carrying road across runs is adjacent to a documented deferral and that is
-  // the author's call to make, not a default to slip in.
   private shiftNumber = 1;
   private carriedIn = 0;
   private survivedTheNight = 0;
 
+  // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
+  // caution about a documented deferral, and the result was that the next day
+  // was unreachable: a published artifact does not necessarily carry a query
+  // string through to the page, so the flag could not be set at all. A feature
+  // nobody can turn on is not a cautious default, it is a missing one.
   private isShiftModeEnabled(): boolean {
     try {
-      return new URLSearchParams(window.location.search).get('shift') === '1';
+      return new URLSearchParams(window.location.search).get('shift') !== '0';
     } catch {
-      return false;
+      return true;
     }
   }
 
@@ -3738,7 +3749,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     this.drawStateAura(rover, preparedCoverage);
     this.drawStateMotionCues(rover, preparedCoverage);
-    this.drawArms(fertile);
+    this.drawArms(fertile, 'behind');
 
     const roverScreen = this.project(rover);
     const scale = this.projectedScale(rover);
@@ -3747,6 +3758,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.fillStyle(0x02050a, 0.5);
     this.graphics.fillEllipse(roverScreen.x - 3 * scale, roverScreen.y + 11 * scale, 78 * scale, 38 * yScale * scale);
     this.drawTractorBody(rover, scale);
+    // Arms that reach toward the camera pass in front of the chassis. Drawing
+    // every arm behind the body left only the far ones visible, so they read as
+    // roof antennae instead of limbs wrapped around a machine.
+    this.drawArms(fertile, 'front');
 
     if (preparedCoverage > 0.2) {
       this.graphics.lineStyle(3, 0x78f7df, 0.4 + preparedCoverage * 0.5);
@@ -3869,10 +3884,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  private drawArms(fertile: FertileZone | undefined): void {
+  private drawArms(fertile: FertileZone | undefined, layer: 'behind' | 'front'): void {
     const rover = this.state.rover;
     const armAngles = [-145, -108, -70, -32, 32, 70, 108, 145].map((degrees) => (degrees * Math.PI) / 180);
-    const roles = this.armRoles();
+
+    // Spread each duty across both flanks. Filling the angle slots in order put
+    // all four building arms on the left and left the right side bare, so the
+    // machine read as lopsided rather than as one thing allocating itself.
+    const ordered = this.armRoles();
+    const interleaved: ArmRole[] = [];
+    const slots = [0, 4, 1, 5, 2, 6, 3, 7];
+    ordered.forEach((role, index) => {
+      interleaved[slots[index] ?? index] = role;
+    });
+    const roles = interleaved;
 
     armAngles.forEach((angle, index) => {
       const role = roles[index] ?? 'stabilizing';
@@ -3893,7 +3918,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
                 : 0xc6b2ff;
         width = this.state.arms.helper.duty === 'miningAssist' ? 5 : 3;
       } else if (role === 'building') {
-        target = this.pointFromHeading(rover, rover.heading + angle * 0.28, this.state.speedState === 'crawl' ? 30 : 54);
+        target = this.pointFromHeading(rover, rover.heading + angle * 0.28, this.state.speedState === 'crawl' ? 34 : 64);
         color = 0x68f3ff;
         width = 4;
       } else if (role === 'mining') {
@@ -3912,33 +3937,125 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         color = 0xff765f;
         width = 3;
       } else {
-        target = this.pointFromHeading(rover, rover.heading + angle, 32);
+        target = this.pointFromHeading(rover, rover.heading + angle, 40);
       }
 
-      const anchorScreen = this.project(anchor);
-      const targetScreen = this.project(target);
+      // Screen-space depth: anything whose tip lands below the chassis centre is
+      // nearer the camera and belongs in front of it.
+      const roverScreen = this.project(rover);
+      const inFront = this.project(target).y > roverScreen.y;
+      if ((layer === 'front') !== inFront) return;
+
       const scale = this.projectedScale(anchor);
-      this.graphics.lineStyle(width, color, role === 'stabilizing' ? 0.56 : 0.94);
-      this.graphics.lineBetween(anchorScreen.x, anchorScreen.y, targetScreen.x, targetScreen.y);
-      this.graphics.fillStyle(color, role === 'stabilizing' ? 0.62 : 0.98);
-      this.graphics.fillCircle(targetScreen.x, targetScreen.y, (role === 'emergency' ? 3 : role === 'helper' ? 5 : 4) * scale);
+      this.drawArmLimb(anchor, target, angle, index, color, width, scale, role);
 
+      // A working tool throws sparks at the seam. Kept because it is the one
+      // cue that says a bite actually landed; the rest of the old decoration
+      // is now the tool silhouette's job.
       if ((role === 'mining' || (role === 'helper' && this.state.arms.helper.duty === 'miningAssist')) && fertile) {
+        const tip = this.project(target);
         const sparkle = 0.5 + Math.sin(this.time.now / 80 + index) * 0.5;
-        this.graphics.fillStyle(role === 'helper' ? 0xdfff8f : 0xffed9b, 0.5 + sparkle * 0.45);
-        this.graphics.fillCircle(targetScreen.x, targetScreen.y, (5 + sparkle * (role === 'helper' ? 5 : 3)) * scale);
-        this.graphics.lineStyle(1, role === 'helper' ? 0xf4ffd1 : 0xfff4c4, 0.55);
-        this.graphics.strokeCircle(targetScreen.x, targetScreen.y, (9 + sparkle * (role === 'helper' ? 7 : 4)) * scale);
-      }
-
-      if (role === 'building') {
-        this.graphics.fillStyle(0x9ffff7, 0.48);
-        this.graphics.fillCircle(targetScreen.x, targetScreen.y, 8 * scale);
-      } else if (role === 'helper') {
-        this.graphics.lineStyle(1, 0xffffff, 0.42);
-        this.graphics.strokeCircle(targetScreen.x, targetScreen.y, 8 * scale);
+        this.graphics.fillStyle(role === 'helper' ? 0xdfff8f : 0xffed9b, 0.32 + sparkle * 0.4);
+        this.graphics.fillCircle(tip.x, tip.y, (4 + sparkle * 3) * scale);
       }
     });
+  }
+
+  // An arm, rather than a spoke. The previous version stroked one straight line
+  // from the chassis to a point and capped it with a dot, which at the shipped
+  // camera reads as a cluster of dots and nothing else -- the machine that the
+  // design calls a "visible scheduler" was allocating eight arms and showing
+  // none of them. Two segments and a knee are the cheapest thing that reads as
+  // a limb: the elbow breaks the silhouette, and breaking the silhouette is
+  // what makes a shape look articulated rather than radial.
+  private drawArmLimb(
+    anchor: Vec2,
+    target: Vec2,
+    angle: number,
+    index: number,
+    color: number,
+    width: number,
+    scale: number,
+    role: ArmRole
+  ): void {
+    const shoulder = this.project(anchor);
+    const tip = this.project(target);
+    const span = Math.hypot(tip.x - shoulder.x, tip.y - shoulder.y);
+    if (span < 0.5) return;
+
+    // The knee bends away from the machine's centre line, so the left arms and
+    // the right arms mirror each other and the whole thing reads as a spider
+    // rather than a starburst. Working arms flex; idle ones sit still.
+    const busy = role === 'building' || role === 'mining' || role === 'emergency';
+    const flex = busy ? Math.sin(this.time.now / 150 + index * 1.7) * 0.14 : Math.sin(this.time.now / 900 + index) * 0.04;
+    const bend = (angle < 0 ? -1 : 1) * (0.34 + flex);
+    const normal = { x: -(tip.y - shoulder.y) / span, y: (tip.x - shoulder.x) / span };
+    const knee = {
+      x: shoulder.x + (tip.x - shoulder.x) * 0.52 + normal.x * span * bend,
+      y: shoulder.y + (tip.y - shoulder.y) * 0.52 + normal.y * span * bend
+    };
+
+    // Widths track the projection so the limbs do not vanish when the camera
+    // pulls back, with a floor so they never fall under a pixel.
+    const upper = Math.max(2.2, width * scale * 1.15);
+    const lower = Math.max(1.4, width * scale * 0.72);
+    const alpha = role === 'stabilizing' ? 0.6 : 0.95;
+
+    // A dark underlay gives the limb an edge against both regolith and field.
+    this.graphics.lineStyle(upper + 2.2, 0x0d1117, 0.5);
+    this.graphics.beginPath();
+    this.graphics.moveTo(shoulder.x, shoulder.y);
+    this.graphics.lineTo(knee.x, knee.y);
+    this.graphics.lineTo(tip.x, tip.y);
+    this.graphics.strokePath();
+
+    this.graphics.lineStyle(upper, color, alpha);
+    this.graphics.lineBetween(shoulder.x, shoulder.y, knee.x, knee.y);
+    this.graphics.lineStyle(lower, color, alpha);
+    this.graphics.lineBetween(knee.x, knee.y, tip.x, tip.y);
+
+    this.graphics.fillStyle(0x1b2430, 0.95);
+    this.graphics.fillCircle(knee.x, knee.y, Math.max(1.8, upper * 0.62));
+    this.graphics.fillStyle(color, alpha);
+    this.graphics.fillCircle(knee.x, knee.y, Math.max(1.1, upper * 0.36));
+
+    this.drawArmTool(tip, color, scale, role, index);
+  }
+
+  // The business end. Each duty gets a silhouette you can tell apart at a
+  // glance, because telling them apart at a glance is the entire job.
+  private drawArmTool(tip: { x: number; y: number }, color: number, scale: number, role: ArmRole, index: number): void {
+    const size = Math.max(2.6, 4.6 * scale);
+
+    if (role === 'building') {
+      // A printing head: a square nozzle laying field.
+      this.graphics.fillStyle(color, 0.98);
+      this.graphics.fillRect(tip.x - size, tip.y - size * 0.72, size * 2, size * 1.44);
+      this.graphics.fillStyle(0x9ffff7, 0.55 + Math.sin(this.time.now / 110 + index) * 0.35);
+      this.graphics.fillRect(tip.x - size * 0.45, tip.y + size * 0.5, size * 0.9, size * 1.1);
+      return;
+    }
+
+    if (role === 'mining') {
+      // A claw: two prongs biting the seam.
+      this.graphics.lineStyle(Math.max(1.4, 2 * scale), color, 0.98);
+      const gape = 0.5 + Math.sin(this.time.now / 130 + index) * 0.35;
+      this.graphics.lineBetween(tip.x, tip.y, tip.x - size * 1.2, tip.y - size * gape);
+      this.graphics.lineBetween(tip.x, tip.y, tip.x - size * 1.2, tip.y + size * gape);
+      this.graphics.fillStyle(color, 0.98);
+      this.graphics.fillCircle(tip.x, tip.y, size * 0.6);
+      return;
+    }
+
+    if (role === 'emergency') {
+      // A scraping foot, flat to the ground and planted.
+      this.graphics.fillStyle(color, 0.95);
+      this.graphics.fillRect(tip.x - size * 1.1, tip.y, size * 2.2, Math.max(1.4, size * 0.5));
+      return;
+    }
+
+    this.graphics.fillStyle(color, role === 'stabilizing' ? 0.7 : 0.98);
+    this.graphics.fillCircle(tip.x, tip.y, role === 'helper' ? size * 1.1 : size * 0.8);
   }
 
   private getHelperArmTarget(anchor: Vec2, angle: number, fertile: FertileZone | undefined): Vec2 {
@@ -4743,6 +4860,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.drawStaticText('phase-title', 0, 0, '', 1, '#ffffff');
       this.drawStaticText('phase-body', 0, 0, '', 1, '#ffffff');
       this.drawStaticText('phase-shift', 0, 0, '', 1, '#ffffff');
+      this.drawStaticText('phase-cta', 0, 0, '', 1, '#ffffff');
       return;
     }
 
@@ -4768,12 +4886,31 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStaticText(
       'phase-shift',
       layout.width / 2,
-      y + height + 22,
+      y + height + 24,
       this.isShiftModeEnabled()
-        ? `Shift ${this.shiftNumber} over. ${this.survivedTheNight} lengths of rail survive the night. R for shift ${this.shiftNumber + 1}.`
+        ? `${this.survivedTheNight} lengths of rail survive the night`
         : '',
       layout.mode === 'mobilePortrait' ? 13 : 15,
       '#9fb3c8',
+      0.5
+    );
+
+    // The call to action, sized like one and pulsing so it reads as live.
+    const pulse = 0.68 + Math.sin(this.time.now / 420) * 0.32;
+    const ctaWidth = Math.min(layout.width - 96, 330);
+    const ctaX = (layout.width - ctaWidth) / 2;
+    const ctaY = y + height + 48;
+    this.graphics.fillStyle(0x1c6f5c, 0.42 + pulse * 0.3);
+    this.graphics.fillRoundedRect(ctaX, ctaY, ctaWidth, 44, 10);
+    this.graphics.lineStyle(2, 0x77f2ca, 0.6 + pulse * 0.4);
+    this.graphics.strokeRoundedRect(ctaX, ctaY, ctaWidth, 44, 10);
+    this.drawStaticText(
+      'phase-cta',
+      layout.width / 2,
+      ctaY + 22,
+      this.isShiftModeEnabled() ? `Tap or press R for shift ${this.shiftNumber + 1}` : 'Tap or press R to run again',
+      layout.mode === 'mobilePortrait' ? 15 : 17,
+      '#ecfffa',
       0.5
     );
   }
