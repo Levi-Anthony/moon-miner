@@ -2540,8 +2540,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     if (this.cameraLab.gridVisible) {
+      // Same defect as the regolith grit: these sat at fixed offsets from the
+      // camera, so the ground grid and its speckles held still while the rover
+      // crossed the map. Offsetting by where the camera sits on its own axes
+      // pins them to the world, so the grid streams toward you and wraps.
+      const camera = this.cameraFocus();
+      const axes = this.cameraAxes();
+      const camLateral = camera.x * axes.right.x + camera.y * axes.right.y;
+      const camForward = camera.x * axes.forward.x + camera.y * axes.forward.y;
+      const wrapInto = (value: number, min: number, span: number): number =>
+        min + ((((value - min) % span) + span) % span);
+
+      const rungPhase = ((camForward % 120) + 120) % 120;
       for (let index = 0; index < 8; index += 1) {
-        const forward = 500 - index * 120;
+        const forward = 500 - index * 120 - rungPhase;
         const from = this.project(this.cameraLocalPoint(-620, forward));
         const to = this.project(this.cameraLocalPoint(620, forward));
         this.graphics.lineStyle(1, 0x222a36, 0.2 + 0.18 * visualCalm);
@@ -2551,7 +2563,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       for (let index = 0; index < 46; index += 1) {
         if (visualCalm < 0.7 && index % 2 === 1) continue;
         const point = this.project(
-          this.cameraLocalPoint(-560 + ((index * 173) % 1120), -330 + ((index * 89) % 840))
+          this.cameraLocalPoint(
+            wrapInto(-560 + ((index * 173) % 1120) - camLateral, -560, 1120),
+            wrapInto(-330 + ((index * 89) % 840) - camForward, -330, 840)
+          )
         );
         const radius = 1 + (index % 3);
         this.graphics.fillStyle(index % 5 === 0 ? 0x465060 : 0x252c38, (0.32 + 0.33 * visualCalm));
@@ -2645,16 +2660,43 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       );
     }
 
-    // Scattered grit so the surface has texture to move against.
-    for (let index = 0; index < 120; index += 1) {
-      const lateral = -1200 + ((index * 617) % 2400);
-      const forward = NEAR + ((index * 331) % (FAR - NEAR));
-      const depth = (forward - NEAR) / (FAR - NEAR);
-      if (depth > 0.72) continue;
-      const point = this.project(this.cameraLocalPoint(lateral, forward));
-      const tone = index % 4 === 0 ? 0x8a8072 : 0x4a4640;
-      this.graphics.fillStyle(tone, 0.5 * (1 - depth));
-      this.graphics.fillCircle(point.x, point.y, (1 + (index % 3)) * (1 - depth * 0.6));
+    // Scattered grit so the surface has texture to move against. It has to be
+    // anchored in the world to do that. Placed at camera-local offsets, every
+    // speck landed on the same screen pixel every frame, so driving at full
+    // speed moved the ground texture exactly zero: the surface read as a
+    // painted backdrop and the only motion cue left was scenery popping past,
+    // which is choppy however smooth the frame rate is.
+    //
+    // A lattice re-derived from the camera each frame scrolls correctly under
+    // both travel and yaw, and wraps for free because the cells are recomputed
+    // rather than carried.
+    const gritCamera = this.cameraFocus();
+    const gritAxes = this.cameraAxes();
+    const GRIT_CELL = 150;
+    const gritBaseX = Math.floor(gritCamera.x / GRIT_CELL) * GRIT_CELL;
+    const gritBaseY = Math.floor(gritCamera.y / GRIT_CELL) * GRIT_CELL;
+    for (let cellX = -12; cellX <= 12; cellX += 1) {
+      for (let cellY = -12; cellY <= 12; cellY += 1) {
+        const originX = gritBaseX + cellX * GRIT_CELL;
+        const originY = gritBaseY + cellY * GRIT_CELL;
+        // Deterministic per cell, so grit stays where it is instead of
+        // shimmering into a new scatter every frame.
+        const hash = Math.abs(Math.imul(originX | 0, 374761393) ^ Math.imul(originY | 0, 668265263));
+        const world = {
+          x: originX + ((hash % 997) / 997) * GRIT_CELL,
+          y: originY + (((hash >> 9) % 991) / 991) * GRIT_CELL
+        };
+        const forward =
+          (world.x - gritCamera.x) * gritAxes.forward.x + (world.y - gritCamera.y) * gritAxes.forward.y;
+        if (forward < NEAR) continue;
+        const depth = (forward - NEAR) / (FAR - NEAR);
+        if (depth > 0.72) continue;
+        const point = this.project(world);
+        if (point.y < horizon) continue;
+        const tone = hash % 4 === 0 ? 0x8a8072 : 0x4a4640;
+        this.graphics.fillStyle(tone, 0.5 * (1 - depth));
+        this.graphics.fillCircle(point.x, point.y, (1 + (hash % 3)) * (1 - depth * 0.6));
+      }
     }
 
     // Haze band where ground meets sky.
