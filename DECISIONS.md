@@ -740,3 +740,108 @@ reproduced is how the wrong thing gets changed.
 One more thing the data answered directly: the run with zero drone launches
 lost with 16.8 seconds of crawl and 8.1 ore. The drone is still load-bearing on
 a bare day.
+
+## The drone takes road that is too close: measured, and it is not tunable
+
+Fifth report of the same thing, after four rounds of geometry. This time I
+measured it before changing anything, and the measurement says the previous
+four rounds were all attacking the wrong quantity.
+
+A theft is road the drone lifts that the tractor then drives over within ten
+seconds, at under sixty units. Over eight seeds and five routes:
+
+  age scoring, as shipped        14% of launches are thefts
+  a legal patch chosen at random 32%
+
+So the selection rule is only a little better than chance, and the reason is
+arithmetic rather than taste: the tractor covers 960 units in ten seconds and
+the arena is 1000 across. About a third of all road on the map at any instant
+is road the tractor is about to reach. There is no far away to send the drone
+to. That is why raising the exclusion radius, widening the corridor, extending
+the forward arc and scoring by distance instead of age each answered one play
+report and missed the next -- every one of them is a guess at the driver's next
+move, made from a pool that is one-third "too close" no matter how it is
+filtered.
+
+Two things came out of the sweeps that are worth keeping written down:
+
+  - Raising reclaimMinDistanceFromRover from 90 to 210, which a single-seed
+    sweep recommended and I nearly shipped, cuts drone launches by 37% and
+    breaks the route ladder on five of eight seeds. Single-seed sweeps of a
+    marginal system are noise; one earlier result in this session showed
+    "1 theft out of 34" and evaporated at three seeds.
+  - Scoring by distance rather than age moves thefts by a few points and
+    destabilises the ladder. It is not in the build.
+
+### What actually fixed it: the road is yours until you leave it
+
+Stop guessing where the driver is going and let the driver answer. A claimed
+patch is marked, and reaching it takes it back -- the drone lets go and looks
+for older rail. The patches it picks wrong are exactly the patches the tractor
+drives over, which is exactly the case this covers, and the player wins it by
+going where they were already going. Theft becomes a race you can win instead
+of something done to you.
+
+Eight seeds, claim-break radius swept 0 to 130: thefts fall 14% -> 9%, launches
+are unchanged at ~303 (the drone is not being starved), and the route ladder
+converges to the same shape on seven of eight seeds instead of four. 120 units.
+
+### The relay was landing beside the path
+
+Road count was never the problem: three seeds of self-play lift 305 patches and
+put 302 back, so the drone was not a road tax. It read as one because the rail
+came back down a straight spur off the tractor's nose, and every launch that
+matters happens mid-turn. Laying it along the heading-plus-turn-rate arc
+instead -- the same projection that decides which road is protected, which
+until now existed only to say no -- moves relaid rail that the tractor actually
+drives over from 81% to 94%.
+
+## The self-play controller launches on stock, not on a clock
+
+The routes became behaviour-driven earlier in the session but their drone
+launches were still a fixed schedule, firing at t=6 on a full tank on every
+route. That was the last piece of the old script, and it was why the ladder
+flipped on parameters that should not have touched it. Each route now names a
+launchBelowStock fraction and launches when the tank drops through it.
+
+The ladder over twenty seeds, before and after:
+
+              wins    ore    solar left   crawl s   launches
+  safe        0/20 -> 0/20   5.9 ->  7.8   0.0 ->  3.5   2.0 -> 5.8
+  shallow     0/20 -> 16/20  8.1 -> 13.4   0.0 ->  7.1   3.0 -> 6.8
+  deep       20/20 -> 19/20 21.4 -> 27.5   9.9 ->  5.5   3.0 -> 9.7
+  greedy     20/20 -> 16/20 36.7 -> 34.1   4.9 ->  1.1   3.0 -> 9.6
+  sloppy      0/20 -> 0/20  16.2 -> 36.7   0.0 ->  0.0   1.0 -> 5.3
+
+Before, nothing was marginal: every rung was 0/20 or 20/20. "Deterministic" was
+in the test name and it was true in the worst way -- there was no tension to
+measure. Now the middle three are 16, 19 and 16 out of 20, and the far route
+comes home with 1.1 seconds of light on average, which is the tight return the
+route exists to produce. Three tests were asserting per-seed verdicts on those
+marginal rungs, which is to say asserting coin flips; they assert the gradient
+now.
+
+### The cost, which is a design fork and not mine to settle
+
+Crawl moved to the wrong end. It used to run 0.0 / 0.0 / 1.7 / 3.1 / 22.2 up
+the rungs -- the overstayed route limped home for twenty-two seconds. It now
+runs 3.5 / 3.3 / 0.0 / 0.0 / 0.0. The cautious rungs crawl and the ambitious
+ones never do, because a route that launches ten times a day is never
+insolvent. Overextension now reads as "the sun set" rather than "I limped",
+and that flavourless failure is the one the play reports named.
+
+Three independent knobs were swept against it and each buys crawl back only by
+flattening the reward gradient that is the level's whole offer:
+
+  per-route launch thresholds   greedy drops from 34 ore to 14
+  reclaimYieldMultiplier        at 0.9 the overstayed route wins 17/20
+                                and the mid ring wins 2/20
+  the launch surcharge          at cost 5 the gradient collapses to 12/17/15
+
+The drone's payload is both the reach and the solvency. On this level you
+cannot have reached far, hauled big, and crawled. Unwelding them means making
+relaid rail the reach mechanism and shrinking the payload, which needs a bigger
+pickup radius -- the exact change that makes the drone take road the player is
+using. Shipped with the gradient intact and the crawl beat displaced, recorded
+here rather than traded away quietly, because which half to keep is a call
+about how the game should feel.

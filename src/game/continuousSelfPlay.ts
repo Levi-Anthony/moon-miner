@@ -33,6 +33,17 @@ export interface ContinuousSelfPlayRoute {
   droneLaunchSeconds: number[];
   safeCorridorLeaveThreshold?: number;
   waypoints: ContinuousSelfPlayWaypoint[];
+  // Behaviour-based routes name the seams to work and how recklessly to judge
+  // the trip home. Routes without these fall back to the timed waypoints.
+  seams?: string[];
+  homeMargin?: number;
+  // When to spend road, as a fraction of tank capacity. A player launches the
+  // drone because reach is running out, not because a clock said so, and the
+  // fixed launch seconds were the last piece of the old script still in here:
+  // they fired at t=6 on a full tank on every route, which is why the ladder
+  // flipped on parameters that should not have touched it. Routes without this
+  // keep the timed launches.
+  launchBelowStock?: number;
 }
 
 export interface ContinuousSelfPlayMetrics {
@@ -94,6 +105,9 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
   // the reach you attempt is one you can pay for.
   safeReturn: {
     id: 'safeReturn',
+    seams: ['depot-flats'],
+    homeMargin: 2.6,
+    launchBelowStock: 0.7,
     label: 'Last Light Near Ring Only',
     arenaId: 'last-light-return',
     durationSeconds: 36,
@@ -107,6 +121,9 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
   },
   shallowLobe: {
     id: 'shallowLobe',
+    seams: ['depot-flats', 'south-bench'],
+    homeMargin: 2.1,
+    launchBelowStock: 0.65,
     label: 'Last Light Near Ring Doubled',
     arenaId: 'last-light-return',
     durationSeconds: 36,
@@ -121,6 +138,9 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
   },
   deepLobe: {
     id: 'deepLobe',
+    seams: ['north-lobe', 'west-cut'],
+    homeMargin: 1.5,
+    launchBelowStock: 0.6,
     label: 'Last Light Mid Ring',
     arenaId: 'last-light-return',
     durationSeconds: 36,
@@ -135,6 +155,9 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
   },
   greedyLatePocket: {
     id: 'greedyLatePocket',
+    seams: ['north-lobe', 'far-shelf'],
+    homeMargin: 0.92,
+    launchBelowStock: 0.5,
     label: 'Last Light Far Shelf',
     arenaId: 'last-light-return',
     durationSeconds: 36,
@@ -150,6 +173,9 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
   },
   greedyLatePocketSloppy: {
     id: 'greedyLatePocketSloppy',
+    seams: ['north-lobe', 'far-shelf', 'deep-south'],
+    homeMargin: 0.55,
+    launchBelowStock: 0.35,
     label: 'Last Light Far Shelf Overstayed',
     arenaId: 'last-light-return',
     durationSeconds: 36,
@@ -183,6 +209,12 @@ export function getDefaultContinuousSelfPlayRouteId(arenaId: ContinuousArenaId =
   return arenaId === 'last-light-return' ? 'safeReturn' : 'firstLoop';
 }
 
+const SEAM_WORKED_OUT_ORE = 0.6;
+
+// Launching costs the drone's flight time whether or not it finds anything, so
+// the policy does not retry every tick once stock is low and nothing is legal
+// to lift.
+const LAUNCH_RETRY_SECONDS = 2.5;
 const WAYPOINT_ARRIVAL_RADIUS = 58;
 const WAYPOINT_WORKED_OUT_ORE = 0.6;
 
@@ -222,12 +254,80 @@ export function getContinuousSelfPlayTarget(
   return route.waypoints[route.waypoints.length - 1];
 }
 
+// A policy, not a script.
+//
+// The routes used to be timed waypoint lists, and that made every measurement
+// a measurement of the fixture: raising prepared speed from 96 to 104 flipped
+// a comfortable win into a loss because the script sailed past a waypoint it
+// was still steering at, and every attempt to let the road pay what it should
+// died on that. A rig calibrated to one machine speed cannot evaluate a change
+// to machine speed, which is most of what is left to tune.
+//
+// So the agent does what a player does: go to the next seam worth working,
+// stay on it until it is spent, and leave for the depot when the light left is
+// only just enough to get back. All three of those adapt to any speed, any
+// road layout and any level, because none of them mentions the clock except to
+// compare it against a distance the machine has to cover.
+function estimateSecondsHome(world: ContinuousWorldState): number {
+  const extraction = world.arena.extraction;
+  if (!extraction) return 0;
+  const distance = Math.hypot(extraction.x - world.rover.x, extraction.y - world.rover.y);
+
+  // Account for running dry on the way. Estimating the whole trip at raw-ground
+  // speed looks conservative and is not: a machine that runs out of nanobots
+  // finishes the journey at crawl speed, which is four and a half times slower,
+  // so the estimate is wrong by more than any safety margin covers. At higher
+  // machine speeds this is what made the rig fail -- routes mined MORE and
+  // still lost, because they left on a promise the tank could not keep.
+  const fabricating = Math.max(1, world.tuning.fabricatingSpeed);
+  const crawl = Math.max(1, world.tuning.crawlSpeed);
+  const costPerUnit = world.tuning.fabricateCostPerSecond / fabricating;
+  const fundedDistance = costPerUnit > 0 ? Math.min(distance, world.nanobots / costPerUnit) : distance;
+  const strandedDistance = distance - fundedDistance;
+  return fundedDistance / fabricating + strandedDistance / crawl;
+}
+
+export function getContinuousSelfPlayPolicyTarget(route: ContinuousSelfPlayRoute, world: ContinuousWorldState): Vec2 {
+  const extraction = world.arena.extraction;
+  const home = extraction ?? world.arena.start;
+
+  if (extraction) {
+    const margin = route.homeMargin ?? 1.35;
+    if (world.solarSeconds <= estimateSecondsHome(world) * margin) return home;
+  }
+
+  for (const seamId of route.seams ?? []) {
+    const seam = world.fertileZones.find((zone) => zone.id === seamId);
+    if (!seam || seam.remaining <= SEAM_WORKED_OUT_ORE) continue;
+    // Aim along the vein rather than at the blob, so the pass sweeps it.
+    if (!seam.vein) return seam;
+    const toFrom = Math.hypot(seam.vein.from.x - world.rover.x, seam.vein.from.y - world.rover.y);
+    const toTo = Math.hypot(seam.vein.to.x - world.rover.x, seam.vein.to.y - world.rover.y);
+    const entry = toFrom <= toTo ? seam.vein.from : seam.vein.to;
+    const exit = toFrom <= toTo ? seam.vein.to : seam.vein.from;
+    // Once inside the band, drive for the far end of it.
+    return Math.hypot(entry.x - world.rover.x, entry.y - world.rover.y) <= seam.radius ? exit : entry;
+  }
+
+  return home;
+}
+
 export function getContinuousSelfPlayInput(world: ContinuousWorldState, target: Vec2): ContinuousInput {
   const targetAngle = Math.atan2(target.y - world.rover.y, target.x - world.rover.x);
   return {
     steer: clamp(angleDifference(targetAngle, world.rover.heading) / 0.85, -1, 1),
     throttle: 1
   };
+}
+
+// Spend road when the tank says to, not when the clock says to. The threshold
+// is per route because that is the actual difference between a careful trip and
+// a greedy one: the greedy player runs the tank down and leans on the drone to
+// bail them out, the careful one launches early and keeps a reserve.
+export function shouldLaunchReclaimDrone(route: ContinuousSelfPlayRoute, world: ContinuousWorldState): boolean {
+  if (route.launchBelowStock === undefined) return false;
+  if (world.drone.status !== 'ready') return false;
+  return world.nanobots <= world.tuning.maxNanobots * route.launchBelowStock;
 }
 
 export function runContinuousSelfPlay(options: {
@@ -243,6 +343,13 @@ export function runContinuousSelfPlay(options: {
   const routeId = options.routeId ?? getDefaultContinuousSelfPlayRouteId(options.arenaId);
   const route = getContinuousSelfPlayRoute(routeId);
   const droneLaunchSeconds = options.droneLaunchSeconds ?? route.droneLaunchSeconds;
+  // An explicit schedule from the caller beats the route's own policy, so a
+  // caller can still hand in [] to mean "play this route with no drone at all"
+  // and measure what the drone is worth. Without this the stock-driven policy
+  // launched anyway and the with/without comparison silently ran the same run
+  // twice.
+  const launchBelowStock = options.droneLaunchSeconds === undefined ? route.launchBelowStock : undefined;
+  const policyRoute = { ...route, launchBelowStock };
   const deltaSeconds = options.deltaSeconds ?? 0.1;
   let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId, options.carriedFields, options.carriedDepletion);
   const trace = createContinuousLoopTrace(world);
@@ -250,20 +357,34 @@ export function runContinuousSelfPlay(options: {
   let maxDroneEta = world.drone.etaSeconds;
   let maxSafeCorridorDistance = getSafeCorridorDistance(world);
 
+  let nextLaunchAttemptSeconds = 0;
+
   while (world.elapsedSeconds < route.durationSeconds && world.phase === 'playing') {
-    for (const launchSecond of droneLaunchSeconds) {
-      if (!launchedAtSeconds.has(launchSecond) && world.elapsedSeconds >= launchSecond) {
-        if (world.drone.status !== 'ready') continue;
+    if (launchBelowStock !== undefined) {
+      if (world.elapsedSeconds >= nextLaunchAttemptSeconds && shouldLaunchReclaimDrone(policyRoute, world)) {
+        nextLaunchAttemptSeconds = world.elapsedSeconds + LAUNCH_RETRY_SECONDS;
         const launch = launchReclaimDrone(world);
         world = launch.state;
-        if (!launch.ok) continue;
-        recordContinuousLoopDroneLaunch(trace, world);
-        launchedAtSeconds.add(launchSecond);
-        maxDroneEta = Math.max(maxDroneEta, world.drone.etaSeconds);
+        if (launch.ok) {
+          recordContinuousLoopDroneLaunch(trace, world);
+          maxDroneEta = Math.max(maxDroneEta, world.drone.etaSeconds);
+        }
+      }
+    } else {
+      for (const launchSecond of droneLaunchSeconds) {
+        if (!launchedAtSeconds.has(launchSecond) && world.elapsedSeconds >= launchSecond) {
+          if (world.drone.status !== 'ready') continue;
+          const launch = launchReclaimDrone(world);
+          world = launch.state;
+          if (!launch.ok) continue;
+          recordContinuousLoopDroneLaunch(trace, world);
+          launchedAtSeconds.add(launchSecond);
+          maxDroneEta = Math.max(maxDroneEta, world.drone.etaSeconds);
+        }
       }
     }
 
-    const target = getContinuousSelfPlayTarget(route, world.elapsedSeconds, world);
+    const target = route.seams ? getContinuousSelfPlayPolicyTarget(route, world) : getContinuousSelfPlayTarget(route, world.elapsedSeconds, world);
     const previous = world;
     world = tickContinuousWorld(world, getContinuousSelfPlayInput(world, target), deltaSeconds);
     recordContinuousLoopTick(trace, previous, world, deltaSeconds);
