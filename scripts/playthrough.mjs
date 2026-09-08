@@ -37,6 +37,12 @@ const AS_JSON = process.argv.includes('--json');
 // risk dial: the score is all-or-nothing at extraction, so ore mined on a run
 // that misses the deadline counts for exactly nothing.
 const RESERVE = Number(arg('reserve', 1.6));
+// How much ore to chase, as a multiple of quota. At 1 the policy banks the
+// moment it has enough and leaves, which is why sweeping RESERVE alone could
+// never produce greed: the reserve only governs a quota not yet met. Above 1
+// the rover keeps working a field that always has more in it, which is the
+// decision the recorded human runs were actually making.
+const GREED = Number(arg('greed', 1));
 
 // Same resolution order as the smoke check: explicit override, system browser,
 // whatever sits in PLAYWRIGHT_BROWSERS_PATH, then Playwright's own install.
@@ -84,14 +90,15 @@ const read = (page) =>
 // The whole policy, evaluated in page so it sees the live world rather than a
 // snapshot that is already a frame old.
 const decide = (page) =>
-  page.evaluate(([id, reserve]) => {
+  page.evaluate(([id, reserve, greed]) => {
     const el = document.getElementById(id);
     const snapshot = el ? JSON.parse(el.textContent) : null;
     if (!snapshot) return null;
     const state = snapshot.state;
     const rover = state.rover;
     const extraction = state.arena.extraction;
-    const gap = (extraction?.oreRequired ?? state.targetOre) - rover.ore;
+    const quota = extraction?.oreRequired ?? state.targetOre;
+    const gap = quota * greed - rover.ore;
     const span = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
     // Leave enough light to get home. Underestimating speed here is safer than
@@ -121,7 +128,7 @@ const decide = (page) =>
       launch: state.drone.status === 'ready' && state.nanobots < 2.2,
       headHome
     };
-  }, [SNAPSHOT_ID, RESERVE]);
+  }, [SNAPSHOT_ID, RESERVE, GREED]);
 
 function summarise(snapshot, loop) {
   const state = snapshot.state;
@@ -232,7 +239,7 @@ try {
 if (AS_JSON) {
   console.log(JSON.stringify(rows, null, 2));
 } else {
-  console.log(`Playthrough — arena ${ARENA}, mode ${MODE}, reserve ${RESERVE}, ${CAMPAIGNS} campaign(s) x ${SHIFTS} shifts`);
+  console.log(`Playthrough — arena ${ARENA}, mode ${MODE}, reserve ${RESERVE}, greed ${GREED}, ${CAMPAIGNS} campaign(s) x ${SHIFTS} shifts`);
   console.log(
     '| camp | shift | carried | seam ore at dawn | result | ore/req | sun left | seams alive | seam ore left | crawl | fab | prep | DL/DD | lowNb |'
   );
