@@ -560,3 +560,47 @@ game's core. It is a half-fail hinge -- a state you can recover from -- and
 should not be optimised for as though hitting it were the objective. Earlier
 entries in this file treat "did the crawl beat fire" as a success criterion.
 It is not one.
+
+## 2026-09-08: Three Rings, And Zero Translation On The Swing
+
+The about-face is absolute now: S alone backs straight, and the instant an A or
+D arrives the machine stops dead and only rotates. No translation at all during
+the swing. On mobile the lateral deadzone for the pull-back is deliberately
+wider than the stick's own -- straight back has to be reachable with an ordinary
+thumb pull, because if a few degrees of drift starts the machine swinging then
+the control demands a precision nothing else in the game asks for.
+
+The level is rebuilt, and depletion is why. The old field put every seam
+west-northwest, so every good day drove the same way and route shape was not
+really a choice, and it held about 47 ore, which a depleting map strips in two
+or three shifts. It also contained a seam labelled "recovery seam" that was the
+second-worst return per unit distance on the map.
+
+Three rings now, on different bearings, 95 ore in total:
+
+  near   depot-flats, north-shelf, south-bench    ~270 units, 7 ore each
+  mid    north-lobe, west-cut                     ~400-455, 13-14
+  far    far-shelf, deep-south                    ~680-710, 23-24
+
+Richness rises with distance faster than distance does, so return per unit of
+travel climbs from 3.07 at the near ring to 4.37 at the far -- reach is paid
+for, but only if you can afford to get there.
+
+The far ring cannot be reached and returned from inside one 36 second window on
+bare ground. That is the design and not a miss: chained, the same far-shelf
+route loses on shift 2 and wins on shift 4 with 5.2s spare, because by then the
+road reaches out toward it. The frontier opens because you built toward it,
+which is the first time the road has been the thing that changes what is
+possible rather than just what is fast.
+
+Repeating one ring wins about three shifts and then starts losing as it strips
+itself; alternating rings sustains. The map now says out loud that moving
+around beats repeating yourself.
+
+One finding to keep, surfaced by the fixture rather than hidden by it: chained
+on the far ring alone, the drone stops paying. Eight shifts of the same route
+return 24.7 ore with it and 26.5 without, because a settled network already
+covers the trip and the flight is pure cost. It still pays across a mixed
+campaign (5 wins of 8 and 118 ore against 3 and 94). So repeating one long
+route is the case where launching is wrong -- a real decision, as long as the
+game eventually says so somewhere.

@@ -89,74 +89,77 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
       { label: 'test east saddle', x: 846, y: 496, untilSeconds: 96 }
     ]
   },
+  // Re-cut for the three-ring field. Each rung now reaches one ring further
+  // out, so the ladder measures the thing the level is actually about: whether
+  // the reach you attempt is one you can pay for.
   safeReturn: {
     id: 'safeReturn',
-    label: 'Last Light Safe Return',
+    label: 'Last Light Near Ring Only',
     arenaId: 'last-light-return',
     durationSeconds: 36,
     droneLaunchSeconds: [6, 15],
     safeCorridorLeaveThreshold: 120,
     waypoints: [
-      { label: 'hold the safe road', x: 745, y: 565, untilSeconds: 3 },
-      { label: 'scrap seam on the road', x: 655, y: 548, untilSeconds: 7 },
-      { label: 'come home early', x: 900, y: 535, untilSeconds: 36 }
+      { label: 'roll out to the flats', x: 712, y: 486, untilSeconds: 4 },
+      { label: 'sweep the near flats', x: 568, y: 514, untilSeconds: 9 },
+      { label: 'come home early and light', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   shallowLobe: {
     id: 'shallowLobe',
-    label: 'Last Light Shallow Lobe',
+    label: 'Last Light Near Ring Doubled',
     arenaId: 'last-light-return',
     durationSeconds: 36,
     droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
-      { label: 'shallow seam entry', x: 690, y: 430, untilSeconds: 5.5 },
-      { label: 'shallow seam sweep', x: 540, y: 455, untilSeconds: 15 },
-      { label: 'come about for home', x: 900, y: 535, untilSeconds: 36 }
+      { label: 'roll out to the flats', x: 712, y: 486, untilSeconds: 4 },
+      { label: 'sweep the near flats', x: 568, y: 514, untilSeconds: 9 },
+      { label: 'cut south to the bench', x: 660, y: 660, untilSeconds: 17 },
+      { label: 'come home', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   deepLobe: {
     id: 'deepLobe',
-    label: 'Last Light Deep Northern Lobe',
+    label: 'Last Light Mid Ring',
     arenaId: 'last-light-return',
     durationSeconds: 36,
     droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
-      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 7 },
-      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 18 },
+      { label: 'climb toward the lobe', x: 676, y: 300, untilSeconds: 6 },
+      { label: 'sweep the north lobe', x: 524, y: 260, untilSeconds: 13 },
+      { label: 'drop into the west cut', x: 450, y: 470, untilSeconds: 20 },
       { label: 'come about for home', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   greedyLatePocket: {
     id: 'greedyLatePocket',
-    label: 'Last Light Greedy Late Pocket',
+    label: 'Last Light Far Shelf',
     arenaId: 'last-light-return',
     durationSeconds: 36,
     droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
-      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 7 },
-      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 13 },
-      { label: 'one more seam', x: 400, y: 330, untilSeconds: 21 },
-      { label: 'come about too late', x: 900, y: 535, untilSeconds: 36 }
+      { label: 'climb toward the lobe', x: 676, y: 300, untilSeconds: 6 },
+      { label: 'sweep the north lobe', x: 524, y: 260, untilSeconds: 11 },
+      { label: 'run out to the far shelf', x: 318, y: 190, untilSeconds: 17 },
+      { label: 'sweep the shelf', x: 182, y: 310, untilSeconds: 22 },
+      { label: 'the long way home', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   greedyLatePocketSloppy: {
     id: 'greedyLatePocketSloppy',
-    label: 'Last Light Sloppy Greedy Pocket',
+    label: 'Last Light Far Shelf Overstayed',
     arenaId: 'last-light-return',
     durationSeconds: 36,
     droneLaunchSeconds: [20],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
-      { label: 'climb too high', x: 720, y: 285, untilSeconds: 7 },
-      { label: 'overstay rich seam', x: 545, y: 315, untilSeconds: 15 },
-      { label: 'drive away from return', x: 400, y: 330, untilSeconds: 25 },
+      { label: 'climb toward the lobe', x: 676, y: 300, untilSeconds: 6 },
+      { label: 'sweep the north lobe', x: 524, y: 260, untilSeconds: 12 },
+      { label: 'run out to the far shelf', x: 318, y: 190, untilSeconds: 19 },
+      { label: 'overstay the shelf', x: 182, y: 310, untilSeconds: 28 },
       { label: 'far too late for home', x: 900, y: 535, untilSeconds: 36 }
     ]
   }

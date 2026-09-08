@@ -1234,8 +1234,14 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // the spot. It hardcoded steer 0, so the thumb could only ever reverse and
     // the swing was unreachable on a phone at all.
     if (pullingBack) {
+      // A wide lateral deadzone on the way back, deliberately wider than the
+      // stick's own. Straight back has to be reachable with an ordinary thumb
+      // pull -- if a few degrees of drift starts the machine swinging, the
+      // control demands a precision the game never asked for anywhere else.
+      const swingDeadzone = radius * 0.42;
+      const swinging = Math.abs(dx) > swingDeadzone;
       return {
-        steer: Math.abs(dx) > deadzone ? clamp(dx / radius, -1, 1) : 0,
+        steer: swinging ? clamp((dx - Math.sign(dx) * swingDeadzone) / (radius - swingDeadzone), -1, 1) : 0,
         throttle: 0,
         reverseIntent: true,
         driveIntent: false,
