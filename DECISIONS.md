@@ -707,3 +707,36 @@ crawl doubling, and crawl is a state with an entry and an exit, so the exit was
 always the thing to look at. And the probe that found it was initially wrong
 too -- it omitted the scheduled drone launches, so its first output described a
 run nobody plays. Check what the probe leaves out before believing what it says.
+
+## 2026-09-08: Day One Was Unwinnable
+
+Read the recorded runs. Eleven now, and they separate on one line:
+
+  shift 1   lost, lost, lost, lost    10.7, 12.0, 5.5, 8.1 ore against a 12 quota
+  shift 2+  won six of seven          16.1, 29.0, 21.1, 20.4, 19.0, 25.7
+
+Four fresh starts, four losses, none reaching the depot. Every later shift
+comfortable. The discontinuity is exactly the thing that changed between them:
+day one is the only day played on genuinely bare ground, and bare ground with
+six nanobots cannot reach two near seams and get home.
+
+The depot has an apron now -- a short arm of starting road running out toward
+the near flats, along the line the safe road already takes. A depot that has
+been operating has road around it, so this is the fiction as much as the fix,
+and it means day one begins the way every later day begins: on something.
+
+The ladder came out the healthiest it has been all session. Mid ring wins with
+20.8 ore and 9.9s of light left, the far shelf wins with 36.6 and only 4.9s --
+two winners separated by margin rather than by verdict. Near ring and the
+overstayed far route lose. Every no-drone run loses.
+
+Also read and NOT acted on: two consecutive runs a minute apart both recorded
+as shift one with nothing carried, which looks like the save failing. It is not
+reproducible -- carry-over works end to end in a browser on this build -- and a
+republish landed between those two runs, which reloads the page. Recorded as
+unexplained rather than fixed, because inventing a fix for a bug that cannot be
+reproduced is how the wrong thing gets changed.
+
+One more thing the data answered directly: the run with zero drone launches
+lost with 16.8 seconds of crawl and 8.1 ore. The drone is still load-bearing on
+a bare day.

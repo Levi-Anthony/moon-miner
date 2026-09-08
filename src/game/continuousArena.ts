@@ -269,7 +269,24 @@ const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
   },
   safePath: LAST_LIGHT_SAFE_PATH,
   solarWindowSeconds: 36,
-  starterFieldPoints: [],
+  // A depot apron. Every fresh start recorded so far has lost -- 10.7, 12.0,
+  // 5.5 and 8.1 ore against a quota of 12, four for four -- while shift two
+  // onward wins six times in seven. Day one was the only day played on
+  // genuinely bare ground, and bare ground plus six nanobots cannot reach two
+  // near seams and get home.
+  //
+  // A depot that has been operating has road around it. This lays a short arm
+  // out toward the near flats, which is the direction the safe road already
+  // goes, so the first day starts the way every later day does: on something.
+  starterFieldPoints: [
+    { x: 872, y: 531 },
+    { x: 846, y: 526 },
+    { x: 820, y: 521 },
+    { x: 794, y: 516 },
+    { x: 768, y: 512 },
+    { x: 742, y: 507 },
+    { x: 716, y: 502 }
+  ],
   // Redesigned once ore began carrying its depletion overnight. The old field
   // put every seam west-northwest, so every good day drove the same way and
   // route shape was not really a choice; and it held about 47 ore in total,

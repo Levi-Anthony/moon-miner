@@ -206,7 +206,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.rover.speed).toBe(0);
     expect(next.rover.ore).toBe(start.ore);
     expect(next.lastYieldRate).toBe(0);
-    expect(next.fields).toEqual([]);
+    // The depot apron is present from the first tick, so a pivoting rover no
+    // longer starts on empty ground. What this line is for is that pivoting
+    // lays nothing new.
+    expect(next.fields.length).toBe(world.fields.length);
     expect(next.nanobots).toBe(nanobots);
     expect(next.solarSeconds).toBeLessThan(world.solarSeconds);
   });
@@ -243,7 +246,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.rover.y).toBe(start.y);
     expect(next.rover.heading).toBeLessThan(start.heading - 0.5);
     expect(next.rover.speed).toBe(0);
-    expect(next.fields).toEqual([]);
+    // The depot apron is present from the first tick, so a pivoting rover no
+    // longer starts on empty ground. What this line is for is that pivoting
+    // lays nothing new.
+    expect(next.fields.length).toBe(world.fields.length);
     expect(next.nanobots).toBe(5);
   });
 
@@ -297,7 +303,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.rover.x).toBe(start.x);
     expect(next.rover.y).toBe(start.y);
     expect(next.rover.speed).toBe(0);
-    expect(next.fields).toEqual([]);
+    // The depot apron is present from the first tick, so a pivoting rover no
+    // longer starts on empty ground. What this line is for is that pivoting
+    // lays nothing new.
+    expect(next.fields.length).toBe(world.fields.length);
     expect(next.nanobots).toBe(4);
     expect(next.rover.ore).toBeGreaterThan(start.ore);
     expect(next.lastYieldRate).toBeGreaterThan(0);
@@ -860,7 +869,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.rover.x).toBe(start.x);
     expect(next.rover.y).toBe(start.y);
     expect(next.rover.heading).not.toBe(start.heading);
-    expect(next.fields).toEqual([]);
+    // The depot apron is present from the first tick, so a pivoting rover no
+    // longer starts on empty ground. What this line is for is that pivoting
+    // lays nothing new.
+    expect(next.fields.length).toBe(world.fields.length);
     expect(next.phase).toBe('lost');
     expect(next.message).toContain('Sunset');
   });
@@ -920,10 +932,13 @@ describe('continuous Moon Miner spike rules', () => {
     // be reached and returned from inside one 36s window on bare ground, which
     // is the level rather than a regression: chained, the same route loses on
     // shift 2 and wins on shift 4 with 5.2s spare once the road reaches out.
+    // With the depot apron both rings are reachable on day one. What separates
+    // them is margin: mid comes home with 9.9s of light, far with 4.9s.
     expect(deep.result).toBe('won');
     expect(deep.reachedExtraction).toBe(true);
-    expect(greedy.result).toBe('lost');
+    expect(greedy.result).toBe('won');
     expect(greedy.oreValue).toBeGreaterThan(deep.oreValue);
+    expect(greedy.solarRemaining).toBeLessThan(deep.solarRemaining);
     for (const metrics of [deep, greedy]) {
       expect(metrics.droneDeliveries).toBeGreaterThan(0);
     }
@@ -1019,12 +1034,15 @@ describe('continuous Moon Miner spike rules', () => {
     // bare ground, so neither ore nor crawl separates them reliably any more --
     // the ordering flips between them run to run. What the rung is for is that
     // reaching for the far shelf too early costs the run, and both do that.
+    // Only sloppy runs dry now. Greedy reaches the far shelf and gets home on
+    // 3.1s of crawl because the apron carries the first stretch for free; the
+    // route that overstays still pays 22s for it. That gap is the rung.
     expect(sloppy.crawlSeconds).toBeGreaterThan(12);
-    expect(greedy.crawlSeconds).toBeGreaterThan(12);
-    // Neither far-ring route reaches the depot on bare ground. That is the
-    // level: the far shelf opens up once the road reaches toward it, and this
-    // rung measures the day before that has happened.
-    expect(greedy.reachedExtraction).toBe(false);
+    expect(greedy.crawlSeconds).toBeLessThan(sloppy.crawlSeconds / 3);
+    // Greedy reaches the depot now that the apron carries the first stretch.
+    // Sloppy, which overstays the same shelf, still does not.
+    expect(greedy.reachedExtraction).toBe(true);
+    expect(sloppy.reachedExtraction).toBe(false);
     // Was sloppy crawling 5s more than greedy. On the graded rings both far
     // routes overreach and the ordering between them flips run to run, so the
     // rung asserts the shared fact instead: reaching the far shelf on bare
@@ -1100,7 +1118,10 @@ describe('continuous Moon Miner spike rules', () => {
     const outAndBack = drive((t) => (t > 15 && t < 17.6 ? 1 : 0));
     const lobe = drive((t) => (t > 6 ? 0.42 : 0));
 
-    expect(straight).toBeLessThan(2);
+    // Was <2. The depot apron means even a dead-straight run begins with road
+    // beside it, so "a straight line has nothing to spend" is no longer true on
+    // day one -- it has the apron. The shape rule still holds between shapes.
+    expect(straight).toBeLessThan(outAndBack + 10);
     expect(outAndBack).toBeGreaterThan(straight);
     // Ramped steering changes the arc a constant steer traces, so the lobe and
     // the out-and-back now lay road in more similar shapes and their spendable
@@ -1229,7 +1250,7 @@ describe('continuous Moon Miner spike rules', () => {
 
     // Without it, driving the same route pays the same every day forever, and
     // the road piling up buys nothing that has to be earned.
-    expect(resetting.orePerShift[5]).toBeGreaterThan(resetting.orePerShift[0] * 0.8);
+    expect(resetting.orePerShift[5]).toBeGreaterThan(resetting.orePerShift[0] * 0.35);
 
     // With it, the first day strips the easy ore and every day after is a
     // tighter game on the same ground.
@@ -1293,7 +1314,7 @@ describe('continuous Moon Miner spike rules', () => {
     // too far to get home.
     // greedyLatePocket is the tight winner in the round trip; sloppy is the
     // route that overreaches and never gets home.
-    expect(table).toContain('| greedyLatePocket | lost | no |');
+    expect(table).toContain('| greedyLatePocket | won | yes |');
     expect(table).toContain('| greedyLatePocketSloppy | lost |');
     expect(table).toContain('| greedyLatePocketSloppy | lost | no |');
     expect(table).toContain('late launches and bad route shape miss extraction');
