@@ -1195,17 +1195,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       steer = clamp(angleDifference(desiredAngle, this.state.rover.heading) / 0.85, -1, 1);
     }
 
-    // S is a tank turn: tracks counter-rotate and the machine comes about on
-    // the spot. It costs time rather than distance, which is the real currency.
-    const comingAbout = downHeld && !upHeld;
+    // S backs up. S with A or D swings the machine on the spot. Neither touches
+    // the forward path, which is plain steer-and-throttle again.
+    const reversing = downHeld && !upHeld;
     const driveIntent = upHeld || Boolean(this.pointerTarget);
     return {
       steer,
       throttle: upHeld ? 1 : this.pointerTarget ? 0.62 : 0,
       brake: false,
-      reverseIntent: comingAbout,
-      driveIntent: comingAbout ? false : driveIntent,
-      pivotIntent: comingAbout || (!driveIntent && Math.abs(steer) > 0.001)
+      reverseIntent: reversing,
+      driveIntent: reversing ? false : driveIntent,
+      pivotIntent: reversing || (!driveIntent && Math.abs(steer) > 0.001)
     };
   }
 
@@ -1228,10 +1228,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const commitment = clamp((distance - deadzone) / (radius - deadzone), 0, 1);
     const forwardBias = clamp((-dy - deadzone) / (radius - deadzone), 0, 1);
-    const pullingBack = dy > deadzone && Math.abs(dy) > Math.abs(dx);
+    const pullingBack = dy > deadzone;
 
+    // Same grammar as the keyboard: back is reverse, back-and-across swings on
+    // the spot. It hardcoded steer 0, so the thumb could only ever reverse and
+    // the swing was unreachable on a phone at all.
     if (pullingBack) {
-      return { steer: 0, throttle: 0, reverseIntent: true, driveIntent: false, pivotIntent: true };
+      return {
+        steer: Math.abs(dx) > deadzone ? clamp(dx / radius, -1, 1) : 0,
+        throttle: 0,
+        reverseIntent: true,
+        driveIntent: false,
+        pivotIntent: true
+      };
     }
 
     return {

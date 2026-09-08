@@ -519,3 +519,44 @@ and moving around beats repeating yourself. Alternating two routes across eight
 shifts wins the greedy one every time and loses the narrow one every time,
 which is the map saying that a route which can only reach one seam cannot
 sustain itself.
+
+## 2026-09-08: S Reverses. Forward Driving Goes Back To Normal.
+
+"Tank treads" was a description of the rotate-in-place button, not of the
+movement model, and reading it as the model is what broke navigation.
+
+What it had become: one press of S captured a heading half a turn away and
+auto-steered toward it, held until release. That put an auto-steer override --
+resolveSteer -- into the normal forward driving path, where it intercepted the
+player's steer input on every frame of ordinary driving. Forward driving has
+not been plain steer-and-throttle since the turn-around went in, and that is
+the "navigation has been a little broken" report. The override is gone and the
+forward path reads input.steer directly again.
+
+Of the two options for a bare S, straight reverse rather than nothing. A key
+that waits silently for a second key reads as broken, which is the complaint
+rather than the fix, and S meaning reverse matches every driving game. Backing
+up and then swinging when you steer is also how a vehicle actually backs and
+fills.
+
+  W        drive
+  W + A/D  steer while moving, untouched
+  S        back straight up at 62% of fabricating speed
+  S + A/D  stop and swing on the spot
+
+Measured over two seconds each: W moves 148 and turns 0, W+D moves 60 and turns
+118 degrees, S moves 92 and turns 0, S+D moves 0 and turns 149 degrees.
+
+Two things found while checking rather than by reasoning. The field system runs
+after the movement step and overwrote its message unconditionally, so S read as
+"Chassis pivoting in place" while the machine was plainly reversing -- the
+movement step now speaks for itself and the field system only fills silence.
+And the mobile pull-back hardcoded steer to zero, so a thumb could reverse but
+the swing was unreachable on a phone at all; it now carries sideways offset the
+same way the keyboard carries A and D.
+
+Also recorded, from Levi: the crawl beat being necessary does not make it the
+game's core. It is a half-fail hinge -- a state you can recover from -- and
+should not be optimised for as though hitting it were the objective. Earlier
+entries in this file treat "did the crawl beat fire" as a success criterion.
+It is not one.

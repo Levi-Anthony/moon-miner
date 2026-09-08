@@ -216,7 +216,6 @@ export interface ContinuousWorldState {
   elapsedSeconds: number;
   lastDroneLaunchAtSeconds: number;
   dronePendingLaunchCost: number;
-  reverseTargetHeading?: number;
   phase: ContinuousPhase;
   speedState: SpeedState;
   arms: ArmAllocation;
@@ -247,6 +246,7 @@ const TURN_RATE = 2.25;
 // driving badly (0.18), so it was strictly optimal, and the on-screen guidance
 // taught it. A game about continuous motion whose scoring rewards stopping is
 // going to feel wrong in a way that is hard to name.
+const REVERSE_SPEED_RATIO = 0.62;
 const STATIONARY_MINING_FLOW_MULTIPLIER = 0.25;
 const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
@@ -590,7 +590,7 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
     return homeArena
       ? {
           objective: `Mine ${state.arena.extraction?.oreRequired ?? 0} ore, then reach extraction before sunset`,
-          nudge: 'W drives, A/D steer, S turns you around.'
+          nudge: 'W drives, A/D steer, S reverses. S+A or S+D swings you round.'
         }
       : { objective: `Mine ${state.targetOre} ore before sunset`, nudge: 'W drives, A/D steer. Gold rock is ore.' };
   }
@@ -637,7 +637,7 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
   }
 
   if (homeArena && solarRatio < 0.5) {
-    return { objective: 'Start heading home', nudge: 'S turns you around. Your road is free to drive.' };
+    return { objective: 'Start heading home', nudge: 'S+A or S+D to swing round. Your road is free to drive.' };
   }
 
   if (findFertileZoneAt(state, state.rover)) {
@@ -796,7 +796,7 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
   state.speedState = resolveSpeedState(state);
   const driveIntent = Boolean(input.driveIntent);
   const movedDistance = steerAndMoveRover(state, input, deltaSeconds);
-  runFieldSystem(state, driveIntent, Boolean(input.pivotIntent), movedDistance, deltaSeconds);
+  runFieldSystem(state, driveIntent, Boolean(input.pivotIntent), Boolean(input.reverseIntent), movedDistance, deltaSeconds);
   const fertileZone = findFertileZoneAt(state, state.rover);
   state.arms = allocateArms(state.speedState, Boolean(fertileZone), driveIntent, state.drone.status);
   runMiningSystem(state, fertileZone, driveIntent, deltaSeconds);
@@ -807,21 +807,49 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
 
 function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, deltaSeconds: number): number {
   if (!input.driveIntent) {
-    if (input.pivotIntent && (Math.abs(input.steer) > 0.001 || input.reverseIntent)) {
-      const turnMultiplier = state.speedState === 'prepared' ? 1.0 : state.speedState === 'crawl' ? 0.54 : 0.82;
-      state.rover.heading = wrapAngle(
-        state.rover.heading + resolveSteer(state, input) * TURN_RATE * turnMultiplier * deltaSeconds
-      );
-      state.message = input.reverseIntent
-        ? 'Coming about. Tracks counter-rotating.'
-        : 'Chassis pivoting in place. Field fabrication is idle.';
+    const pivotRate = state.speedState === 'prepared' ? 1.0 : state.speedState === 'crawl' ? 0.54 : 0.82;
+
+    // S on its own backs straight up. Add A or D and the machine stops and
+    // swings on the spot instead.
+    //
+    // It used to auto-rotate through a full half turn from a single press,
+    // captured once and held until release. That was a reading of "like a
+    // tank" as the movement model rather than as the rotate-in-place button it
+    // was meant to describe, and it put an auto-steer override into the normal
+    // forward path -- which is what made ordinary driving feel off ever since.
+    // Bare S doing nothing at all was the other candidate and is worse: a key
+    // that waits silently for a second key reads as broken, which is the
+    // complaint rather than the fix.
+    if (input.reverseIntent) {
+      if (Math.abs(input.steer) > 0.001) {
+        state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * pivotRate * deltaSeconds);
+        state.rover.turnRate = input.steer * TURN_RATE * pivotRate;
+        state.rover.speed = 0;
+        state.message = 'Swinging on the spot.';
+        return 0;
+      }
+
+      const reverseSpeed = state.tuning.fabricatingSpeed * REVERSE_SPEED_RATIO;
+      state.rover.x = clamp(state.rover.x - Math.cos(state.rover.heading) * reverseSpeed * deltaSeconds, 34, state.width - 34);
+      state.rover.y = clamp(state.rover.y - Math.sin(state.rover.heading) * reverseSpeed * deltaSeconds, 76, state.height - 34);
+      state.rover.turnRate = 0;
+      state.rover.speed = reverseSpeed;
+      state.message = 'Backing up. A or D to swing round.';
+      return 0;
+    }
+
+    if (input.pivotIntent && Math.abs(input.steer) > 0.001) {
+      state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * pivotRate * deltaSeconds);
+      state.message = 'Chassis pivoting in place. Field fabrication is idle.';
     }
     state.rover.speed = 0;
     return 0;
   }
 
   const turnMultiplier = state.speedState === 'prepared' ? 1.24 : state.speedState === 'crawl' ? 0.62 : 0.94;
-  const playerTurn = resolveSteer(state, input) * TURN_RATE * turnMultiplier;
+  // Straight from the player's input. No interception, no held target: forward
+  // driving is exactly what it was before the turn-around went in.
+  const playerTurn = input.steer * TURN_RATE * turnMultiplier;
   const magnetTurn = getPreparedMagnetTurn(state, input);
   // Smoothed, because the projection below reads it and a single jittery frame
   // should not swing where the drone is allowed to go.
@@ -864,6 +892,7 @@ function runFieldSystem(
   state: ContinuousWorldState,
   driveIntent: boolean,
   pivotIntent: boolean,
+  reverseIntent: boolean,
   movedDistance: number,
   deltaSeconds: number
 ): void {
@@ -876,12 +905,17 @@ function runFieldSystem(
   if (!driveIntent) {
     state.fieldEmitDistance = 0;
     state.pendingFieldValue = 0;
-    state.message =
-      pivotIntent
+    // The movement step has already said what reversing or swinging is doing,
+    // and this ran after it and overwrote both with the pivot line -- so S read
+    // as "pivoting in place" while the machine was plainly backing up. Only
+    // speak here when the movement step had nothing to say.
+    if (!reverseIntent) {
+      state.message = pivotIntent
         ? 'Chassis pivoting in place. Field fabrication is idle.'
         : state.speedState === 'crawl'
         ? 'Crawl protocol standing by. Drag to scrape residue.'
         : 'Drive idle. Drag to fabricate field.';
+    }
     return;
   }
 
@@ -1106,30 +1140,6 @@ function preserveFieldPatches(state: ContinuousWorldState): void {
     .map((field) => field.id);
   const removableIds = new Set(removable);
   state.fields = state.fields.filter((field) => !removableIds.has(field.id));
-}
-
-// Holding the turn-around key steers hard toward the reverse of the current
-// heading until the machine has come about, so a route out becomes a route
-// home along ground that is already laid.
-function resolveSteer(state: ContinuousWorldState, input: ContinuousInput): number {
-  if (!input.reverseIntent) {
-    state.reverseTargetHeading = undefined;
-    return input.steer;
-  }
-
-  // The target is captured once, when the key goes down. Recomputing
-  // heading + PI every frame makes the difference permanently PI, so the
-  // machine spins forever instead of coming about.
-  if (state.reverseTargetHeading === undefined) {
-    state.reverseTargetHeading = wrapAngle(state.rover.heading + Math.PI);
-  }
-
-  // Hold the captured target until the key is released. Clearing it on arrival
-  // let the second call site of this function re-capture a fresh target from
-  // the new heading, so the machine came about and then kept going, forever.
-  const remaining = angleDifference(state.reverseTargetHeading, state.rover.heading);
-  if (Math.abs(remaining) < 0.06) return input.steer;
-  return remaining > 0 ? 1 : -1;
 }
 
 function resolveSpeedState(state: ContinuousWorldState): SpeedState {
