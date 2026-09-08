@@ -347,7 +347,7 @@ async function verifyDroneReadability(page) {
     window.__moonMinerContinuous?.startSelfPlay();
   });
 
-  const urgent = await waitForSnapshot(
+  const urgent = await waitForSimSnapshot(
     page,
     'low-buffer drone urgency cue',
     (snapshot) => {
@@ -357,11 +357,10 @@ async function verifyDroneReadability(page) {
         throw new Error(`Expected launch urgency cue at ${snapshot.state.nanobots.toFixed(1)} nanobots.`);
       }
       return snapshot;
-    },
-    30000
+    }
   );
 
-  const reserved = await waitForSnapshot(
+  const reserved = await waitForSimSnapshot(
     page,
     'outbound reserved target cue',
     (snapshot) => {
@@ -372,11 +371,10 @@ async function verifyDroneReadability(page) {
         throw new Error(`Expected reserved target snapshot for ${reservedCount} reserved fields.`);
       }
       return { snapshot, reservedCount };
-    },
-    50000
+    }
   );
 
-  const returning = await waitForSnapshot(
+  const returning = await waitForSimSnapshot(
     page,
     'return payload cue',
     (snapshot) => {
@@ -385,11 +383,10 @@ async function verifyDroneReadability(page) {
         throw new Error(`Expected return payload cue for +${snapshot.state.drone.payload.toFixed(1)}.`);
       }
       return snapshot;
-    },
-    12000
+    }
   );
 
-  const delivery = await waitForSnapshot(
+  const delivery = await waitForSimSnapshot(
     page,
     'delivery burst readout cue',
     (snapshot) => {
@@ -398,8 +395,7 @@ async function verifyDroneReadability(page) {
         throw new Error('Expected positive delivery amount in the delivery readout cue.');
       }
       return snapshot;
-    },
-    12000
+    }
   );
 
   return {
@@ -754,6 +750,48 @@ async function readOverlayState(page) {
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
     };
   });
+}
+
+// The drone readability cues are produced by the self-play simulation, which
+// advances per rendered frame. On a loaded CI runner far fewer frames elapse
+// per wall-clock second, so a fixed wall-clock timeout ends up measuring how
+// busy the runner is rather than whether the game works - the same check then
+// passes locally and fails in CI on the identical commit.
+//
+// Wait on simulation progress instead: keep going while state.elapsedSeconds is
+// still advancing, and fail only when the simulation itself stalls, or when an
+// absolute ceiling is reached. Predicate throws are retried until one of those
+// limits, matching waitFor's existing semantics.
+async function waitForSimSnapshot(page, label, predicate, stallMs = 15000, capMs = 120000, intervalMs = 50) {
+  const hardDeadline = Date.now() + capMs;
+  let stallDeadline = Date.now() + stallMs;
+  let lastElapsed = -Infinity;
+  let lastError;
+
+  while (Date.now() < hardDeadline && Date.now() < stallDeadline) {
+    try {
+      const snapshot = await readSnapshot(page);
+      if (snapshot) {
+        const elapsed = snapshot.state?.elapsedSeconds;
+        if (typeof elapsed === 'number' && elapsed > lastElapsed) {
+          lastElapsed = elapsed;
+          stallDeadline = Date.now() + stallMs;
+        }
+        const result = predicate(snapshot);
+        if (result) return result === true ? snapshot : result;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(intervalMs);
+  }
+
+  const seen = Number.isFinite(lastElapsed) ? `${lastElapsed.toFixed(1)}s of sim time` : 'no simulation clock';
+  const why = Date.now() < hardDeadline
+    ? `simulation stalled at ${seen}`
+    : `hit the ${(capMs / 1000).toFixed(0)}s ceiling at ${seen}`;
+  const cause = lastError instanceof Error ? ` Last error: ${lastError.message}` : '';
+  throw new Error(`Timed out waiting for ${label} (${why}).${cause}`);
 }
 
 async function waitForSnapshot(page, label, predicate = () => true, timeoutMs = 8000, intervalMs = 50) {

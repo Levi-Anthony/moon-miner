@@ -1,7 +1,11 @@
 name: CI
 
 on:
+  # push is scoped to main so a branch with an open pull request is not built
+  # twice for the same commit - that doubles CI time and produces two
+  # different-looking results for one revision.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
