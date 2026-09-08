@@ -347,7 +347,7 @@ async function verifyDroneReadability(page) {
     window.__moonMinerContinuous?.startSelfPlay();
   });
 
-  const urgent = await waitForSimSnapshot(
+  const urgent = await waitForSnapshot(
     page,
     'low-buffer drone urgency cue',
     (snapshot) => {
@@ -360,7 +360,7 @@ async function verifyDroneReadability(page) {
     }
   );
 
-  const reserved = await waitForSimSnapshot(
+  const reserved = await waitForSnapshot(
     page,
     'outbound reserved target cue',
     (snapshot) => {
@@ -374,7 +374,7 @@ async function verifyDroneReadability(page) {
     }
   );
 
-  const returning = await waitForSimSnapshot(
+  const returning = await waitForSnapshot(
     page,
     'return payload cue',
     (snapshot) => {
@@ -386,7 +386,7 @@ async function verifyDroneReadability(page) {
     }
   );
 
-  const delivery = await waitForSimSnapshot(
+  const delivery = await waitForSnapshot(
     page,
     'delivery burst readout cue',
     (snapshot) => {
@@ -752,17 +752,16 @@ async function readOverlayState(page) {
   });
 }
 
-// The drone readability cues are produced by the self-play simulation, which
-// advances per rendered frame. On a loaded CI runner far fewer frames elapse
-// per wall-clock second, so a fixed wall-clock timeout ends up measuring how
-// busy the runner is rather than whether the game works - the same check then
-// passes locally and fails in CI on the identical commit.
+// Snapshot waits observe a simulation that advances per rendered frame. A fixed
+// wall-clock budget therefore measures how busy the machine is rather than
+// whether the game works, which is why the identical commit passed locally four
+// times and failed on a loaded CI runner.
 //
-// Wait on simulation progress instead: keep going while state.elapsedSeconds is
-// still advancing, and fail only when the simulation itself stalls, or when an
-// absolute ceiling is reached. Predicate throws are retried until one of those
-// limits, matching waitFor's existing semantics.
-async function waitForSimSnapshot(page, label, predicate, stallMs = 15000, capMs = 120000, intervalMs = 50) {
+// stallMs is how long to tolerate NO simulation progress - state.elapsedSeconds
+// failing to advance - rather than a total time budget. capMs is an absolute
+// ceiling so a genuinely unsatisfiable predicate still ends the run. Predicate
+// throws are retried until one of those limits, as before.
+async function waitForSnapshot(page, label, predicate = () => true, stallMs = 8000, intervalMs = 50, capMs = 120000) {
   const hardDeadline = Date.now() + capMs;
   let stallDeadline = Date.now() + stallMs;
   let lastElapsed = -Infinity;
@@ -788,19 +787,10 @@ async function waitForSimSnapshot(page, label, predicate, stallMs = 15000, capMs
 
   const seen = Number.isFinite(lastElapsed) ? `${lastElapsed.toFixed(1)}s of sim time` : 'no simulation clock';
   const why = Date.now() < hardDeadline
-    ? `simulation stalled at ${seen}`
+    ? `no simulation progress for ${(stallMs / 1000).toFixed(0)}s, last seen ${seen}`
     : `hit the ${(capMs / 1000).toFixed(0)}s ceiling at ${seen}`;
   const cause = lastError instanceof Error ? ` Last error: ${lastError.message}` : '';
   throw new Error(`Timed out waiting for ${label} (${why}).${cause}`);
-}
-
-async function waitForSnapshot(page, label, predicate = () => true, timeoutMs = 8000, intervalMs = 50) {
-  return waitFor(label, async () => {
-    const snapshot = await readSnapshot(page);
-    if (!snapshot) return undefined;
-    const result = predicate(snapshot);
-    return result === true ? snapshot : result;
-  }, timeoutMs, intervalMs);
 }
 
 function assertUiLayout(snapshot, expectedMode, expectedViewMode = 'tactical') {
