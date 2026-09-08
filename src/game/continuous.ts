@@ -292,7 +292,14 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // all WINS, which re-breaks the exact thing this session spent a day fixing.
   // At 0.40 the network settles around 14-17 patches, the crawl beat survives
   // (4.6s and 6.1s at shift six), and the drone stays decisive.
-  overnightFieldDecay: 0.4,
+  // Was 0.4, which is most of a night's road gone by morning and made every
+  // day start from a different amount of a resource the player did not choose:
+  // inherited road across seven real runs went 0, 11, 11, 6, 16, 18, 9, and the
+  // best and worst days tracked it. Road that evaporates is not road. At 0.94 a
+  // well-laid length is still there in the morning, while crawl scrapings at
+  // 0.025 still fall under the floor -- so the one distinction worth keeping,
+  // between road you built and road you scraped out while dying, survives.
+  overnightFieldDecay: 0.94,
   overnightFieldSurvivalValue: 0.1,
   droneRailRelayMaxPatches: 6,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
@@ -339,7 +346,13 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   minReclaimClusterPayload: 0.12,
   allowCloseReclaim: false,
   allowLowPayloadLaunch: false,
-  droneSpeed: 160,
+  // Raised from 160. Measured across seven real runs, launch-to-delivery was
+  // 1.5 to 5.7 seconds and one flight never came home inside the window at all
+  // -- up to a sixth of a 36 second day spent waiting on it. 160 was chosen
+  // when targets were close; the corridor, the 90-unit exclusion and the
+  // forward-arc projection have all since pushed them much further out, and
+  // nobody re-measured the flight time after moving the targets.
+  droneSpeed: 260,
   // 185 was four field-radii -- a swathe rather than a stretch. 70 lifts a
   // short run of road you can see disappear as a piece.
   dronePickupRadius: 70,

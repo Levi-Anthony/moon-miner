@@ -3366,16 +3366,32 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const ordinary = fields.filter((field) => !field.reservedByDrone);
     const reserved = fields.filter((field) => field.reservedByDrone);
 
-    // Two kinds of road, and the difference is the whole decision. Cyan is the
-    // corridor back to extraction, which the drone may not take -- your way
-    // home. Amber is road clear of that line, which the drone may lift. The
-    // rule is invisible unless the road itself shows it, so it is drawn rather
-    // than explained.
-    const spendable = ordinary.filter((field) => isRoadSpendable(this.state, field));
-    const routeHome = ordinary.filter((field) => !isRoadSpendable(this.state, field));
+    // Your road is one thing and it is painted one colour. It used to be split
+    // live into "protected" and "spendable", and that reads as inscrutable
+    // because both of those are measured from the rover: the corridor runs to
+    // extraction from wherever you are, and the forward arc follows your
+    // heading. So a stretch of road flipped between cyan and amber as you drove
+    // past it, changing for reasons tied to your own motion rather than to
+    // anything about the road. Road that repaints itself while you look at it
+    // is not road.
+    //
+    // The distinction still exists and still matters, so it is shown at the
+    // only moment it is a decision: the cluster the drone would actually lift
+    // is highlighted while the launch is available. That is a targeting
+    // reticle, which is allowed to move, rather than a property of the ground,
+    // which is not.
+    const preview = getReclaimPreview(this.state);
+    const targeted = new Set<number>();
+    if (preview) {
+      for (const field of ordinary) {
+        if (Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius) {
+          targeted.add(field.id);
+        }
+      }
+    }
 
-    this.drawFieldRibbon(routeHome, 0x6cf5dd, false);
-    this.drawFieldRibbon(spendable, 0xd8a24a, false);
+    this.drawFieldRibbon(ordinary.filter((field) => !targeted.has(field.id)), 0x6cf5dd, false);
+    this.drawFieldRibbon(ordinary.filter((field) => targeted.has(field.id)), 0xd8a24a, false);
     this.drawFieldRibbon(reserved, 0xffa06c, true);
     this.drawFieldBirthMarkers(ordinary);
   }

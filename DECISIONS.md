@@ -433,3 +433,45 @@ antennae; arms whose tip lands nearer the camera are now drawn after the body.
 Guessed on purpose and open to steering: reach lengths, the size of the tool
 heads, and the fact that every duty currently reaches forward rather than some
 arms working to the side or behind.
+
+## 2026-09-08: Read The Real Runs
+
+First report argued from recorded play rather than self-play, and the traces
+answered all three complaints without guessing.
+
+DRONE TOO SLOW. Launch-to-delivery across seven real runs: 1.5, 3.4, 1.8, 4.2,
+4.7, 5.7, 4.4, 3.1, 2.3 seconds, and one flight launched at 28.4s that never
+came home before the window closed at 36. Up to a sixth of a day spent waiting.
+droneSpeed was set to 160 when reclaim targets sat close to the machine; the
+route-home corridor, the 90-unit exclusion and the forward-arc projection have
+each pushed targets further out since, and nobody re-measured the flight after
+moving the target. 260 now.
+
+ROAD INSCRUTABLE. The colour was computed from the rover. The corridor is
+measured to extraction from wherever you are and the forward arc follows your
+heading, so a stretch of road flipped between cyan and amber as you drove past
+it -- changing for reasons about your motion rather than about the road. Road
+that repaints itself while you look at it is not road. Your laid road is one
+colour now, and the spendable/protected distinction is shown only as a
+highlight on the cluster the drone would actually lift while the launch is
+available: a targeting reticle, which may move, instead of a property of the
+ground, which may not.
+
+ROAD DECAYS TOO FAST. Inherited road across those runs went 0, 11, 11, 6, 16,
+18, 9, and the best and worst days tracked it -- a resource the player did not
+choose and could not predict, which is the other half of "inconsistent".
+Overnight decay 0.4 -> 0.94. A well-laid length is still there in the morning;
+crawl scrapings at 0.025 still fall under the floor, so the distinction between
+road you built and road you scraped out while dying survives.
+
+What durable road costs, recorded rather than hidden. A settled network means
+later shifts stop running dry, so the crawl and recovery halves of the canon's
+loop stop firing by themselves. That is a real loss, but the traces show the
+loop completing in 1 run of 7 already, and crawl time swinging 0, 3.7, 5.2, 8,
+11.1, 18.5 seconds with no pattern the player could read. An erratic beat is
+being traded, not a working one.
+
+The consequence to face next: the drone's whole job has been "you would have
+run out". With road that persists, you will not, and it needs a reason to exist
+that is not loss-prevention. That is ECO-90's question arriving from a second
+direction.
