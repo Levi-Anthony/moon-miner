@@ -225,18 +225,26 @@ Full verification:
 npm run verify:full
 ```
 
-This also runs the browser smoke check. As of July 1, 2026, `npm run smoke:continuous` is a known-red integration check. That means `verify:full` is allowed to fail until the smoke issue is fixed in a separate slice.
+This also runs the browser smoke check. As of September 8, 2026, `verify:full` passes end to end on `main`. It previously failed at `npm audit` and short-circuited before ever reaching the smoke check; that audit failure is fixed in this change.
 
-## Current Known Red
+## Current Check Status
 
-As of July 1, 2026:
+As of September 8, 2026, measured on `main` at `787d502` plus the lockfile fix in this change:
 
-- `npm test` passes.
+- `npm test` passes, 62 tests.
 - `npm run build` passes.
-- `npm audit` last reported 0 vulnerabilities.
-- `npm run smoke:continuous` is known red. The most recent run on July 1, 2026 timed out waiting for `return payload cue` during the browser smoke route.
+- `npm audit` passes, 0 vulnerabilities.
+- `npm run smoke:continuous` passes.
+- `npm run verify`, `npm run verify:known-green`, and `npm run verify:full` all exit 0.
 
-Do not let an agent say "all checks pass" unless it includes the known-red smoke status or has actually fixed it.
+Nothing is known red on `main` right now.
+
+Two things not to assume from that:
+
+- **Branches differ.** The open PR #1 branch fails smoke with `Expected tactical view mode, got chase.` A green `main` says nothing about a branch.
+- **This section ages.** `npm audit` reads a live advisory feed, so it can go red with no code change at all. Between July 1 and September 8, 2026 this section was wrong in both directions at once: it called smoke red while smoke passed, and called audit clean while audit was failing on two high-severity advisories. Nobody noticed, because nothing re-runs these commands automatically.
+
+Do not let an agent say "all checks pass" unless it names the date, the branch, and the commit it measured. Re-run the commands; do not quote this section as evidence.
 
 ## When Something Goes Wrong
 

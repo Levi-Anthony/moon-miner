@@ -6,35 +6,53 @@
 - Desktop URL pattern: `http://localhost:<printed-port>/`
 - Mobile simulation URL pattern: `http://localhost:<printed-port>/?mobile=1`
 - Debug URL pattern: `http://localhost:<printed-port>/?debug=1`
-- Unit tests: known green as of 2026-07-01.
-- Build: known green as of 2026-07-01.
-- Audit: `npm audit` last reported 0 vulnerabilities on 2026-07-01.
-- Smoke: known red as of 2026-07-01.
+- Unit tests: green as of 2026-09-08, 62 tests.
+- Build: green as of 2026-09-08.
+- Audit: green as of 2026-09-08, 0 vulnerabilities, after the lockfile fix in this change.
+- Smoke: green as of 2026-09-08 on `main`; red on the open PR #1 branch, see Known Red.
 
 ## Last Verified
 
-Date: 2026-07-01
+Date: 2026-09-08
+
+Branch: `main` at `787d502`, plus the `package-lock.json` fix in this change.
+
+Environment: Linux container, Node v22.22.2. Smoke needed `CHROME_PATH` set explicitly, because `findChrome()` in the smoke script does not probe Playwright's own browser directory.
 
 Commands run:
 
-- `npm test`: passed, 44 tests.
+- `npm test`: passed, 62 tests, 2 files.
 - `npm run build`: passed.
-- `npm audit`: passed, 0 vulnerabilities reported at run time.
-- `npm run verify`: passed.
-- `npm run verify:known-green`: passed when `npm audit` was allowed to reach the npm registry.
-- `npm run smoke:continuous`: failed with `Timed out waiting for return payload cue.`
-- `npm run dev`: started Vite at `http://localhost:5173/`; local URL returned `HTTP/1.1 200 OK`; server was stopped with `Ctrl+C`.
+- `npm audit`: passed, 0 vulnerabilities.
+- `npm run verify`: exit 0.
+- `npm run verify:known-green`: exit 0.
+- `npm run verify:full`: exit 0, and reached the smoke check for the first time.
+- `npm run smoke:continuous`: passed, two consecutive runs.
+- `npm run report:last-light`: passed, printed the five-route outcome table.
 
 Results:
 
-- Known-green baseline is unit tests, production build, and audit.
-- Browser smoke remains an integration risk and should be fixed or quarantined in a separate slice.
+- Nothing is known red on `main`.
+- Before the lockfile fix, `npm audit` exited 1 on two high-severity advisories (`nanoid <=3.3.17`, `postcss <=8.5.22`, both transitive through vite). Because `npm audit` sits fourth in `verify:full`, that failure short-circuited the chain and the browser smoke check never ran at all.
+
+### Superseded: the 2026-07-01 record
+
+Kept deliberately, because it was wrong in both directions for two months. That is the reason this file now records branch, commit, and environment alongside the date.
+
+- It called `npm run smoke:continuous` known red, failing with `Timed out waiting for return payload cue.` Smoke passes on `main` as of 2026-09-08; the fix was most likely `b559bf6`.
+- It called `npm audit` clean at 0 vulnerabilities. By 2026-09-08 it was exiting 1 on two high-severity advisories.
+- It recorded 44 tests; there are now 62.
+- `npm run dev`: started Vite at `http://localhost:5173/`; the local URL returned `HTTP/1.1 200 OK`.
 
 ## Known Red
 
-- `npm run smoke:continuous` currently fails during the drone readability section. The latest verified failure is `Timed out waiting for return payload cue.`
-- Earlier repeated smoke attempts also timed out waiting for `outbound reserved target cue`, so the whole drone readability section should be treated as suspect until diagnosed.
-- Treat any claim that "all checks pass" as incomplete unless it explicitly accounts for this known-red smoke check.
+Nothing on `main` as of 2026-09-08.
+
+On other branches:
+
+- Open PR #1 (`claude/start-over-interview-gyq1z4`) fails `npm run smoke:continuous` with `Expected tactical view mode, got chase.` That branch moved the default camera preset to `chase` while the smoke check still asserts `tactical`. Reproduced twice. Unrelated to the 2026-07-01 timeout.
+
+Treat any claim that "all checks pass" as incomplete unless it names the date, the branch, and the commit measured.
 
 ## Last Good Commit
 
@@ -110,9 +128,9 @@ Results:
 - Redrew the tactical backdrop and map primitives without fake Y squash, heading-relative camera rotation, projection shear, or screen-Y depth scaling.
 - Added beginner operations scaffolding: `START_HERE.md`, `HUMAN_OPERATING_SYSTEM.md`, README quick-start links, package verification scripts, and explicit Git/proof discipline.
 
-## Latest Proof
+## Earlier Proof Record — 2026-07-01 (superseded)
 
-Earlier 2026-07-01 proof record:
+Superseded by the 2026-09-08 record above. Kept as history; do not read as current status.
 
 - `npm test`: 38 tests passed.
 - `npm run build`: production build passed.

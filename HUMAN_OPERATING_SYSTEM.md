@@ -70,7 +70,7 @@ Goal: Add beginner operations docs.
 What is changing: README and docs.
 What is not changing: gameplay, rendering, tuning, mechanics.
 Proof command: npm run verify:known-green.
-Known risk: smoke remains known red.
+Known risk: none known; re-run the proof command to confirm.
 ```
 
 If the slice cannot be described this simply, it is probably too big.
