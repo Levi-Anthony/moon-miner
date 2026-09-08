@@ -44,7 +44,9 @@ Current runnable build: continuous-motion spike. The V0 grid prototype remains i
 ```bash
 npm run verify
 npm run verify:known-green
+npm run verify:audit
 npm run smoke:continuous
+npm run verify:full
 ```
 
 Current proof status as of 2026-09-08, measured on `main` at `787d502` plus the lockfile fix in this change: `npm test` (62 tests), `npm run build`, `npm audit`, and `npm run smoke:continuous` all pass. `npm run verify`, `npm run verify:known-green`, and `npm run verify:full` all exit 0.

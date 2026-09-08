@@ -211,13 +211,21 @@ npm run verify
 
 This runs unit tests and a production build.
 
-Known-green baseline with dependency audit:
+Known-green baseline:
 
 ```bash
 npm run verify:known-green
 ```
 
-This runs unit tests, production build, and `npm audit`.
+An alias for `npm run verify` — unit tests and a production build. It depends only on the contents of this repository, so a red result always means something here changed.
+
+Dependency audit, separately:
+
+```bash
+npm run verify:audit
+```
+
+This is deliberately not part of the baseline. `npm audit` reads a live advisory feed, so it can turn red with no code change at all — which is exactly what happened between July and September 2026. A baseline that moves on its own cannot answer "did my change break something."
 
 Full verification:
 
@@ -225,7 +233,7 @@ Full verification:
 npm run verify:full
 ```
 
-This also runs the browser smoke check. As of September 8, 2026, `verify:full` passes end to end on `main`. It previously failed at `npm audit` and short-circuited before ever reaching the smoke check; that audit failure is fixed in this change.
+Tests, build, browser smoke, then the audit last. Audit runs last on purpose: it used to sit ahead of the smoke check, so a red audit short-circuited the chain and the browser check never ran at all. As of September 8, 2026 this passes end to end on `main`.
 
 ## Current Check Status
 
