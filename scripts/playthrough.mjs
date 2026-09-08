@@ -32,6 +32,11 @@ const CAMPAIGNS = Number(arg('campaigns', 1));
 const ARENA = arg('arena', 'last-light-return');
 const MODE = arg('mode', 'keys');
 const AS_JSON = process.argv.includes('--json');
+// How much light to keep back for the trip home, as a multiple of the
+// estimated return time. Higher turns for home earlier. This is the whole
+// risk dial: the score is all-or-nothing at extraction, so ore mined on a run
+// that misses the deadline counts for exactly nothing.
+const RESERVE = Number(arg('reserve', 1.6));
 
 // Same resolution order as the smoke check: explicit override, system browser,
 // whatever sits in PLAYWRIGHT_BROWSERS_PATH, then Playwright's own install.
@@ -79,7 +84,7 @@ const read = (page) =>
 // The whole policy, evaluated in page so it sees the live world rather than a
 // snapshot that is already a frame old.
 const decide = (page) =>
-  page.evaluate((id) => {
+  page.evaluate(([id, reserve]) => {
     const el = document.getElementById(id);
     const snapshot = el ? JSON.parse(el.textContent) : null;
     if (!snapshot) return null;
@@ -92,7 +97,7 @@ const decide = (page) =>
     // Leave enough light to get home. Underestimating speed here is safer than
     // overestimating it, because arriving late scores nothing at all.
     const homeSeconds = extraction ? span(rover, extraction) / 70 : 0;
-    const headHome = Boolean(extraction) && (gap <= 0 || state.solarSeconds < homeSeconds * 1.6 + 3);
+    const headHome = Boolean(extraction) && (gap <= 0 || state.solarSeconds < homeSeconds * reserve + 3);
 
     let target = extraction ?? rover;
     if (!headHome) {
@@ -116,7 +121,7 @@ const decide = (page) =>
       launch: state.drone.status === 'ready' && state.nanobots < 2.2,
       headHome
     };
-  }, SNAPSHOT_ID);
+  }, [SNAPSHOT_ID, RESERVE]);
 
 function summarise(snapshot, loop) {
   const state = snapshot.state;
@@ -227,7 +232,7 @@ try {
 if (AS_JSON) {
   console.log(JSON.stringify(rows, null, 2));
 } else {
-  console.log(`Playthrough — arena ${ARENA}, mode ${MODE}, ${CAMPAIGNS} campaign(s) x ${SHIFTS} shifts`);
+  console.log(`Playthrough — arena ${ARENA}, mode ${MODE}, reserve ${RESERVE}, ${CAMPAIGNS} campaign(s) x ${SHIFTS} shifts`);
   console.log(
     '| camp | shift | carried | seam ore at dawn | result | ore/req | sun left | seams alive | seam ore left | crawl | fab | prep | DL/DD | lowNb |'
   );
