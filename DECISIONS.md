@@ -266,3 +266,49 @@ every shift because `runContinuousSelfPlay` accepted `carriedFields` and never
 forwarded it to `createContinuousWorld`. A parameter threaded most of the way
 is the same disconnect as a colour argument thrown away by the function that
 takes it, and it looked exactly like a real null result.
+
+## 2026-09-08: Project The Arc, And Take The Oldest Road
+
+Four play reports said the drone takes road the player wanted. I answered the
+first three with geometry -- a minimum distance from the rover, a minimum field
+age, a corridor protecting the line home -- and each one fixed the case in
+front of me and missed the next. The fourth report named the thing they all
+missed: "road that would've been immediately useful in the next move or two."
+
+None of those rules knows where the tractor is going. They measure from where
+it is, how old the road is, and a fixed point on the map. So two more attempts
+failed for the same reason: a straight forward ray misses a turn, and a forward
+wedge misses a hard turn, whose arc leaves it almost at once. Raising the
+exclusion radius is not even monotonic -- at 120 the wide-lobe case was worse
+than at 90, because pushing the target further out landed it on road the rover
+was curving toward instead of road behind it.
+
+Two changes, and the second is the one that generalizes.
+
+Selection is now the OLDEST eligible road rather than the nearest. Nearest was
+chosen for learnability and is the worst possible rule here: the nearest
+cluster is always the one you just laid, which is the one you are about to turn
+around on, drive back over, or curve into. Oldest is exactly as learnable and
+wants the opposite thing.
+
+Eligibility now projects the rover's arc. Heading plus a smoothed turn rate is
+a circular path; sampling it forward answers the real question -- will the
+tractor drive over this in the next few seconds -- instead of a proxy for it.
+
+The measurement that settled it is worth keeping, because it is the ground
+truth and every earlier proxy scored well while the game still felt wrong: lift
+the road, then keep driving the same route and count how many lifted patches
+the rover physically runs over. Before: a tight loop 4 of 4, a wide lobe 2 of 2.
+After: the lobe is clean at every launch time tested, and the loop is refused
+outright.
+
+Refusing the loop is correct, not a gap. Circling means the road you are done
+with and the road you are about to reuse are the same road, so there is no
+right pick and the honest answer is that there is nothing to salvage.
+
+Two things moved as a consequence and both are recorded rather than tuned away.
+Route shape still controls reclaim latency and the spread is wider than before
+(safe 1.9s, greedy 4.4s, sloppy 5.4s), but the adjacent shallow/deep pair
+inverted: a shallow route hugging its own track has less spendable road, so its
+drone flies further. And the sloppy route now limps home under quota instead of
+dying in the field, because more refusals mean more crawling; it still loses.

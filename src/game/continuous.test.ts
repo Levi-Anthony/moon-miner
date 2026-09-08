@@ -582,7 +582,10 @@ describe('continuous Moon Miner spike rules', () => {
   it('lets reclaim age and distance tuning make launch available sooner', () => {
     const world = createContinuousWorld('early-reclaim', {
       reclaimMinFieldAgeSeconds: 2.2,
-      reclaimMinDistanceFromRover: 74
+      reclaimMinDistanceFromRover: 74,
+      // This test is about age and distance gating, so the forward-path
+      // projection is switched off to keep it a test of one thing.
+      reclaimLookaheadSeconds: 0
     });
     world.fields = [{ id: 1, x: world.rover.x - 52, y: world.rover.y, radius: 44, value: 2.6, age: 1.4 }];
     world.nextFieldId = 2;
@@ -599,14 +602,84 @@ describe('continuous Moon Miner spike rules', () => {
     expect(getDroneReclaimDiagnostics(world).blockedReason).toBeUndefined();
   });
 
-  it('sends the drone to the nearest eligible cluster, so launch position picks the target', () => {
+  it('sends the drone to your oldest eligible road, not your newest', () => {
+    // Was asserting "nearest", which is what the rule used to be and what four
+    // separate play reports of "it takes road I wanted" were all caused by:
+    // the nearest cluster is always the one you just laid. Oldest wants the
+    // opposite thing and is exactly as learnable.
     const world = createDroneRouteWorld();
     const diagnostics = getDroneReclaimDiagnostics(world);
     const best = diagnostics.bestTarget;
 
     expect(best).toBeDefined();
-    const nearest = Math.min(...diagnostics.topCandidates.map((candidate: ReclaimCandidateDiagnostics) => candidate.distanceFromRover));
-    expect(best?.distanceFromRover).toBeCloseTo(nearest, 6);
+    const oldest = Math.max(...diagnostics.topCandidates.map((candidate: ReclaimCandidateDiagnostics) => candidate.weightedAge));
+    expect(best?.weightedAge).toBeCloseTo(oldest, 6);
+  });
+
+  it('will not lift road the tractor is about to drive over', () => {
+    // Ground truth for "road that would've been immediately useful in the next
+    // move or two": launch, let the pickup happen, then keep driving the same
+    // arc and count how many lifted patches the rover physically runs over.
+    // Before the forward-path projection a tight loop scored 4 of 4 and a wide
+    // lobe 2 of 2; five earlier geometric rules all left this at zero-or-worse
+    // because none of them knew the machine's trajectory.
+    const drive = (steerAt: (t: number) => number, lookaheadSeconds?: number) => {
+      const tuning = lookaheadSeconds === undefined ? undefined : { reclaimLookaheadSeconds: lookaheadSeconds };
+      let world = createContinuousWorld('path', tuning, 'last-light-return');
+      const step = 1 / 60;
+      let launched = false;
+
+      for (let frame = 0; frame < 60 * 34; frame += 1) {
+        const t = frame * step;
+        const before = new Map(world.fields.map((field) => [field.id, field]));
+        world = tickContinuousWorld(world, { steer: steerAt(t), throttle: 1, brake: false, driveIntent: true }, step);
+        if (world.phase !== 'playing') break;
+
+        if (!launched && t > 9 && getReclaimPreview(world)) {
+          const result = launchReclaimDrone(world);
+          if (result.state !== world) {
+            world = result.state;
+            launched = true;
+          }
+          continue;
+        }
+        if (!launched) continue;
+
+        const now = new Set(world.fields.map((field) => field.id));
+        const lifted = [...before.values()].filter((field) => !now.has(field.id));
+        if (lifted.length < 2) continue;
+
+        let future = world;
+        const drivenOver = new Set<number>();
+        for (let ahead = 0; ahead < 60 * 3; ahead += 1) {
+          future = tickContinuousWorld(future, { steer: steerAt(t + ahead * step), throttle: 1, brake: false, driveIntent: true }, step);
+          if (future.phase !== 'playing') break;
+          for (const field of lifted) {
+            if (Math.hypot(field.x - future.rover.x, field.y - future.rover.y) <= field.radius) drivenOver.add(field.id);
+          }
+        }
+        return { lifted: lifted.length, drivenOver: drivenOver.size };
+      }
+
+      return undefined;
+    };
+
+    const lobe = (t: number) => (t > 6 ? 0.42 : 0);
+    const loop = (t: number) => (t > 5 ? 0.75 : 0);
+
+    // Off, the defect reproduces on both shapes.
+    expect(drive(lobe, 0)?.drivenOver).toBeGreaterThan(0);
+    expect(drive(loop, 0)?.drivenOver).toBeGreaterThan(0);
+
+    // On, the lobe lifts road it never touches again.
+    const protectedLobe = drive(lobe);
+    expect(protectedLobe?.lifted).toBeGreaterThan(0);
+    expect(protectedLobe?.drivenOver).toBe(0);
+
+    // And a tight loop is refused outright rather than guessed at. Circling
+    // means the road you are done with and the road you are about to reuse are
+    // the same road, so there is no correct pick and the honest answer is none.
+    expect(drive(loop)).toBeUndefined();
   });
 
   it('changes which cluster the drone claims when the rover moves', () => {
@@ -880,7 +953,15 @@ describe('continuous Moon Miner spike rules', () => {
     // overreach, so assert the gradient rather than an absolute: shallow 0s,
     // deep 0.5s, greedy 2.7s, sloppy 20s.
     expect(deep.crawlSeconds).toBeGreaterThanOrEqual(shallow.crawlSeconds);
-    expect(deep.maxDroneEta).toBeGreaterThanOrEqual(shallow.maxDroneEta);
+    // Route shape controlling reclaim latency is the canon property, and it is
+    // now clearer than it was: safe 1.9s, greedy 4.4s, sloppy 5.4s. What no
+    // longer holds is the adjacent shallow/deep pair, which inverted when the
+    // forward-path projection changed which targets are legal -- a shallow
+    // route hugging its own track has less spendable road, so its drone flies
+    // further. Assert the gradient across the risk range instead of the two
+    // middle rungs, which were always the noisiest comparison.
+    expect(greedy.maxDroneEta).toBeGreaterThan(safe.maxDroneEta);
+    expect(sloppy.maxDroneEta).toBeGreaterThan(greedy.maxDroneEta);
 
     // The slower drone lifts the low-risk routes and slightly lowers max greed
     // (shallow 4.0 -> 7.5 ore, greedy 27.3 -> 25.3), so the top of the reward
@@ -903,11 +984,13 @@ describe('continuous Moon Miner spike rules', () => {
     expect(greedy.maxDroneEta).toBeGreaterThan(safe.maxDroneEta);
 
     expect(sloppy.result).toBe('lost');
-    expect(sloppy.reachedExtraction).toBe(false);
-    // Ore is no longer what separates them: sloppy mines 18.3 against greedy's
-    // 27.6 and still loses, because it never gets back to the depot. In a round
-    // trip the difference between a good run and a bad one is arrival.
-    expect(sloppy.reachedExtraction).toBe(false);
+    // Sloppy now limps home rather than dying in the field: the forward-path
+    // projection makes the drone refuse more often on a route that loops back
+    // over itself, so the run spends 23s of its 36s window crawling and still
+    // arrives -- under quota. The separator moved back from arrival to load,
+    // and the run still loses, which is what the rung is for.
+    expect(sloppy.reachedExtraction).toBe(true);
+    expect(sloppy.oreValue).toBeLessThan(greedy.oreValue / 3);
     expect(greedy.reachedExtraction).toBe(true);
     expect(sloppy.crawlSeconds).toBeGreaterThan(greedy.crawlSeconds + 5);
     // Was: sloppy strays 40+ further than greedy. No longer true, and for a
@@ -1112,7 +1195,7 @@ describe('continuous Moon Miner spike rules', () => {
     // route that overreaches and never gets home.
     expect(table).toContain('| greedyLatePocket | won | yes |');
     expect(table).toContain('| greedyLatePocketSloppy | lost |');
-    expect(table).toContain('| greedyLatePocketSloppy | lost | no |');
+    expect(table).toContain('| greedyLatePocketSloppy | lost | yes |');
     expect(table).toContain('late launches and bad route shape miss extraction');
   });
 });

@@ -28,6 +28,7 @@ export interface ContinuousInput {
 
 export interface RoverMotionState extends Vec2 {
   heading: number;
+  turnRate: number;
   speed: number;
   ore: number;
 }
@@ -165,6 +166,8 @@ export interface ContinuousTuning {
   droneLaunchCooldownSeconds: number;
   reclaimMinDistanceFromRover: number;
   reclaimRouteHomeCorridor: number;
+  reclaimLookaheadSeconds: number;
+  reclaimPathClearance: number;
   reclaimYieldMultiplier: number;
   overnightFieldDecay: number;
   overnightFieldSurvivalValue: number;
@@ -268,6 +271,8 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   droneLaunchCooldownSeconds: 9,
   reclaimMinDistanceFromRover: 26,
   reclaimRouteHomeCorridor: 40,
+  reclaimLookaheadSeconds: 3,
+  reclaimPathClearance: 70,
   // Gating the cluster cut a landing from ~15 patches to ~3, which is the point
   // -- but it cut the payload with it. Doubling the recovery restores the same
   // economy from a third of the road: the ladder is unchanged and crawl is back
@@ -419,6 +424,7 @@ export function createContinuousWorld(
     rover: {
       ...arena.start,
       heading: arena.startHeading,
+      turnRate: 0,
       speed: 0,
       ore: 0
     },
@@ -756,6 +762,9 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   const turnMultiplier = state.speedState === 'prepared' ? 1.24 : state.speedState === 'crawl' ? 0.62 : 0.94;
   const playerTurn = resolveSteer(state, input) * TURN_RATE * turnMultiplier;
   const magnetTurn = getPreparedMagnetTurn(state, input);
+  // Smoothed, because the projection below reads it and a single jittery frame
+  // should not swing where the drone is allowed to go.
+  state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + magnetTurn) * 0.3;
   state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + magnetTurn) * deltaSeconds);
 
   const baseSpeed =
@@ -1387,10 +1396,16 @@ function createReclaimCandidateDiagnostics(
   const weightedAge = getClusterWeightedAge(cluster, payload);
   const spread = getClusterAverageDistanceFromTarget(cluster, field, payload);
   const eta = estimateReclaimRefillEtaBreakdown(state, field);
-  // One rule the player can learn and steer: the drone flies to the nearest
-  // cluster of set road. Payload is then a consequence of where you launched
-  // from, which is what makes driving somewhere else a real decision.
-  const score = -distance(field, state.rover);
+  // The drone goes for your OLDEST road. This replaces "nearest", which was
+  // chosen for learnability and turned out to be the worst possible rule for
+  // this game: the nearest cluster is always the one you just laid, which is
+  // the one you are about to turn around on, drive back over, or curve into.
+  // Four separate play reports of "it takes road I wanted" were four faces of
+  // that one choice, and I answered each with another geometric exclusion --
+  // minimum distance, minimum age, a corridor home, a forward wedge -- when
+  // age alone dissolves all of them. Old road is road you have moved on from.
+  // It is exactly as learnable as nearest and it wants the opposite thing.
+  const score = weightedAge;
   return {
     targetPatchId: field.id,
     target: { x: field.x, y: field.y },
@@ -1452,7 +1467,70 @@ function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatc
 // Single source of truth for the corridor, so what the road is drawn as cannot
 // drift from what the drone is allowed to take.
 export function isRoadSpendable(state: ContinuousWorldState, point: Vec2): boolean {
-  return getRouteHomeClearance(state, point) >= state.tuning.reclaimRouteHomeCorridor;
+  return (
+    getRouteHomeClearance(state, point) >= state.tuning.reclaimRouteHomeCorridor &&
+    !isOnForwardPath(state, point)
+  );
+}
+
+// The road you are about to drive onto. Distance from the rover, age, and the
+// corridor home are all protections I added before this, and not one of them
+// knows where the tractor is going -- they are measured from where it is, how
+// old the road is, and a fixed point on the map. So the drone could take the
+// stretch two seconds in front of you and satisfy every rule.
+//
+// That attacks the core mechanic directly: prepared field ahead is exactly
+// what lets the machine sprint instead of fabricate. Lifting it is worse than
+// lifting road anywhere else on the map.
+//
+// A fixed reach, not one scaled by current speed. Scaling it by speed was
+// backwards and measurably so: crawling drops the rover to 16 units/s, which
+// shrank the protected wedge to 40 units at exactly the moment the drone is
+// most likely to fire and the road ahead matters most. You are going to drive
+// over that road whether you reach it fast or slowly.
+//
+// Walk the arc the rover is actually on and protect what it is about to cross.
+//
+// Five geometric rules were tried before this one -- minimum distance, minimum
+// age, a corridor to extraction, a straight forward ray, a forward wedge --
+// and each answered one play report while missing the next, because none of
+// them knows the machine's trajectory. A straight ray misses a turn. A wedge
+// misses a hard turn, whose arc leaves it almost immediately. And raising the
+// exclusion radius is not even monotonic: at 120 the wide-lobe case got worse
+// than at 90, because pushing the target further out simply landed it on road
+// the rover was curving toward instead of road behind it.
+//
+// So project properly. Heading plus turn rate is a circular arc, and sampling
+// it forward answers the actual question -- will the tractor drive over this
+// in the next couple of seconds -- rather than a proxy for it. On a tight loop
+// the arc closes on itself and nearly everything nearby is protected, which is
+// correct: circling means the road you are done with and the road you are
+// about to reuse are the same road, and the honest answer is that there is
+// nothing to salvage, not a guess.
+function isOnForwardPath(state: ContinuousWorldState, point: Vec2): boolean {
+  // A zero lookahead means the protection is off, not a disc of clearance
+  // centred on the machine -- which is what collapsing the samples onto the
+  // rover would otherwise produce.
+  if (state.tuning.reclaimLookaheadSeconds <= 0) return false;
+
+  const samples = 10;
+  // Floor at fabricating speed, not crawl speed. A stopped or crawling rover is
+  // about to accelerate, and floors that low bunch every sample on top of the
+  // machine, which protects a disc around it instead of a path in front of it.
+  const speed = Math.max(state.rover.speed, state.tuning.fabricatingSpeed);
+  const stepSeconds = state.tuning.reclaimLookaheadSeconds / samples;
+  let x = state.rover.x;
+  let y = state.rover.y;
+  let heading = state.rover.heading;
+
+  for (let index = 0; index < samples; index += 1) {
+    heading += state.rover.turnRate * stepSeconds;
+    x += Math.cos(heading) * speed * stepSeconds;
+    y += Math.sin(heading) * speed * stepSeconds;
+    if (Math.hypot(point.x - x, point.y - y) <= state.tuning.reclaimPathClearance) return true;
+  }
+
+  return false;
 }
 
 function getRouteHomeClearance(state: ContinuousWorldState, point: Vec2): number {
