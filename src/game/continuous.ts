@@ -170,6 +170,7 @@ export interface ContinuousTuning {
   reclaimPathClearance: number;
   reclaimYieldMultiplier: number;
   overnightFieldDecay: number;
+  overnightOreRegrowth: number;
   overnightFieldSurvivalValue: number;
   droneRailRelayMaxPatches: number;
   reclaimLockSeconds: number;
@@ -299,6 +300,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // well-laid length is still there in the morning, while crawl scrapings at
   // 0.025 still fall under the floor -- so the one distinction worth keeping,
   // between road you built and road you scraped out while dying, survives.
+  overnightOreRegrowth: 0.35,
   overnightFieldDecay: 0.94,
   overnightFieldSurvivalValue: 0.1,
   droneRailRelayMaxPatches: 6,
@@ -426,7 +428,8 @@ export function createContinuousWorld(
   seed = 'apollo-17',
   tuning: Partial<ContinuousTuning> = {},
   arenaId: ContinuousArenaId = 'first-run-readable',
-  carriedFields: FieldPatch[] = []
+  carriedFields: FieldPatch[] = [],
+  carriedDepletion: Record<string, number> = {}
 ): ContinuousWorldState {
   const resolvedTuning = resolveContinuousTuning(tuning);
   const arena = getContinuousArena(arenaId);
@@ -459,7 +462,7 @@ export function createContinuousWorld(
       liftedPatches: 0
     },
     fields,
-    fertileZones: createArenaFertileZones(arena, seed),
+    fertileZones: applyCarriedDepletion(createArenaFertileZones(arena, seed), carriedDepletion),
     nanobots: resolvedTuning.startingNanobots,
     maxNanobots: resolvedTuning.maxNanobots,
     targetOre: resolvedTuning.targetOre,
@@ -664,6 +667,43 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
 // and only the road you laid well is still there. Reclaiming becomes a
 // cross-run decision for the same reason: what the drone lifts is not coming
 // back tomorrow either.
+// Ore does not grow back overnight, and that is the whole point. Where the road
+// is convenient you have already been, and being there is exactly what emptied
+// it -- so a settled network always points at ground that is no longer worth
+// visiting, and the ore is wherever the road is not.
+//
+// This is what makes durable road survivable as a design. Carrying road forward
+// on its own makes every later shift easier until nothing is at stake; carrying
+// the emptiness forward with it means a big network buys you speed across
+// worthless ground and nothing else. The frontier stays the only place worth
+// going, and it is always the expensive place to reach.
+//
+// It also finally gives the drone a job that is not loss-prevention. Lifting
+// rail out of the mined-out comfortable zone and laying it down at the frontier
+// is reclaiming and reusing rail, which is what the design said the machine was
+// for from the beginning.
+export function carryDepletionOvernight(zones: FertileZone[]): Record<string, number> {
+  const remaining: Record<string, number> = {};
+  for (const zone of zones) remaining[zone.id] = Number(zone.remaining.toFixed(4));
+  return remaining;
+}
+
+function applyCarriedDepletion(zones: FertileZone[], carried: Record<string, number>): FertileZone[] {
+  return zones.map((zone) => {
+    const left = carried[zone.id];
+    if (left === undefined) return zone;
+    // Seams recover a little each night, so exhaustion is a gradient rather
+    // than a cliff. Without this the tension is real but terminal: chained
+    // shifts on one route strip the reachable seams by the second morning and
+    // then score zero forever, because the ground you can get to cheaply is
+    // dead and stays dead. Recovery turns that into a rotation -- ground you
+    // left alone comes back, and the road you already laid is how you return
+    // to it cheaply when it does.
+    const recovered = left + zone.remaining * DEFAULT_CONTINUOUS_TUNING.overnightOreRegrowth;
+    return { ...zone, remaining: clamp(recovered, 0, zone.remaining) };
+  });
+}
+
 export function carryFieldsOvernight(fields: FieldPatch[], tuning: ContinuousTuning): FieldPatch[] {
   return fields
     .map((field) => ({

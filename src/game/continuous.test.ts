@@ -7,6 +7,7 @@ import {
   DYNAMICS_PRESETS,
   getDroneReclaimDiagnostics,
   getContinuousGuidance,
+  carryDepletionOvernight,
   carryFieldsOvernight,
   getReclaimPreview,
   isRoadSpendable,
@@ -1149,6 +1150,52 @@ describe('continuous Moon Miner spike rules', () => {
     // beat being traded, not a working one -- but the drone now needs a job
     // that is not "you would have run out", and it does not have one yet.
     expect(withoutDrone.metrics.crawlSeconds).toBeLessThan(10);
+  });
+
+  it('makes convenient ground poor ground, because you emptied it getting there', () => {
+    // The tension, stated: where the road is good you have already been, and
+    // being there is what emptied the seam. So a settled network points at
+    // ground no longer worth visiting and the ore is wherever the road is not.
+    const chain = (carryDepletion: boolean) => {
+      let fields: ReturnType<typeof carryFieldsOvernight> = [];
+      let depletion: Record<string, number> = {};
+      const orePerShift: number[] = [];
+
+      for (let shift = 0; shift < 6; shift += 1) {
+        const run = runContinuousSelfPlay({
+          routeId: 'greedyLatePocket',
+          deltaSeconds: 0.05,
+          carriedFields: fields,
+          ...(carryDepletion ? { carriedDepletion: depletion } : {})
+        });
+        orePerShift.push(run.metrics.oreValue);
+        fields = carryFieldsOvernight(run.state.fields, run.state.tuning);
+        depletion = carryDepletionOvernight(run.state.fertileZones);
+      }
+
+      return { orePerShift, roadAtEnd: fields.length };
+    };
+
+    const resetting = chain(false);
+    const depleting = chain(true);
+
+    // Without it, driving the same route pays the same every day forever, and
+    // the road piling up buys nothing that has to be earned.
+    expect(resetting.orePerShift[5]).toBeGreaterThan(resetting.orePerShift[0] * 0.8);
+
+    // With it, the first day strips the easy ore and every day after is a
+    // tighter game on the same ground.
+    expect(depleting.orePerShift[0]).toBeGreaterThan(25);
+    expect(depleting.orePerShift[5]).toBeLessThan(depleting.orePerShift[0] * 0.6);
+
+    // But not a cliff. Overnight recovery keeps the worked ground worth
+    // returning to eventually, so a repeated route settles instead of dying --
+    // without it this route scored zero from the fourth morning on.
+    expect(depleting.orePerShift[5]).toBeGreaterThan(8);
+
+    // And the road still accumulates while the ore under it does not, which is
+    // the whole shape: infrastructure grows, its value as a destination falls.
+    expect(depleting.roadAtEnd).toBeGreaterThan(30);
   });
 
   it('always answers what the player is doing, starting with the goal', () => {

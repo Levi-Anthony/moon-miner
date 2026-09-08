@@ -203,12 +203,13 @@ export function runContinuousSelfPlay(options: {
   deltaSeconds?: number;
   droneLaunchSeconds?: number[];
   carriedFields?: FieldPatch[];
+  carriedDepletion?: Record<string, number>;
 } = {}): ContinuousSelfPlayResult {
   const routeId = options.routeId ?? getDefaultContinuousSelfPlayRouteId(options.arenaId);
   const route = getContinuousSelfPlayRoute(routeId);
   const droneLaunchSeconds = options.droneLaunchSeconds ?? route.droneLaunchSeconds;
   const deltaSeconds = options.deltaSeconds ?? 0.1;
-  let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId, options.carriedFields);
+  let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId, options.carriedFields, options.carriedDepletion);
   const trace = createContinuousLoopTrace(world);
   const launchedAtSeconds = new Set<number>();
   let maxDroneEta = world.drone.etaSeconds;

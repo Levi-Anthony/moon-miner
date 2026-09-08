@@ -475,3 +475,47 @@ The consequence to face next: the drone's whole job has been "you would have
 run out". With road that persists, you will not, and it needs a reason to exist
 that is not loss-prevention. That is ECO-90's question arriving from a second
 direction.
+
+## 2026-09-08: Convenient Ground Is Poor Ground
+
+Levi's idea, and it is the best structural idea of the project: the more
+navigable road a place has, the less ore is left there, because laying that
+road is what you were doing while you emptied it.
+
+It cost almost nothing to build, because every piece existed. Seams already
+deplete within a run. Road already persists overnight. The drone already lifts
+old rail and lays it down in front of you -- that went in earlier as a way to
+stop the drone reading as a tax. The single missing piece was that seams were
+rebuilt from the arena definition every morning, so the emptiness never carried
+and the tension could not form. Carrying `remaining` across the night is the
+whole change.
+
+What it fixes, in order of importance:
+
+It makes durable road survivable. Carrying road alone made every later shift
+easier until nothing was at stake -- eight chained shifts scored 30.7, 30.6,
+32.1, 30.5, 31.6 with zero crawl, a flat line. Carrying the emptiness with it
+means a big network buys speed across worthless ground and nothing else. The
+frontier stays the only place worth going and is always the expensive place to
+reach.
+
+It gives the drone a job that is not loss-prevention, which is the hole ECO-90
+has been open on. Lifting rail out of the mined-out comfortable zone and laying
+it at the frontier is reclaiming and reusing rail, which is what the machine
+was described as being for from the start. Measured over eight chained shifts:
+pressing Space wins 5 of 8 and returns 117.9 ore, never pressing wins 3 of 8
+and returns 93.6. A margin rather than a lifeline, which is the better shape.
+
+Recovery is required, and finding that out took one measurement. Without it the
+tension is real but terminal: a repeated route strips its reachable seams by
+the second morning and scores zero from the fourth on, because the ground you
+can reach cheaply is dead and stays dead. At 0.35 regrowth a repeated route
+settles at 13-15 ore against a quota of 12 -- close enough that a shift can
+still go under -- and ground left alone is worth returning to, which is what
+makes the road network matter over a campaign rather than within a day.
+
+The shape it produces: day one is a bonanza, every day after is a tighter game,
+and moving around beats repeating yourself. Alternating two routes across eight
+shifts wins the greedy one every time and loses the narrow one every time,
+which is the map saying that a route which can only reach one seam cannot
+sustain itself.

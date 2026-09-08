@@ -7,6 +7,7 @@ import {
   getDroneReclaimDiagnostics,
   getPreparedCoverage,
   getContinuousGuidance,
+  carryDepletionOvernight,
   carryFieldsOvernight,
   type FieldPatch,
   getReclaimPreview,
@@ -714,7 +715,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId(), this.loadCarriedRoad());
+    this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId(), this.loadCarriedRoad(), this.carriedDepletion);
     this.cameraLab = this.loadInitialCameraLab();
     this.droneRailLab = this.loadStoredDroneRailLab();
     this.viewMode = this.cameraLab.viewMode;
@@ -920,6 +921,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
   private shiftNumber = 1;
   private carriedIn = 0;
+  private carriedDepletion: Record<string, number> = {};
   private survivedTheNight = 0;
 
   // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
@@ -1006,21 +1008,25 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const save = this.loadShiftSave();
     this.shiftNumber = save.shift;
     this.carriedIn = save.fields.length;
+    this.carriedDepletion = save.depletion;
     return save.fields;
   }
 
-  private loadShiftSave(): { shift: number; fields: FieldPatch[] } {
-    if (!this.isShiftModeEnabled()) return { shift: 1, fields: [] };
+  private loadShiftSave(): { shift: number; fields: FieldPatch[]; depletion: Record<string, number> } {
+    if (!this.isShiftModeEnabled()) return { shift: 1, fields: [], depletion: {} };
 
     try {
       const raw = window.localStorage.getItem(CARRIED_ROAD_STORAGE_KEY);
-      const parsed = raw ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[] }) : undefined;
+      const parsed = raw
+        ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[]; depletion?: Record<string, number> })
+        : undefined;
       return {
         shift: typeof parsed?.shift === 'number' ? parsed.shift : 1,
-        fields: Array.isArray(parsed?.fields) ? parsed.fields : []
+        fields: Array.isArray(parsed?.fields) ? parsed.fields : [],
+        depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {}
       };
     } catch {
-      return { shift: 1, fields: [] };
+      return { shift: 1, fields: [], depletion: {} };
     }
   }
 
@@ -1032,7 +1038,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.survivedTheNight = carried.length;
       window.localStorage.setItem(
         CARRIED_ROAD_STORAGE_KEY,
-        JSON.stringify({ shift: this.shiftNumber + 1, fields: carried })
+        JSON.stringify({
+          shift: this.shiftNumber + 1,
+          fields: carried,
+          depletion: carryDepletionOvernight(this.state.fertileZones)
+        })
       );
     } catch {
       // Storage can be unavailable; the shift simply does not carry.
@@ -1254,7 +1264,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private resetRun(): void {
-    this.state = createContinuousWorld(this.state.seed, this.state.tuning, this.state.arenaId, this.loadCarriedRoad());
+    this.state = createContinuousWorld(this.state.seed, this.state.tuning, this.state.arenaId, this.loadCarriedRoad(), this.carriedDepletion);
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -1277,7 +1287,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const tuning = this.state.tuning;
     const seed = this.state.seed;
-    this.state = createContinuousWorld(seed, tuning, arenaId, this.loadCarriedRoad());
+    this.state = createContinuousWorld(seed, tuning, arenaId, this.loadCarriedRoad(), this.carriedDepletion);
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
