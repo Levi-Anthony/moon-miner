@@ -312,3 +312,46 @@ Route shape still controls reclaim latency and the spread is wider than before
 inverted: a shallow route hugging its own track has less spendable road, so its
 drone flies further. And the sloppy route now limps home under quota instead of
 dying in the field, because more refusals mean more crawling; it still loses.
+
+## 2026-09-08: Two Horizons, And A Near-Miss
+
+Having added six eligibility gates to the drone, five of them approximating
+"do not take road I am about to use", the obvious question was which are now
+dead weight once the arc projection does that properly. Removing restrictions
+is the direction the canon wants; machine competence is sacred.
+
+Turning off the route-home corridor looked like a clean win. Ground truth went
+from 0/0/1 to 0/0/0 across every shape, the ladder held, and it unblocked the
+tight-loop case that had been refusing outright. Three independent signals
+agreeing.
+
+All three were artifacts of the measurement window. The ground-truth check
+looks three seconds ahead, because that is what "the next move or two" meant.
+Widen it and the picture inverts:
+
+  horizon  3s   corridor off: 0/0/0   corridor on: 0/0/1
+  horizon  8s   corridor off: 0/0/3   corridor on: 0/0/1
+  horizon 15s   corridor off: 3/3/3   corridor on: 0/0/1
+
+The two rules cover different time horizons and both are load-bearing. The arc
+projection protects the road you are about to drive over; the corridor protects
+the road you will want at the end of the run, which no three-second projection
+can see. Removing it would have reintroduced the original complaint in delayed
+form -- the same bug, fifteen seconds later.
+
+The correction that matters more than the near-miss: the previous entry claimed
+refusing a tight loop is correct because "the road you are done with and the
+road you are about to reuse are the same road, so there is no right pick." That
+was wrong. With the corridor off, the loop reclaims cleanly at every horizon
+tested. There IS a right pick on a loop; the corridor is what blocks it,
+because a tight loop near the depot puts all of its road within 40 units of the
+line home. That is an over-restriction in a specific case, not a principled
+refusal.
+
+The candidate fix, not built: scale the corridor with remaining solar. The road
+home is worth protecting in proportion to how soon you need it, which would
+free early-run loops without exposing the late-run return.
+
+Standing rule from this: a metric with a horizon can only falsify claims inside
+that horizon. Before removing a rule because a measurement says it is inert,
+check whether the measurement can see what the rule was built for.
