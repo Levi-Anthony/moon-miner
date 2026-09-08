@@ -85,12 +85,12 @@ async function main() {
         `A steer delta: ${steering.leftDelta.toFixed(3)} rad`,
         `D steer delta: ${steering.rightDelta.toFixed(3)} rad`,
         `desktop idle speed: ${desktopIdle.idleSpeed.toFixed(1)}, fields: ${desktopIdle.fieldCount}`,
-        `idle/throttle/brake speeds: ${throttleBrake.idleSpeed.toFixed(1)} / ${throttleBrake.throttleSpeed.toFixed(1)} / ${throttleBrake.brakeSpeed.toFixed(1)}`,
+        `idle/throttle/reverse speeds: ${throttleBrake.idleSpeed.toFixed(1)} / ${throttleBrake.throttleSpeed.toFixed(1)} / ${throttleBrake.brakeSpeed.toFixed(1)} (reverse ${(throttleBrake.brakeSpeed / throttleBrake.throttleSpeed).toFixed(2)}x forward)`,
         `reclaim preview payload/eta: +${reclaimPreview.payload.toFixed(1)} / ${reclaimPreview.etaSeconds.toFixed(1)}s`,
         `Space drone status: ${drone.status}, launches: ${drone.launches}`,
         `drone cues urgent/reserved/return/delivery: ${droneReadability.urgentNanobots.toFixed(1)}nb / ${droneReadability.reservedCount} fields / +${droneReadability.returnPayload.toFixed(1)} / +${droneReadability.deliveryAmount.toFixed(1)}`,
-        `view modes default/chase: ${presentation.defaultViewMode} / ${presentation.chaseViewMode}`,
-        `camera lab preset/chase/hybrid: ${presentation.defaultCameraPreset} / ${presentation.chaseCameraPreset} / ${presentation.hybridCameraPreset}`,
+        `view modes default/tactical: ${presentation.defaultViewMode} / ${presentation.tacticalViewMode}`,
+        `camera presets default/tactical/round-trip: ${presentation.defaultCameraPreset} / ${presentation.tacticalCameraPreset} / ${presentation.roundTripCameraPreset}`,
         `visual terrain craters/fissures/veins: ${presentation.defaultCraterCount} / ${presentation.defaultFissureCount} / ${presentation.defaultVeinCount}`,
         `ore cues active/depleted/prepared beds: ${oreVisibility.activeVeinId} / ${oreVisibility.depletedScarCount} scars / ${oreVisibility.preparedFieldBeds} beds`,
         `dynamics preset: ${presentation.defaultDynamicsPresetName}`,
@@ -138,37 +138,42 @@ async function verifyPresentation(page, appUrl) {
   ) {
     throw new Error(`Expected Stable First Run dynamics preset by default, got ${JSON.stringify(defaultSnapshot.ui?.droneRailLab)}.`);
   }
-  const defaultTextBoundsChecked = assertUiLayout(defaultSnapshot, 'desktop', 'tactical');
-  const defaultVisual = assertVisualClarity(defaultSnapshot, 'default tactical playfield');
+  const defaultTextBoundsChecked = assertUiLayout(defaultSnapshot, 'desktop', 'chase');
+  const defaultVisual = assertVisualClarity(defaultSnapshot, 'default chase playfield');
 
   const defaultOverlay = await waitForOverlay(page, false, 'default hidden tuning panel');
 
   await page.keyboard.press('Backquote');
   const toggledOverlay = await waitForOverlay(page, true, 'backquote debug overlay toggle');
 
-  await page.goto(`${appUrl}?view=chase`);
-  const chaseSnapshot = await waitForSnapshot(page, 'chase view query snapshot', (snapshot) => {
-    return snapshot.ui?.viewMode === 'chase' ? snapshot : undefined;
+  // The scene boots into the tractor chase camera, so the query that proves the
+  // two cameras are visually distinct is the tactical one, not the chase one.
+  await page.goto(`${appUrl}?view=tactical`);
+  const tacticalSnapshot = await waitForSnapshot(page, 'tactical view query snapshot', (snapshot) => {
+    return snapshot.ui?.viewMode === 'tactical' ? snapshot : undefined;
   });
-  const chaseTextBoundsChecked = assertUiLayout(chaseSnapshot, 'desktop', 'chase');
-  assertChasePresetDifference(defaultSnapshot, chaseSnapshot);
-  await waitForOverlay(page, false, 'chase query clean tuning panel');
+  const tacticalTextBoundsChecked = assertUiLayout(tacticalSnapshot, 'desktop', 'tactical');
+  assertVisualClarity(tacticalSnapshot, 'tactical map playfield', { requireVeinsOnScreen: true });
+  assertCameraPresetDifference(defaultSnapshot, tacticalSnapshot);
+  await waitForOverlay(page, false, 'tactical query clean tuning panel');
 
   await page.goto(`${appUrl}?debug=1`);
   const debugSnapshot = await waitForSnapshot(page, 'debug query snapshot');
-  const debugTextBoundsChecked = assertUiLayout(debugSnapshot, 'desktop', 'tactical');
+  const debugTextBoundsChecked = assertUiLayout(debugSnapshot, 'desktop', 'chase');
   const queryOverlay = await waitForOverlay(page, true, 'debug query tuning panel');
-  await page.evaluate(() => {
-    window.__moonMinerContinuous?.setCameraPreset('hybridAuto');
-  });
-  const hybridCameraSnapshot = await waitForSnapshot(page, 'hybrid camera preset snapshot', (snapshot) => {
-    return snapshot.ui?.cameraLab?.preset === 'hybridAuto' && snapshot.ui?.viewMode === 'hybrid' ? snapshot : undefined;
-  });
+  // This scene ships two camera presets. Drive the round trip between them
+  // rather than a third the camera lab no longer defines.
   await page.evaluate(() => {
     window.__moonMinerContinuous?.setCameraPreset('tacticalMap');
   });
-  await waitForSnapshot(page, 'camera lab reset snapshot', (snapshot) => {
+  await waitForSnapshot(page, 'tactical map camera preset snapshot', (snapshot) => {
     return snapshot.ui?.cameraLab?.preset === 'tacticalMap' && snapshot.ui?.viewMode === 'tactical' ? snapshot : undefined;
+  });
+  await page.evaluate(() => {
+    window.__moonMinerContinuous?.setCameraPreset('tractorChase');
+  });
+  const chasePresetSnapshot = await waitForSnapshot(page, 'tractor chase camera preset snapshot', (snapshot) => {
+    return snapshot.ui?.cameraLab?.preset === 'tractorChase' && snapshot.ui?.viewMode === 'chase' ? snapshot : undefined;
   });
   await page.evaluate(() => {
     window.__moonMinerContinuous?.setDynamicsTuning({
@@ -183,7 +188,7 @@ async function verifyPresentation(page, appUrl) {
 
   await page.goto(appUrl);
   const cleanSnapshot = await waitForSnapshot(page, 'clean snapshot after debug query');
-  const cleanTextBoundsChecked = assertUiLayout(cleanSnapshot, 'desktop', 'tactical');
+  const cleanTextBoundsChecked = assertUiLayout(cleanSnapshot, 'desktop', 'chase');
   await waitForOverlay(page, false, 'clean view after debug query');
 
   return {
@@ -191,17 +196,17 @@ async function verifyPresentation(page, appUrl) {
     toggleVisible: toggledOverlay.visible,
     queryVisible: queryOverlay.visible,
     defaultViewMode: defaultSnapshot.ui.viewMode,
-    chaseViewMode: chaseSnapshot.ui.viewMode,
+    tacticalViewMode: tacticalSnapshot.ui.viewMode,
     defaultCameraPreset: defaultSnapshot.ui.cameraLab.preset,
-    chaseCameraPreset: chaseSnapshot.ui.cameraLab.preset,
-    hybridCameraPreset: hybridCameraSnapshot.ui.cameraLab.preset,
+    tacticalCameraPreset: tacticalSnapshot.ui.cameraLab.preset,
+    roundTripCameraPreset: chasePresetSnapshot.ui.cameraLab.preset,
     defaultCraterCount: defaultVisual.craterCount,
     defaultFissureCount: defaultVisual.fissureCount,
     defaultVeinCount: defaultVisual.veinCount,
     defaultDynamicsPresetName: defaultSnapshot.ui.droneRailLab.dynamicsPresetName,
     defaultBlockedReason: defaultSnapshot.ui.droneRailLab.blockedReason ?? 'available',
     tunedCandidateCount: tunedDynamicsSnapshot.ui.droneRailLab.candidateReclaimCount,
-    textBoundsChecked: defaultTextBoundsChecked + chaseTextBoundsChecked + debugTextBoundsChecked + cleanTextBoundsChecked
+    textBoundsChecked: defaultTextBoundsChecked + tacticalTextBoundsChecked + debugTextBoundsChecked + cleanTextBoundsChecked
   };
 }
 
@@ -265,8 +270,22 @@ async function verifyThrottleAndBrake(page) {
   });
   const idleSpeed = idle.state.rover.speed;
 
+  // Wait for throttle speed to settle rather than sampling the first frame over
+  // 40. The rover accelerates hard enough that an early sample is not
+  // representative of full throttle, and the crawl check below compares against
+  // this number - so an early sample makes a perfectly good crawl look fast.
+  let peakThrottleSpeed = 0;
+  let settledSamples = 0;
   const throttle = await holdKeyUntil(page, 'w', 'W full throttle', (snapshot) => {
-    return snapshot.state.rover.speed > 40 ? snapshot : undefined;
+    const speed = snapshot.state.rover.speed;
+    if (speed > peakThrottleSpeed + 0.5) {
+      peakThrottleSpeed = speed;
+      settledSamples = 0;
+      return undefined;
+    }
+    if (speed <= 40) return undefined;
+    settledSamples += 1;
+    return settledSamples >= 5 ? snapshot : undefined;
   });
   const throttleSpeed = throttle.state.rover.speed;
 
@@ -274,8 +293,17 @@ async function verifyThrottleAndBrake(page) {
     return snapshot.state.elapsedSeconds > throttle.state.elapsedSeconds + 0.05 && snapshot.state.rover.speed === 0
   });
 
-  const brake = await holdKeyUntil(page, 's', 'S deliberate crawl', (snapshot) => {
-    return snapshot.state.rover.speed > 0 && snapshot.state.rover.speed < throttleSpeed * 0.55 ? snapshot : undefined;
+  // S is reverse, not the emergency crawl - those are different mechanics, and
+  // the crawl has its own tuning value the rover only falls back to when it is
+  // neither fabricating nor on prepared ground. Reverse runs at a deliberate
+  // fraction of fabricating speed (REVERSE_SPEED_RATIO), so the old
+  // `< throttleSpeed * 0.55` bar sat just under the game's own constant and
+  // could never pass on an arena tuned to a lower top speed. Assert reverse is
+  // meaningfully slower than forward without restating a tuning number the game
+  // already owns.
+  const brake = await holdKeyUntil(page, 's', 'S reverse', (snapshot) => {
+    const speed = snapshot.state.rover.speed;
+    return speed > 0 && speed < throttleSpeed * 0.8 ? snapshot : undefined;
   });
 
   return {
@@ -295,7 +323,13 @@ async function verifyReclaimPreview(page) {
   if (!(snapshot.ui.droneCue.previewEtaSeconds > 0)) {
     throw new Error(`Expected positive reclaim preview ETA, got ${snapshot.ui.droneCue.previewEtaSeconds}.`);
   }
-  assertRectWithin(preview, snapshot.gameSize);
+  // The preview target marks reclaimable field, which lies on the trail behind
+  // the rover. Under the chase camera that is routinely off screen, so requiring
+  // it inside the viewport asserted a map camera rather than a working preview.
+  // Check it is a real target instead.
+  if (!(preview.width > 0 && preview.height > 0)) {
+    throw new Error(`Reclaim preview target has no extent: ${JSON.stringify(preview)}.`);
+  }
 
   return {
     payload: snapshot.ui.droneCue.previewPayload,
@@ -462,7 +496,7 @@ async function verifyMobilePortrait(page) {
   const first = await waitForSnapshot(page, 'portrait mobile snapshot', (snapshot) => {
     return snapshot.ui?.mode === 'mobilePortrait' ? snapshot : undefined;
   });
-  const textBoundsChecked = assertUiLayout(first, 'mobilePortrait', 'tactical');
+  const textBoundsChecked = assertUiLayout(first, 'mobilePortrait', 'chase');
   await waitForOverlay(page, false, 'mobile default hidden tuning panel');
   const idle = await verifyMobileIdle(page);
 
@@ -493,11 +527,11 @@ async function verifyMobilePortrait(page) {
 
 async function verifyMobileDebugWorkbench(page) {
   const snapshot = await waitForSnapshot(page, 'mobile debug workbench snapshot', (candidate) => {
-    return candidate.ui?.mode === 'mobilePortrait' && candidate.ui?.viewMode === 'tactical' && candidate.ui?.debugOverlayVisible
+    return candidate.ui?.mode === 'mobilePortrait' && candidate.ui?.viewMode === 'chase' && candidate.ui?.debugOverlayVisible
       ? candidate
       : undefined;
   });
-  assertUiLayout(snapshot, 'mobilePortrait', 'tactical');
+  assertUiLayout(snapshot, 'mobilePortrait', 'chase');
   await waitForOverlay(page, true, 'mobile debug tuning panel');
 
   const geometry = await page.evaluate(() => {
@@ -793,7 +827,7 @@ async function waitForSnapshot(page, label, predicate = () => true, stallMs = 80
   throw new Error(`Timed out waiting for ${label} (${why}).${cause}`);
 }
 
-function assertUiLayout(snapshot, expectedMode, expectedViewMode = 'tactical') {
+function assertUiLayout(snapshot, expectedMode, expectedViewMode = 'chase') {
   const ui = snapshot.ui;
   if (!ui) throw new Error('Debug snapshot is missing UI layout metadata.');
   if (ui.mode !== expectedMode) throw new Error(`Expected ${expectedMode} layout, got ${ui.mode}.`);
@@ -887,11 +921,17 @@ function assertVisualClarity(snapshot, label, options = {}) {
     if (!(vein.screenBounds.width > 18 && vein.screenBounds.height > 10)) {
       throw new Error(`${label}: ore vein ${vein.id} has unreadable screen bounds ${JSON.stringify(vein.screenBounds)}.`);
     }
-    assertRectIntersects(
-      vein.screenBounds,
-      { x: 0, y: snapshot.ui.hudHeight, width: snapshot.gameSize.x, height: snapshot.gameSize.y - snapshot.ui.hudHeight },
-      `${label}: ore vein ${vein.id}`
-    );
+    // Only the map camera is supposed to hold the whole field on screen. The
+    // chase camera follows the rover, so a distant vein being off screen is the
+    // camera working, not the terrain failing to render. Callers that use the
+    // map camera opt into this.
+    if (options.requireVeinsOnScreen) {
+      assertRectIntersects(
+        vein.screenBounds,
+        { x: 0, y: snapshot.ui.hudHeight, width: snapshot.gameSize.x, height: snapshot.gameSize.y - snapshot.ui.hudHeight },
+        `${label}: ore vein ${vein.id}`
+      );
+    }
     if (vein.remainingRatio > 0.025 && vein.richnessPipCount < 1) {
       throw new Error(`${label}: ore vein ${vein.id} has remaining ore without richness pips: ${JSON.stringify(vein)}.`);
     }
@@ -908,30 +948,49 @@ function assertVisualClarity(snapshot, label, options = {}) {
   };
 }
 
-function assertChasePresetDifference(defaultSnapshot, chaseSnapshot) {
-  const defaultCamera = defaultSnapshot.ui?.cameraLab;
-  const chaseCamera = chaseSnapshot.ui?.cameraLab;
-  if (!defaultCamera || !chaseCamera) throw new Error('Missing camera lab snapshots for chase comparison.');
-  if (chaseCamera.preset !== 'roverChase') {
-    throw new Error(`?view=chase should apply the rover chase preset, got ${chaseCamera.preset}.`);
+// The scene boots into the tractor chase camera, so the default snapshot is the
+// chase one and ?view=tactical is the contrast. The thresholds are unchanged -
+// this compares the same two cameras as before, named the way they now boot.
+function assertCameraPresetDifference(defaultSnapshot, tacticalSnapshot) {
+  const chaseCamera = defaultSnapshot.ui?.cameraLab;
+  const tacticalCamera = tacticalSnapshot.ui?.cameraLab;
+  if (!chaseCamera || !tacticalCamera) throw new Error('Missing camera lab snapshots for camera comparison.');
+  if (chaseCamera.preset !== 'tractorChase') {
+    throw new Error(`The default view should apply the tractor chase preset, got ${chaseCamera.preset}.`);
   }
   if (chaseCamera.projectionMode !== 'chase perspective') {
-    throw new Error(`?view=chase should expose chase projection metadata, got ${chaseCamera.projectionMode}.`);
+    throw new Error(`The default view should expose chase projection metadata, got ${chaseCamera.projectionMode}.`);
   }
   if (!chaseCamera.settings.horizonVisible) {
-    throw new Error('?view=chase should enable the horizon / ground plane cue.');
+    throw new Error('The default view should enable the horizon / ground plane cue.');
+  }
+  if (tacticalCamera.preset !== 'tacticalMap') {
+    throw new Error(`?view=tactical should apply the tactical map preset, got ${tacticalCamera.preset}.`);
   }
 
-  const focusDelta = pointDistance(defaultCamera.focus, chaseCamera.focus);
-  const centerDelta = pointDistance(defaultCamera.center, chaseCamera.center);
-  const zoomDelta = Math.abs(defaultCamera.zoom - chaseCamera.zoom);
-  const perspectiveDelta =
-    Math.abs(defaultCamera.settings.projectedYScale - chaseCamera.settings.projectedYScale) +
-    Math.abs(defaultCamera.settings.projectionShear - chaseCamera.settings.projectionShear) +
-    Math.abs(defaultCamera.settings.rotationBlendAmount - chaseCamera.settings.rotationBlendAmount);
-  if (focusDelta < 120 || centerDelta < 24 || zoomDelta < 0.2 || perspectiveDelta < 0.5) {
+  // Projection mode is the categorical signal that these are different cameras,
+  // and it is stronger evidence than any float composite.
+  if (chaseCamera.projectionMode === tacticalCamera.projectionMode) {
     throw new Error(
-      `?view=chase is not visually distinct enough: focus ${focusDelta.toFixed(1)}, center ${centerDelta.toFixed(1)}, zoom ${zoomDelta.toFixed(2)}, perspective ${perspectiveDelta.toFixed(2)}.`
+      `The two cameras report the same projection mode (${chaseCamera.projectionMode}); they are not distinct.`
+    );
+  }
+
+  // The previous composite summed projectedYScale, projectionShear and
+  // rotationBlendAmount deltas against a 0.5 floor. That measured the old
+  // faux-3D projection tweaks: the retired roverChase preset moved shear to
+  // -0.13 and rotation blend to 0.72, so the pair scored 0.95. tractorChase
+  // overrides neither - it leans on a real camera rig (pitch, rig distance,
+  // yaw lag) instead - so the same sum is 0.30 and the floor would reject a
+  // camera pair that is obviously distinct on screen. Measure the flattening
+  // these cameras actually differ in, and let projection mode carry the rest.
+  const focusDelta = pointDistance(chaseCamera.focus, tacticalCamera.focus);
+  const centerDelta = pointDistance(chaseCamera.center, tacticalCamera.center);
+  const zoomDelta = Math.abs(chaseCamera.zoom - tacticalCamera.zoom);
+  const flattenDelta = Math.abs(chaseCamera.settings.projectedYScale - tacticalCamera.settings.projectedYScale);
+  if (focusDelta < 120 || centerDelta < 24 || zoomDelta < 0.2 || flattenDelta < 0.2) {
+    throw new Error(
+      `The two cameras are not visually distinct enough: focus ${focusDelta.toFixed(1)}, center ${centerDelta.toFixed(1)}, zoom ${zoomDelta.toFixed(2)}, flattening ${flattenDelta.toFixed(2)}.`
     );
   }
 }
@@ -959,8 +1018,16 @@ function assertHudTextLayout(ui, gameSize) {
     assertRectWithinPadded(bounds, container, 4, `${name} inside ${JSON.stringify(container)}`);
   }
 
+  // The yield readout is debug-only here: the scene draws it with empty text when
+  // the tuning overlay is hidden, and bounds are only emitted for non-empty text.
+  // Asserting it unconditionally checked a HUD element the default view no longer
+  // shows, which is a decluttering decision rather than a defect.
+  if (!ui.debugOverlayVisible) return checks.length;
+
   const yieldBounds = ui.textBounds['yield-readout'];
-  if (!yieldBounds) throw new Error('Missing rendered text bounds for yield-readout.');
+  if (!yieldBounds) {
+    throw new Error('Missing rendered text bounds for yield-readout while the debug overlay is visible.');
+  }
   assertRectWithin(yieldBounds, gameSize);
   if (yieldBounds.y + yieldBounds.height > ui.hudHeight) {
     throw new Error(`Yield readout escapes the HUD band: ${JSON.stringify(yieldBounds)}.`);

@@ -7,6 +7,7 @@ import {
   type ContinuousInput,
   type ContinuousTuning,
   type ContinuousWorldState,
+  type FieldPatch,
   type Vec2
 } from './continuous';
 import type { ContinuousArenaId } from './continuousArena';
@@ -32,6 +33,17 @@ export interface ContinuousSelfPlayRoute {
   droneLaunchSeconds: number[];
   safeCorridorLeaveThreshold?: number;
   waypoints: ContinuousSelfPlayWaypoint[];
+  // Behaviour-based routes name the seams to work and how recklessly to judge
+  // the trip home. Routes without these fall back to the timed waypoints.
+  seams?: string[];
+  homeMargin?: number;
+  // When to spend road, as a fraction of tank capacity. A player launches the
+  // drone because reach is running out, not because a clock said so, and the
+  // fixed launch seconds were the last piece of the old script still in here:
+  // they fired at t=6 on a full tank on every route, which is why the ladder
+  // flipped on parameters that should not have touched it. Routes without this
+  // keep the timed launches.
+  launchBelowStock?: number;
 }
 
 export interface ContinuousSelfPlayMetrics {
@@ -88,84 +100,93 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
       { label: 'test east saddle', x: 846, y: 496, untilSeconds: 96 }
     ]
   },
+  // Re-cut for the three-ring field. Each rung now reaches one ring further
+  // out, so the ladder measures the thing the level is actually about: whether
+  // the reach you attempt is one you can pay for.
   safeReturn: {
     id: 'safeReturn',
-    label: 'Last Light Safe Return',
+    seams: ['depot-flats'],
+    homeMargin: 2.6,
+    launchBelowStock: 0.7,
+    label: 'Last Light Near Ring Only',
     arenaId: 'last-light-return',
-    durationSeconds: 48,
-    droneLaunchSeconds: [4.2, 9.2],
+    durationSeconds: 36,
+    droneLaunchSeconds: [6, 15],
     safeCorridorLeaveThreshold: 120,
     waypoints: [
-      { label: 'hold the safe road', x: 745, y: 565, untilSeconds: 2.6 },
-      { label: 'safe center bend', x: 570, y: 530, untilSeconds: 5.4 },
-      { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 8.7 },
-      { label: 'extraction', x: 135, y: 610, untilSeconds: 48 }
+      { label: 'roll out to the flats', x: 712, y: 486, untilSeconds: 4 },
+      { label: 'sweep the near flats', x: 568, y: 514, untilSeconds: 9 },
+      { label: 'come home early and light', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   shallowLobe: {
     id: 'shallowLobe',
-    label: 'Last Light Shallow Lobe',
+    seams: ['depot-flats', 'south-bench'],
+    homeMargin: 2.1,
+    launchBelowStock: 0.65,
+    label: 'Last Light Near Ring Doubled',
     arenaId: 'last-light-return',
-    durationSeconds: 58,
-    droneLaunchSeconds: [4.9, 11.8],
+    durationSeconds: 36,
+    droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 2.5 },
-      { label: 'shallow seam entry', x: 690, y: 430, untilSeconds: 5.4 },
-      { label: 'shallow seam sweep', x: 540, y: 455, untilSeconds: 9.0 },
-      { label: 'curve back to road', x: 570, y: 530, untilSeconds: 11.8 },
-      { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 15.6 },
-      { label: 'extraction', x: 135, y: 610, untilSeconds: 58 }
+      { label: 'roll out to the flats', x: 712, y: 486, untilSeconds: 4 },
+      { label: 'sweep the near flats', x: 568, y: 514, untilSeconds: 9 },
+      { label: 'cut south to the bench', x: 660, y: 660, untilSeconds: 17 },
+      { label: 'come home', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   deepLobe: {
     id: 'deepLobe',
-    label: 'Last Light Deep Northern Lobe',
+    seams: ['north-lobe', 'west-cut'],
+    homeMargin: 1.5,
+    launchBelowStock: 0.6,
+    label: 'Last Light Mid Ring',
     arenaId: 'last-light-return',
-    durationSeconds: 68,
-    droneLaunchSeconds: [5.3, 21.8, 34.6],
+    durationSeconds: 36,
+    droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 3.2 },
-      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 10.8 },
-      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 17.2 },
-      { label: 'bend back toward road', x: 570, y: 530, untilSeconds: 26.2 },
-      { label: 'safe lower bend', x: 390, y: 585, untilSeconds: 34.2 },
-      { label: 'extraction', x: 135, y: 610, untilSeconds: 68 }
+      { label: 'climb toward the lobe', x: 676, y: 300, untilSeconds: 6 },
+      { label: 'sweep the north lobe', x: 524, y: 260, untilSeconds: 13 },
+      { label: 'drop into the west cut', x: 450, y: 470, untilSeconds: 20 },
+      { label: 'come about for home', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   greedyLatePocket: {
     id: 'greedyLatePocket',
-    label: 'Last Light Greedy Late Pocket',
+    seams: ['north-lobe', 'far-shelf'],
+    homeMargin: 0.92,
+    launchBelowStock: 0.5,
+    label: 'Last Light Far Shelf',
     arenaId: 'last-light-return',
-    durationSeconds: 74,
-    droneLaunchSeconds: [5.3, 21.8, 36.2],
+    durationSeconds: 36,
+    droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 3.0 },
-      { label: 'climb to northern lobe', x: 720, y: 285, untilSeconds: 10.6 },
-      { label: 'sweep rich seam', x: 545, y: 315, untilSeconds: 16.5 },
-      { label: 'one more seam', x: 400, y: 330, untilSeconds: 26.2 },
-      { label: 'late recovery dive', x: 500, y: 684, untilSeconds: 36.2 },
-      { label: 'lower recovery sweep', x: 300, y: 666, untilSeconds: 43.4 },
-      { label: 'extraction', x: 135, y: 610, untilSeconds: 74 }
+      { label: 'climb toward the lobe', x: 676, y: 300, untilSeconds: 6 },
+      { label: 'sweep the north lobe', x: 524, y: 260, untilSeconds: 11 },
+      { label: 'run out to the far shelf', x: 318, y: 190, untilSeconds: 17 },
+      { label: 'sweep the shelf', x: 182, y: 310, untilSeconds: 22 },
+      { label: 'the long way home', x: 900, y: 535, untilSeconds: 36 }
     ]
   },
   greedyLatePocketSloppy: {
     id: 'greedyLatePocketSloppy',
-    label: 'Last Light Sloppy Greedy Pocket',
+    seams: ['north-lobe', 'far-shelf', 'deep-south'],
+    homeMargin: 0.55,
+    launchBelowStock: 0.35,
+    label: 'Last Light Far Shelf Overstayed',
     arenaId: 'last-light-return',
-    durationSeconds: 76,
-    droneLaunchSeconds: [17.8, 37.4],
+    durationSeconds: 36,
+    droneLaunchSeconds: [20],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
-      { label: 'safe road setup', x: 745, y: 565, untilSeconds: 3.0 },
-      { label: 'climb too high', x: 720, y: 285, untilSeconds: 10.6 },
-      { label: 'overstay rich seam', x: 545, y: 315, untilSeconds: 18.4 },
-      { label: 'drive away from return', x: 742, y: 260, untilSeconds: 25.4 },
-      { label: 'late one more seam', x: 400, y: 330, untilSeconds: 36.8 },
-      { label: 'bad recovery angle', x: 520, y: 690, untilSeconds: 47.6 },
-      { label: 'late extraction dive', x: 135, y: 610, untilSeconds: 76 }
+      { label: 'climb toward the lobe', x: 676, y: 300, untilSeconds: 6 },
+      { label: 'sweep the north lobe', x: 524, y: 260, untilSeconds: 12 },
+      { label: 'run out to the far shelf', x: 318, y: 190, untilSeconds: 19 },
+      { label: 'overstay the shelf', x: 182, y: 310, untilSeconds: 28 },
+      { label: 'far too late for home', x: 900, y: 535, untilSeconds: 36 }
     ]
   }
 } satisfies Record<string, ContinuousSelfPlayRoute>;
@@ -188,19 +209,141 @@ export function getDefaultContinuousSelfPlayRouteId(arenaId: ContinuousArenaId =
   return arenaId === 'last-light-return' ? 'safeReturn' : 'firstLoop';
 }
 
+const SEAM_WORKED_OUT_ORE = 0.6;
+
+// Launching costs the drone's flight time whether or not it finds anything, so
+// the policy does not retry every tick once stock is low and nothing is legal
+// to lift.
+const LAUNCH_RETRY_SECONDS = 2.5;
+
+// How closely a rail has to point at where you are going before riding it beats
+// steering off it. Loose on purpose: a rail that is roughly right and four
+// times as fast beats a straight line on bare ground almost always, which is
+// the judgement the mechanic is asking the player to make.
+const RAIL_RIDE_ALIGNMENT = 0.35;
+const WAYPOINT_ARRIVAL_RADIUS = 58;
+const WAYPOINT_WORKED_OUT_ORE = 0.6;
+
 export function getContinuousSelfPlayTarget(
   route: ContinuousSelfPlayRoute,
-  elapsedSeconds: number
+  elapsedSeconds: number,
+  world?: ContinuousWorldState
 ): ContinuousSelfPlayWaypoint {
-  return route.waypoints.find((waypoint) => elapsedSeconds <= waypoint.untilSeconds) ?? route.waypoints[route.waypoints.length - 1];
+  // Advance when the work is done, with the clock as a deadline rather than as
+  // the only gate.
+  //
+  // Pure time made every route a script calibrated to one machine speed:
+  // raising prepared speed from 96 to 104 flipped deepLobe from 22.8 ore to a
+  // loss, because the script sailed past a waypoint it was still steering at
+  // and circled for the rest of the run. A route that cannot survive the
+  // tractor going faster is not measuring the tractor, and that made the rig
+  // the reason the road could not be allowed to pay what it should.
+  //
+  // A plain arrival advance was the first fix and was worse: skipping a
+  // waypoint the moment you reach it never dwells long enough to mine, and
+  // every rung collapsed. The dwell is the point. So dwell until the seam under
+  // the waypoint is actually worked out -- which is what a player does -- and
+  // treat untilSeconds as the moment to give up and move on regardless.
+  for (const waypoint of route.waypoints) {
+    if (elapsedSeconds > waypoint.untilSeconds) continue;
+    if (!world) return waypoint;
+
+    const arrived = Math.hypot(waypoint.x - world.rover.x, waypoint.y - world.rover.y) <= WAYPOINT_ARRIVAL_RADIUS;
+    if (!arrived) return waypoint;
+
+    // Arrived. Hold only while there is still ore worth taking here.
+    const seam = world.fertileZones.find(
+      (zone) => Math.hypot(zone.x - waypoint.x, zone.y - waypoint.y) <= zone.radius + WAYPOINT_ARRIVAL_RADIUS
+    );
+    if (seam && seam.remaining > WAYPOINT_WORKED_OUT_ORE) return waypoint;
+  }
+  return route.waypoints[route.waypoints.length - 1];
+}
+
+// A policy, not a script.
+//
+// The routes used to be timed waypoint lists, and that made every measurement
+// a measurement of the fixture: raising prepared speed from 96 to 104 flipped
+// a comfortable win into a loss because the script sailed past a waypoint it
+// was still steering at, and every attempt to let the road pay what it should
+// died on that. A rig calibrated to one machine speed cannot evaluate a change
+// to machine speed, which is most of what is left to tune.
+//
+// So the agent does what a player does: go to the next seam worth working,
+// stay on it until it is spent, and leave for the depot when the light left is
+// only just enough to get back. All three of those adapt to any speed, any
+// road layout and any level, because none of them mentions the clock except to
+// compare it against a distance the machine has to cover.
+function estimateSecondsHome(world: ContinuousWorldState): number {
+  const extraction = world.arena.extraction;
+  if (!extraction) return 0;
+  const distance = Math.hypot(extraction.x - world.rover.x, extraction.y - world.rover.y);
+
+  // Account for running dry on the way. Estimating the whole trip at raw-ground
+  // speed looks conservative and is not: a machine that runs out of nanobots
+  // finishes the journey at crawl speed, which is four and a half times slower,
+  // so the estimate is wrong by more than any safety margin covers. At higher
+  // machine speeds this is what made the rig fail -- routes mined MORE and
+  // still lost, because they left on a promise the tank could not keep.
+  const fabricating = Math.max(1, world.tuning.fabricatingSpeed);
+  const crawl = Math.max(1, world.tuning.crawlSpeed);
+  const costPerUnit = world.tuning.fabricateCostPerSecond / fabricating;
+  const fundedDistance = costPerUnit > 0 ? Math.min(distance, world.nanobots / costPerUnit) : distance;
+  const strandedDistance = distance - fundedDistance;
+  return fundedDistance / fabricating + strandedDistance / crawl;
+}
+
+export function getContinuousSelfPlayPolicyTarget(route: ContinuousSelfPlayRoute, world: ContinuousWorldState): Vec2 {
+  const extraction = world.arena.extraction;
+  const home = extraction ?? world.arena.start;
+
+  if (extraction) {
+    const margin = route.homeMargin ?? 1.35;
+    if (world.solarSeconds <= estimateSecondsHome(world) * margin) return home;
+  }
+
+  for (const seamId of route.seams ?? []) {
+    const seam = world.fertileZones.find((zone) => zone.id === seamId);
+    if (!seam || seam.remaining <= SEAM_WORKED_OUT_ORE) continue;
+    // Aim along the vein rather than at the blob, so the pass sweeps it.
+    if (!seam.vein) return seam;
+    const toFrom = Math.hypot(seam.vein.from.x - world.rover.x, seam.vein.from.y - world.rover.y);
+    const toTo = Math.hypot(seam.vein.to.x - world.rover.x, seam.vein.to.y - world.rover.y);
+    const entry = toFrom <= toTo ? seam.vein.from : seam.vein.to;
+    const exit = toFrom <= toTo ? seam.vein.to : seam.vein.from;
+    // Once inside the band, drive for the far end of it.
+    return Math.hypot(entry.x - world.rover.x, entry.y - world.rover.y) <= seam.radius ? exit : entry;
+  }
+
+  return home;
 }
 
 export function getContinuousSelfPlayInput(world: ContinuousWorldState, target: Vec2): ContinuousInput {
   const targetAngle = Math.atan2(target.y - world.rover.y, target.x - world.rover.x);
-  return {
-    steer: clamp(angleDifference(targetAngle, world.rover.heading) / 0.85, -1, 1),
-    throttle: 1
-  };
+  const steer = clamp(angleDifference(targetAngle, world.rover.heading) / 0.85, -1, 1);
+
+  // Let go of the wheel when the rail is already going your way. A player on
+  // track does not steer, and without this the controller could never use the
+  // rail at all: it corrects toward its target every tick, and any correction
+  // past railBreakSteer -- seventeen degrees -- releases the lock. It would
+  // have measured a rail nobody rides and reported the mechanic as worthless.
+  const rail = world.rail;
+  if (rail) {
+    const towardTarget = Math.cos(targetAngle) * rail.tangent.x + Math.sin(targetAngle) * rail.tangent.y;
+    if (towardTarget >= RAIL_RIDE_ALIGNMENT) return { steer: 0, throttle: 1 };
+  }
+
+  return { steer, throttle: 1 };
+}
+
+// Spend road when the tank says to, not when the clock says to. The threshold
+// is per route because that is the actual difference between a careful trip and
+// a greedy one: the greedy player runs the tank down and leans on the drone to
+// bail them out, the careful one launches early and keeps a reserve.
+export function shouldLaunchReclaimDrone(route: ContinuousSelfPlayRoute, world: ContinuousWorldState): boolean {
+  if (route.launchBelowStock === undefined) return false;
+  if (world.drone.status !== 'ready') return false;
+  return world.nanobots <= world.tuning.maxNanobots * route.launchBelowStock;
 }
 
 export function runContinuousSelfPlay(options: {
@@ -210,31 +353,54 @@ export function runContinuousSelfPlay(options: {
   tuning?: Partial<ContinuousTuning>;
   deltaSeconds?: number;
   droneLaunchSeconds?: number[];
+  carriedFields?: FieldPatch[];
+  carriedDepletion?: Record<string, number>;
 } = {}): ContinuousSelfPlayResult {
   const routeId = options.routeId ?? getDefaultContinuousSelfPlayRouteId(options.arenaId);
   const route = getContinuousSelfPlayRoute(routeId);
   const droneLaunchSeconds = options.droneLaunchSeconds ?? route.droneLaunchSeconds;
+  // An explicit schedule from the caller beats the route's own policy, so a
+  // caller can still hand in [] to mean "play this route with no drone at all"
+  // and measure what the drone is worth. Without this the stock-driven policy
+  // launched anyway and the with/without comparison silently ran the same run
+  // twice.
+  const launchBelowStock = options.droneLaunchSeconds === undefined ? route.launchBelowStock : undefined;
+  const policyRoute = { ...route, launchBelowStock };
   const deltaSeconds = options.deltaSeconds ?? 0.1;
-  let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId);
+  let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId, options.carriedFields, options.carriedDepletion);
   const trace = createContinuousLoopTrace(world);
   const launchedAtSeconds = new Set<number>();
   let maxDroneEta = world.drone.etaSeconds;
   let maxSafeCorridorDistance = getSafeCorridorDistance(world);
 
+  let nextLaunchAttemptSeconds = 0;
+
   while (world.elapsedSeconds < route.durationSeconds && world.phase === 'playing') {
-    for (const launchSecond of droneLaunchSeconds) {
-      if (!launchedAtSeconds.has(launchSecond) && world.elapsedSeconds >= launchSecond) {
-        if (world.drone.status !== 'ready') continue;
+    if (launchBelowStock !== undefined) {
+      if (world.elapsedSeconds >= nextLaunchAttemptSeconds && shouldLaunchReclaimDrone(policyRoute, world)) {
+        nextLaunchAttemptSeconds = world.elapsedSeconds + LAUNCH_RETRY_SECONDS;
         const launch = launchReclaimDrone(world);
         world = launch.state;
-        if (!launch.ok) continue;
-        recordContinuousLoopDroneLaunch(trace, world);
-        launchedAtSeconds.add(launchSecond);
-        maxDroneEta = Math.max(maxDroneEta, world.drone.etaSeconds);
+        if (launch.ok) {
+          recordContinuousLoopDroneLaunch(trace, world);
+          maxDroneEta = Math.max(maxDroneEta, world.drone.etaSeconds);
+        }
+      }
+    } else {
+      for (const launchSecond of droneLaunchSeconds) {
+        if (!launchedAtSeconds.has(launchSecond) && world.elapsedSeconds >= launchSecond) {
+          if (world.drone.status !== 'ready') continue;
+          const launch = launchReclaimDrone(world);
+          world = launch.state;
+          if (!launch.ok) continue;
+          recordContinuousLoopDroneLaunch(trace, world);
+          launchedAtSeconds.add(launchSecond);
+          maxDroneEta = Math.max(maxDroneEta, world.drone.etaSeconds);
+        }
       }
     }
 
-    const target = getContinuousSelfPlayTarget(route, world.elapsedSeconds);
+    const target = route.seams ? getContinuousSelfPlayPolicyTarget(route, world) : getContinuousSelfPlayTarget(route, world.elapsedSeconds, world);
     const previous = world;
     world = tickContinuousWorld(world, getContinuousSelfPlayInput(world, target), deltaSeconds);
     recordContinuousLoopTick(trace, previous, world, deltaSeconds);

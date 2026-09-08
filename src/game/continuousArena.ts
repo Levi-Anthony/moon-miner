@@ -17,6 +17,8 @@ export interface ContinuousExtractionZone extends Vec2 {
   id: string;
   label: string;
   radius: number;
+  // Arriving is not an achievement on its own. You have to bring something.
+  oreRequired: number;
 }
 
 export interface ContinuousArenaDefinition {
@@ -237,112 +239,149 @@ const FIRST_RUN_TIGHT: ContinuousArenaDefinition = {
   ]
 };
 
+// The safe road is the near ring: out to the flats and back, which is the trip
+// that always works and never pays. It used to run west to the map edge, which
+// was the old field's shape and left the near seams off-corridor entirely.
 const LAST_LIGHT_SAFE_PATH: Vec2[] = [
   { x: 900, y: 535 },
-  { x: 745, y: 565 },
-  { x: 570, y: 530 },
-  { x: 390, y: 585 },
-  { x: 150, y: 610 }
+  { x: 790, y: 512 },
+  { x: 712, y: 486 },
+  { x: 640, y: 500 },
+  { x: 568, y: 514 }
 ];
 
 const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
   id: 'last-light-return',
   label: 'Last Light Return',
-  description: 'A readable low-value road home with upward unofficial seams that tax route shape, drone timing, and sunset margin.',
+  description: 'A round trip from the depot into the seam field and back. Every second outbound is a second you also have to spend coming home.',
   start: { x: 900, y: 535 },
   startHeading: Math.PI - 0.2,
   extraction: {
     id: 'extraction-home',
-    label: 'extraction',
-    x: 135,
-    y: 610,
-    radius: 46
+    label: 'depot',
+    // The depot is where the run starts. A one-way trip pointed the laid road
+    // permanently away from the goal, so reusing it always meant driving the
+    // wrong way and the game's central mechanic could not matter.
+    x: 900,
+    y: 535,
+    radius: 52,
+    oreRequired: 12
   },
   safePath: LAST_LIGHT_SAFE_PATH,
-  solarWindowSeconds: 51,
-  starterFieldPoints: [],
+  solarWindowSeconds: 36,
+  // A depot apron. Every fresh start recorded so far has lost -- 10.7, 12.0,
+  // 5.5 and 8.1 ore against a quota of 12, four for four -- while shift two
+  // onward wins six times in seven. Day one was the only day played on
+  // genuinely bare ground, and bare ground plus six nanobots cannot reach two
+  // near seams and get home.
+  //
+  // A depot that has been operating has road around it. This lays a short arm
+  // out toward the near flats, which is the direction the safe road already
+  // goes, so the first day starts the way every later day does: on something.
+  starterFieldPoints: [
+    { x: 872, y: 531 },
+    { x: 846, y: 526 },
+    { x: 820, y: 521 },
+    { x: 794, y: 516 },
+    { x: 768, y: 512 },
+    { x: 742, y: 507 },
+    { x: 716, y: 502 }
+  ],
+  // Redesigned once ore began carrying its depletion overnight. The old field
+  // put every seam west-northwest, so every good day drove the same way and
+  // route shape was not really a choice; and it held about 47 ore in total,
+  // which a depleting map strips in two or three shifts.
+  //
+  // Three rings, spread around the depot on different bearings. The near ring
+  // is cheap to reach and poor, which is the tension stated as geography: it
+  // is the ground you will road first and empty first. The far ring pays best
+  // per unit of distance, so reach is rewarded -- but only if you can afford
+  // to get there, which is what the road is for. Total ore roughly doubled to
+  // 95 so the cycle of strip, move on, and come back has room to run.
   fertileZones: [
     {
-      id: 'safe-route-scrap',
-      x: 655,
-      y: 548,
-      radius: 48,
-      vein: {
-        from: { x: 735, y: 558 },
-        to: { x: 585, y: 536 },
-        width: 34
-      },
-      richness: 0.42,
-      remaining: 1.6
+      id: 'depot-flats',
+      x: 640,
+      y: 500,
+      radius: 54,
+      vein: { from: { x: 712, y: 486 }, to: { x: 568, y: 514 }, width: 40 },
+      richness: 0.85,
+      remaining: 7
     },
     {
-      id: 'shallow-lobe',
-      x: 615,
-      y: 442,
-      radius: 76,
-      vein: {
-        from: { x: 690, y: 430 },
-        to: { x: 540, y: 455 },
-        width: 52
-      },
-      richness: 1.22,
-      remaining: 7.8
+      id: 'north-shelf',
+      x: 830,
+      y: 250,
+      radius: 52,
+      vein: { from: { x: 878, y: 312 }, to: { x: 782, y: 190 }, width: 38 },
+      richness: 0.9,
+      remaining: 7
     },
     {
-      id: 'northern-lobe',
-      x: 632,
-      y: 300,
-      radius: 112,
-      vein: {
-        from: { x: 720, y: 285 },
-        to: { x: 545, y: 315 },
-        width: 66
-      },
-      richness: 2.35,
-      remaining: 18
+      id: 'south-bench',
+      x: 660,
+      y: 660,
+      radius: 52,
+      vein: { from: { x: 736, y: 646 }, to: { x: 584, y: 672 }, width: 38 },
+      richness: 0.85,
+      remaining: 7
     },
     {
-      id: 'late-pocket',
-      x: 400,
-      y: 330,
-      radius: 82,
-      vein: {
-        from: { x: 462, y: 340 },
-        to: { x: 342, y: 320 },
-        width: 58
-      },
-      richness: 2.35,
-      remaining: 11
+      id: 'west-cut',
+      x: 450,
+      y: 470,
+      radius: 72,
+      vein: { from: { x: 512, y: 404 }, to: { x: 388, y: 536 }, width: 50 },
+      richness: 1.7,
+      remaining: 14
     },
     {
-      id: 'lower-recovery',
-      x: 400,
-      y: 675,
-      radius: 74,
-      vein: {
-        from: { x: 500, y: 684 },
-        to: { x: 300, y: 666 },
-        width: 34
-      },
-      richness: 1.38,
-      remaining: 8.6
+      id: 'north-lobe',
+      x: 600,
+      y: 280,
+      radius: 70,
+      vein: { from: { x: 676, y: 300 }, to: { x: 524, y: 260 }, width: 48 },
+      richness: 1.5,
+      remaining: 13
+    },
+    {
+      id: 'far-shelf',
+      x: 250,
+      y: 250,
+      radius: 86,
+      vein: { from: { x: 318, y: 190 }, to: { x: 182, y: 310 }, width: 58 },
+      richness: 3.1,
+      remaining: 24
+    },
+    {
+      id: 'deep-south',
+      x: 230,
+      y: 640,
+      radius: 84,
+      vein: { from: { x: 300, y: 588 }, to: { x: 160, y: 692 }, width: 56 },
+      richness: 2.9,
+      remaining: 23
     }
   ],
   ridges: [
-    { id: 'official-return-cut', from: { x: 860, y: 610 }, to: { x: 592, y: 590 } },
-    { id: 'north-lobe-shadow', from: { x: 736, y: 238 }, to: { x: 514, y: 252 } },
-    { id: 'late-pocket-wall', from: { x: 474, y: 278 }, to: { x: 300, y: 296 } }
+    { id: 'north-shelf-shadow', from: { x: 872, y: 168 }, to: { x: 690, y: 196 } },
+    { id: 'west-cut-wall', from: { x: 520, y: 330 }, to: { x: 372, y: 352 } },
+    { id: 'far-shelf-rim', from: { x: 330, y: 132 }, to: { x: 158, y: 158 } },
+    { id: 'south-divide', from: { x: 500, y: 700 }, to: { x: 336, y: 690 } }
   ],
+  // Named for what they are. The old field had a seam called "recovery seam"
+  // that was the second-worst return per unit distance on the map, so the
+  // level was promising safety exactly where it punished you hardest.
   beats: [
-    { id: 'start', label: 'shift end', x: 900, y: 535 },
-    { id: 'safe-turn-1', label: 'safe road', x: 745, y: 565 },
-    { id: 'shallow-lobe', label: 'shallow seam', x: 615, y: 442 },
-    { id: 'northern-lobe', label: 'rich high lobe', x: 632, y: 300 },
-    { id: 'late-pocket', label: 'one more seam', x: 400, y: 330 },
-    { id: 'lower-recovery', label: 'recovery seam', x: 400, y: 675 },
-    { id: 'home', label: 'extraction', x: 135, y: 610 }
-  ]
-};
+    { id: 'start', label: 'depot', x: 900, y: 535 },
+    { id: 'depot-flats', label: 'near flats', x: 640, y: 500 },
+    { id: 'north-shelf', label: 'north shelf', x: 830, y: 250 },
+    { id: 'south-bench', label: 'south bench', x: 660, y: 660 },
+    { id: 'west-cut', label: 'west cut', x: 450, y: 470 },
+    { id: 'north-lobe', label: 'north lobe', x: 600, y: 280 },
+    { id: 'far-shelf', label: 'far shelf', x: 250, y: 250 },
+    { id: 'deep-south', label: 'deep south', x: 230, y: 640 }
+  ]};
 
 export const CONTINUOUS_ARENAS = {
   'first-run-readable': FIRST_RUN_READABLE,
@@ -350,7 +389,7 @@ export const CONTINUOUS_ARENAS = {
   'last-light-return': LAST_LIGHT_RETURN
 } satisfies Record<ContinuousArenaId, ContinuousArenaDefinition>;
 
-export const DEFAULT_CONTINUOUS_ARENA_ID: ContinuousArenaId = 'first-run-readable';
+export const DEFAULT_CONTINUOUS_ARENA_ID: ContinuousArenaId = 'last-light-return';
 
 export function getContinuousArena(arenaId: ContinuousArenaId = DEFAULT_CONTINUOUS_ARENA_ID): ContinuousArenaDefinition {
   return CONTINUOUS_ARENAS[arenaId];
@@ -361,8 +400,12 @@ export function createArenaStarterFields(
   startingFieldValue: number,
   fieldRadius: number
 ): FieldPatch[] {
+  // The apron is one continuous piece of track, so it is chained like any other
+  // pass the tractor lays. Without the links it is a row of unrelated circles
+  // and the rail cannot follow it out of the depot.
   return arena.starterFieldPoints.map((point, index) => ({
     id: index + 1,
+    prevId: index > 0 ? index : undefined,
     x: point.x,
     y: point.y,
     radius: fieldRadius,

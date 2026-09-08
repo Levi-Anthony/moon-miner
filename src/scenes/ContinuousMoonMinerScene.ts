@@ -6,7 +6,13 @@ import {
   findFertileZoneAt,
   getDroneReclaimDiagnostics,
   getPreparedCoverage,
+  getContinuousGuidance,
+  carryDepletionOvernight,
+  carryFieldsOvernight,
+  type FieldPatch,
   getReclaimPreview,
+  isRoadSpendable,
+  isRoverAtExtraction,
   launchReclaimDrone,
   resolveContinuousTuning,
   tickContinuousWorld,
@@ -49,6 +55,16 @@ import {
 const DESKTOP_HUD_HEIGHT = 86;
 const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
+const FIELD_DECK_COLOR = 0x6d8f89;
+
+function mixColor(from: number, to: number, t: number): number {
+  const lerp = (shift: number) => {
+    const a = (from >> shift) & 0xff;
+    const b = (to >> shift) & 0xff;
+    return Math.round(a + (b - a) * t) << shift;
+  };
+  return lerp(16) | lerp(8) | lerp(0);
+}
 const MOBILE_CAMERA_CENTER_Y = 475;
 const DESKTOP_CAMERA_LOOK_AHEAD = 92;
 const MOBILE_CAMERA_LOOK_AHEAD = 138;
@@ -64,6 +80,7 @@ const LOW_NANOBOT_RATIO = 0.18;
 const DRONE_URGENCY_RATIO = 0.32;
 const DELIVERY_READOUT_MS = 1260;
 const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v5';
+const CARRIED_ROAD_STORAGE_KEY = 'moon-miner-carried-road-v1';
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
 const DRONE_RAIL_LAB_STORAGE_KEY = 'moon-miner-drone-rail-lab-v1';
@@ -76,7 +93,7 @@ type ArmRole = 'building' | 'mining' | 'stabilizing' | 'emergency' | 'helper';
 type LayoutMode = 'desktop' | 'mobilePortrait';
 type ViewMode = 'tactical' | 'chase' | 'hybrid';
 type TuningKey = keyof ContinuousTuning;
-type CameraPresetId = 'tacticalMap' | 'threeQuarterTactical' | 'softChase' | 'roverChase' | 'hybridAuto';
+type CameraPresetId = 'tacticalMap' | 'tractorChase';
 type NumericTuningKey = {
   [Key in keyof ContinuousTuning]: ContinuousTuning[Key] extends number ? Key : never;
 }[keyof ContinuousTuning];
@@ -104,6 +121,13 @@ interface CameraLabSettings {
   maxCameraRotation: number;
   rotationBlendAmount: number;
   followBlend: number;
+  followDeadzone: number;
+  worldLabelsVisible: boolean;
+  cameraYawRate: number;
+  cameraMaxYawLag: number;
+  cameraYawDeadzone: number;
+  cameraPitchDegrees: number;
+  cameraRigDistance: number;
   projectedYScale: number;
   projectionShear: number;
   depthScaleStrength: number;
@@ -251,10 +275,6 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
   {
     label: 'Target Scoring',
     controls: [
-      { key: 'dronePayloadScoreMultiplier', label: 'Payload score', min: 0, max: 16, step: 0.1, precision: 1 },
-      { key: 'droneAgeScoreMultiplier', label: 'Age score', min: 0, max: 4, step: 0.05, precision: 2 },
-      { key: 'droneTravelScoreMultiplier', label: 'Travel cost', min: 0, max: 8, step: 0.1, precision: 1 },
-      { key: 'droneClusterSpreadScoreDivisor', label: 'Spread divisor', min: 20, max: 260, step: 5 }
     ]
   },
   {
@@ -348,6 +368,17 @@ const DEFAULT_CAMERA_LAB_SETTINGS: CameraLabSettings = {
   maxCameraRotation: 42,
   rotationBlendAmount: 0.2,
   followBlend: 0,
+  followDeadzone: 90,
+  worldLabelsVisible: false,
+  // The tractor turns at 2.25 rad/s. The camera turns slower on purpose, so a
+  // held turn swings the tractor out to the side of frame with its flank and
+  // the fresh track in view, and the camera never quite catches up until the
+  // turn stops.
+  cameraYawRate: 1.1,
+  cameraMaxYawLag: 74,
+  cameraYawDeadzone: 6,
+  cameraPitchDegrees: 32,
+  cameraRigDistance: 250,
   projectedYScale: 1,
   projectionShear: 0,
   depthScaleStrength: 0,
@@ -378,94 +409,31 @@ const CAMERA_PRESETS: CameraPresetDefinition[] = [
     settings: { ...DEFAULT_CAMERA_LAB_SETTINGS }
   },
   {
-    id: 'threeQuarterTactical',
-    label: '3/4 Tactical',
+    id: 'tractorChase',
+    label: 'Tractor Chase',
     settings: {
       ...DEFAULT_CAMERA_LAB_SETTINGS,
-      preset: 'threeQuarterTactical',
-      viewMode: 'tactical',
-      tacticalZoom: 0.78,
-      cameraCenterY: 18,
-      projectedYScale: 0.72,
-      projectionShear: -0.08,
-      depthScaleStrength: 0.16,
-      projectedScaleStrength: 0.14,
-      horizonVisible: true,
-      followBlend: 0.45
-    }
-  },
-  {
-    id: 'softChase',
-    label: 'Soft Chase',
-    settings: {
-      ...DEFAULT_CAMERA_LAB_SETTINGS,
-      preset: 'softChase',
+      preset: 'tractorChase',
       viewMode: 'chase',
-      cameraZoom: 1.02,
-      cameraCenterY: 22,
-      roverScreenBias: 34,
-      lookAheadDistance: 96,
-      smoothing: 1.9,
-      turnResponse: 1.2,
-      maxCameraRotation: 38,
-      rotationBlendAmount: 0.28,
-      followBlend: 0.24,
-      projectedYScale: PROJECTED_Y_SCALE,
-      projectionShear: PROJECTED_SHEAR,
-      depthScaleStrength: 0.24,
-      projectedScaleStrength: 0.26,
-      horizonVisible: true
-    }
-  },
-  {
-    id: 'roverChase',
-    label: 'Rover Chase',
-    settings: {
-      ...DEFAULT_CAMERA_LAB_SETTINGS,
-      preset: 'roverChase',
-      viewMode: 'chase',
-      cameraZoom: 1.22,
-      cameraCenterY: 54,
-      roverScreenBias: 84,
-      lookAheadDistance: 152,
-      smoothing: 2.4,
-      turnResponse: 2.55,
-      maxCameraRotation: 70,
-      rotationBlendAmount: 0.72,
-      followBlend: 0.04,
+      cameraZoom: 1.38,
+      cameraCenterY: -18,
+      roverScreenBias: 12,
+      lookAheadDistance: 24,
+      smoothing: 3.4,
+      followDeadzone: 30,
+      followBlend: 0,
       projectedYScale: 0.7,
-      projectionShear: -0.13,
-      depthScaleStrength: 0.36,
-      projectedScaleStrength: 0.38,
-      horizonVisible: true
+      projectionShear: 0,
+      depthScaleStrength: 0.3,
+      projectedScaleStrength: 0.3,
+      horizonVisible: true,
+      cameraYawRate: 1.1,
+      cameraMaxYawLag: 74,
+      cameraYawDeadzone: 6,
+      cameraPitchDegrees: 32,
+      cameraRigDistance: 250
     }
   },
-  {
-    id: 'hybridAuto',
-    label: 'Hybrid Auto',
-    settings: {
-      ...DEFAULT_CAMERA_LAB_SETTINGS,
-      preset: 'hybridAuto',
-      viewMode: 'hybrid',
-      cameraZoom: 1,
-      tacticalZoom: 0.7,
-      cameraCenterY: 32,
-      roverScreenBias: 52,
-      lookAheadDistance: 118,
-      smoothing: 1.85,
-      turnResponse: 1.65,
-      maxCameraRotation: 54,
-      rotationBlendAmount: 0.46,
-      followBlend: 0.34,
-      projectedYScale: 0.76,
-      projectionShear: -0.1,
-      depthScaleStrength: 0.28,
-      projectedScaleStrength: 0.28,
-      horizonVisible: true,
-      returnToNormalDelay: 1.8,
-      tacticalPullbackStrength: 0.72
-    }
-  }
 ];
 
 const CAMERA_CONTROL_GROUPS: Array<{ label: string; controls: CameraControlDefinition[] }> = [
@@ -680,6 +648,7 @@ declare global {
       setArena: (arenaId: ContinuousArenaId) => void;
       getCameraLab: () => CameraLabSnapshot;
       setCameraPreset: (presetId: CameraPresetId) => void;
+      setCameraSettings: (settings: Partial<CameraLabSettings>) => void;
       setViewMode: (viewMode: ViewMode) => void;
       getDynamicsPresets: () => DynamicsPresetDefinition[];
       setDynamicsPreset: (presetId: DynamicsPresetId) => void;
@@ -713,6 +682,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private viewMode: ViewMode = 'tactical';
   private tacticalCameraFocus: Vec2 = { x: 420, y: 500 };
   private cameraHeading = -0.18;
+  private readonly drawnBeatLabelKeys = new Set<string>();
+  private chaseCameraFocus: Vec2 = { x: 420, y: 500 };
+  private droneClaimAtMs = -10000;
   private hybridPullbackUntilMs = 0;
   private keys?: Record<string, Phaser.Input.Keyboard.Key>;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -734,6 +706,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private cameraToggleControls = new Map<BooleanCameraControlKey, HTMLInputElement>();
   private debugOverlayVisible = false;
   private previousDroneStatus: DroneStatus = 'ready';
+  private previousRailed = false;
   private previousSpeedState: SpeedState = 'prepared';
   private previousPhase: ContinuousPhase = 'playing';
   private previousOre = 0;
@@ -743,7 +716,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId());
+    this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId(), this.loadCarriedRoad(), this.carriedDepletion);
     this.cameraLab = this.loadInitialCameraLab();
     this.droneRailLab = this.loadStoredDroneRailLab();
     this.viewMode = this.cameraLab.viewMode;
@@ -832,6 +805,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
     const layout = this.getLayout();
+
+    // When the run is over, anything starts the next day. A small button
+    // labelled Reset in the corner of the HUD was the only way forward, and it
+    // reads as start-over rather than continue -- so the day after was there
+    // and unreachable. Tap anywhere, or press R.
+    if (this.state.phase !== 'playing') {
+      this.resetRun();
+      return;
+    }
+
     const button = this.buttons.find((candidate) => Phaser.Geom.Rectangle.Contains(candidate.rect, pointer.x, pointer.y));
     if (button) {
       if (button.id === 'launch') this.launchDrone();
@@ -934,6 +917,146 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (event.key === '\\') {
       event.preventDefault();
       this.resetCameraLab();
+    }
+  }
+
+  private shiftNumber = 1;
+  private carriedIn = 0;
+  private carriedDepletion: Record<string, number> = {};
+  private saveDiagnostic: 'loaded' | 'absent' | 'empty' | 'unreadable' | 'off' = 'off';
+  private survivedTheNight = 0;
+
+  // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
+  // caution about a documented deferral, and the result was that the next day
+  // was unreachable: a published artifact does not necessarily carry a query
+  // string through to the page, so the flag could not be set at all. A feature
+  // nobody can turn on is not a cautious default, it is a missing one.
+  private isShiftModeEnabled(): boolean {
+    try {
+      return new URLSearchParams(window.location.search).get('shift') !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  // Every finished run writes itself somewhere I can read. The loop trace has
+  // always recorded exactly the right things -- the canon's own success test,
+  // fieldCommit / overextension / emergencyCrawl / droneRecovery, with position,
+  // stock, ore and time in each speed state -- and it lived in memory, was
+  // reachable only from the player's own console, and was wiped at the start of
+  // the next run. So six passes of tuning were argued from self-play routes
+  // instead of from how the game is actually played. This closes that.
+  private async recordRunTrace(): Promise<void> {
+    const claude = (window as unknown as { claude?: { use?: (name: string) => Promise<unknown> } }).claude;
+    if (!claude?.use) return;
+
+    try {
+      const db = (await claude.use('db')) as
+        | { doc: (path: string) => { set: (value: Record<string, unknown>) => Promise<unknown> } }
+        | null;
+      if (!db) return;
+
+      const summary = getContinuousLoopSummary(this.loopTrace);
+      const id = `${Date.now()}`;
+      await db.doc(`runs/${id}`).set({
+        recordedAt: new Date().toISOString(),
+        shift: this.shiftNumber,
+        carriedIn: this.carriedIn,
+        // What the save looked like when this run started.
+        saveOnLoad: this.saveDiagnostic,
+        survivedTheNight: this.survivedTheNight,
+        arenaId: this.state.arenaId,
+        result: this.state.phase,
+        message: this.state.message,
+        ore: Number(this.state.rover.ore.toFixed(2)),
+        oreRequired: this.state.arena.extraction?.oreRequired ?? this.state.targetOre,
+        solarRemaining: Number(this.state.solarSeconds.toFixed(2)),
+        solarWindow: this.state.solarWindowSeconds,
+        elapsed: Number(this.state.elapsedSeconds.toFixed(2)),
+        reachedExtraction: isRoverAtExtraction(this.state),
+        // The four beats the design says the run has to have.
+        milestones: summary.milestones.map((milestone) => ({
+          id: milestone.id,
+          hit: milestone.hit,
+          atSeconds: milestone.atSeconds === undefined ? null : Number(milestone.atSeconds.toFixed(2))
+        })),
+        hitLoop: summary.hitLoop,
+        lowestNanobots: Number(summary.lowestNanobots.toFixed(2)),
+        deliveredNanobots: Number(summary.deliveredNanobots.toFixed(2)),
+        droneLaunches: summary.droneLaunches,
+        droneDeliveries: summary.droneDeliveries,
+        // Where the time actually went, which is the question every "it feels
+        // weird" report has really been about.
+        secondsCrawling: Number(summary.speedSeconds.crawl.toFixed(2)),
+        secondsFabricating: Number(summary.speedSeconds.fabricating.toFixed(2)),
+        secondsPrepared: Number(summary.speedSeconds.prepared.toFixed(2)),
+        // Trimmed so one document can never approach the size limit.
+        events: this.loopTrace.events.slice(-60).map((event) => ({
+          kind: event.kind,
+          at: Number(event.atSeconds.toFixed(2)),
+          speed: event.speedState,
+          drone: event.droneStatus,
+          nanobots: Number(event.nanobots.toFixed(2)),
+          ore: Number(event.ore.toFixed(2)),
+          x: Math.round(event.x),
+          y: Math.round(event.y)
+        }))
+      });
+    } catch {
+      // No store in this view, or the write was refused. A run that cannot be
+      // recorded still has to be playable.
+    }
+  }
+
+  private loadCarriedRoad(): FieldPatch[] {
+    const save = this.loadShiftSave();
+    this.shiftNumber = save.shift;
+    this.carriedIn = save.fields.length;
+    this.carriedDepletion = save.depletion;
+    return save.fields;
+  }
+
+  private loadShiftSave(): { shift: number; fields: FieldPatch[]; depletion: Record<string, number> } {
+    if (!this.isShiftModeEnabled()) return { shift: 1, fields: [], depletion: {} };
+
+    try {
+      const raw = window.localStorage.getItem(CARRIED_ROAD_STORAGE_KEY);
+      // Two runs a minute apart both recorded as shift one with nothing
+      // carried, which could be storage being cleared, storage being
+      // unreadable, or a save that was never written -- and no way to tell
+      // which from the outside. Recording what the load actually saw makes the
+      // next occurrence diagnose itself instead of being argued about.
+      this.saveDiagnostic = raw === null ? 'absent' : raw.length < 3 ? 'empty' : 'loaded';
+      const parsed = raw
+        ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[]; depletion?: Record<string, number> })
+        : undefined;
+      return {
+        shift: typeof parsed?.shift === 'number' ? parsed.shift : 1,
+        fields: Array.isArray(parsed?.fields) ? parsed.fields : [],
+        depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {}
+      };
+    } catch {
+      this.saveDiagnostic = 'unreadable';
+      return { shift: 1, fields: [], depletion: {} };
+    }
+  }
+
+  private saveCarriedRoad(): void {
+    if (!this.isShiftModeEnabled()) return;
+
+    try {
+      const carried = carryFieldsOvernight(this.state.fields, this.state.tuning);
+      this.survivedTheNight = carried.length;
+      window.localStorage.setItem(
+        CARRIED_ROAD_STORAGE_KEY,
+        JSON.stringify({
+          shift: this.shiftNumber + 1,
+          fields: carried,
+          depletion: carryDepletionOvernight(this.state.fertileZones)
+        })
+      );
+    } catch {
+      // Storage can be unavailable; the shift simply does not carry.
     }
   }
 
@@ -1083,13 +1206,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       steer = clamp(angleDifference(desiredAngle, this.state.rover.heading) / 0.85, -1, 1);
     }
 
-    const driveIntent = upHeld || downHeld || Boolean(this.pointerTarget);
+    // S backs up. S with A or D swings the machine on the spot. Neither touches
+    // the forward path, which is plain steer-and-throttle again.
+    const reversing = downHeld && !upHeld;
+    const driveIntent = upHeld || Boolean(this.pointerTarget);
     return {
       steer,
       throttle: upHeld ? 1 : this.pointerTarget ? 0.62 : 0,
-      brake: downHeld,
-      driveIntent,
-      pivotIntent: !driveIntent && Math.abs(steer) > 0.001
+      brake: false,
+      reverseIntent: reversing,
+      driveIntent: reversing ? false : driveIntent,
+      pivotIntent: reversing || (!driveIntent && Math.abs(steer) > 0.001)
     };
   }
 
@@ -1112,6 +1239,26 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const commitment = clamp((distance - deadzone) / (radius - deadzone), 0, 1);
     const forwardBias = clamp((-dy - deadzone) / (radius - deadzone), 0, 1);
+    const pullingBack = dy > deadzone;
+
+    // Same grammar as the keyboard: back is reverse, back-and-across swings on
+    // the spot. It hardcoded steer 0, so the thumb could only ever reverse and
+    // the swing was unreachable on a phone at all.
+    if (pullingBack) {
+      // A wide lateral deadzone on the way back, deliberately wider than the
+      // stick's own. Straight back has to be reachable with an ordinary thumb
+      // pull -- if a few degrees of drift starts the machine swinging, the
+      // control demands a precision the game never asked for anywhere else.
+      const swingDeadzone = radius * 0.42;
+      const swinging = Math.abs(dx) > swingDeadzone;
+      return {
+        steer: swinging ? clamp((dx - Math.sign(dx) * swingDeadzone) / (radius - swingDeadzone), -1, 1) : 0,
+        throttle: 0,
+        reverseIntent: true,
+        driveIntent: false,
+        pivotIntent: true
+      };
+    }
 
     return {
       steer: clamp(dx / radius, -1, 1),
@@ -1134,7 +1281,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
           this.time.now + this.cameraLab.returnToNormalDelay * 1000
         );
       }
-      this.showEventMessage('Drone launched. Shape the return path.', 1400, this.time.now, 2);
+      this.showEventMessage('Drone away. It will come back to you.', 1400, this.time.now, 2);
     } else {
       this.addEffect('blocked', this.state.rover.x, this.state.rover.y, 320);
       this.showEventMessage(this.formatPlayerMessage(result.message), 1100, this.time.now, 2);
@@ -1143,7 +1290,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private resetRun(): void {
-    this.state = createContinuousWorld(this.state.seed, this.state.tuning, this.state.arenaId);
+    this.state = createContinuousWorld(this.state.seed, this.state.tuning, this.state.arenaId, this.loadCarriedRoad(), this.carriedDepletion);
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -1166,7 +1313,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const tuning = this.state.tuning;
     const seed = this.state.seed;
-    this.state = createContinuousWorld(seed, tuning, arenaId);
+    this.state = createContinuousWorld(seed, tuning, arenaId, this.loadCarriedRoad(), this.carriedDepletion);
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -1194,7 +1341,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       route,
       launchedAtSeconds: new Set()
     };
-    const target = getContinuousSelfPlayTarget(route, this.state.elapsedSeconds);
+    const target = getContinuousSelfPlayTarget(route, this.state.elapsedSeconds, this.state);
     this.pointerTarget = { x: target.x, y: target.y };
     this.state.message = `Self-play route: ${route.label}.`;
   }
@@ -1224,13 +1371,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       }
     }
 
-    const target = getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds);
+    const target = getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds, this.state);
     this.pointerTarget = { x: target.x, y: target.y };
   }
 
   private getSelfPlayTarget(): ContinuousSelfPlayWaypoint | undefined {
     if (!this.selfPlay) return undefined;
-    return getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds);
+    return getContinuousSelfPlayTarget(this.selfPlay.route, this.state.elapsedSeconds, this.state);
   }
 
   private getSelfPlayStatus(): ContinuousSelfPlayStatus | undefined {
@@ -1751,7 +1898,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       lines.push(
         `Best #${best.targetPatchId}: +${best.payload.toFixed(2)} / ${best.fieldCount} fields / ${best.distanceFromRover.toFixed(0)}u`,
         `ETA: out ${best.eta.outboundSeconds.toFixed(2)} + lock ${best.eta.reclaimLockSeconds.toFixed(2)} + return ${best.eta.returnSeconds.toFixed(2)} = ${best.eta.totalSeconds.toFixed(2)}s`,
-        `Score ${best.score.toFixed(2)} = payload ${best.components.payloadValue.toFixed(2)} + age ${best.components.ageBonus.toFixed(2)} - travel ${best.components.travelCost.toFixed(2)} - spread ${best.components.spreadPenalty.toFixed(2)}`
+        `Nearest set road: ${best.distanceFromRover.toFixed(0)} away, +${best.payload.toFixed(1)} in ${best.refillEtaSeconds.toFixed(1)}s`
       );
     }
 
@@ -1983,6 +2130,14 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       });
   }
 
+  private applyCameraSettings(settings: Partial<CameraLabSettings>): void {
+    this.cameraLab = this.normalizeCameraLabSettings({ ...this.cameraLab, ...settings });
+    this.viewMode = this.cameraLab.viewMode;
+    this.tacticalCameraFocus = this.tacticalCameraTarget();
+    this.saveStoredCameraLab();
+    this.syncCameraLabPanel();
+  }
+
   private applyCameraPreset(presetId: CameraPresetId): void {
     const preset = this.getCameraPreset(presetId);
     this.cameraLab = this.normalizeCameraLabSettings({ ...preset.settings });
@@ -2078,18 +2233,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (!urlViewMode) return stored;
 
     const presetId: CameraPresetId =
-      urlViewMode === 'chase' ? 'roverChase' : urlViewMode === 'hybrid' ? 'hybridAuto' : 'tacticalMap';
+      urlViewMode === 'tactical' ? 'tacticalMap' : 'tractorChase';
     return this.normalizeCameraLabSettings({ ...this.getCameraPreset(presetId).settings });
   }
 
   private loadStoredCameraLab(): CameraLabSettings {
-    if (!import.meta.env.DEV) return { ...DEFAULT_CAMERA_LAB_SETTINGS };
+    if (!import.meta.env.DEV) return this.normalizeCameraLabSettings({ ...this.getCameraPreset('tractorChase').settings });
 
     try {
       const raw = window.localStorage.getItem(CAMERA_LAB_STORAGE_KEY);
-      return this.normalizeCameraLabSettings(raw ? (JSON.parse(raw) as Partial<CameraLabSettings>) : undefined);
+      if (!raw) return this.normalizeCameraLabSettings({ ...this.getCameraPreset('tractorChase').settings });
+      return this.normalizeCameraLabSettings(JSON.parse(raw) as Partial<CameraLabSettings>);
     } catch {
-      return { ...DEFAULT_CAMERA_LAB_SETTINGS };
+      return this.normalizeCameraLabSettings({ ...this.getCameraPreset('tractorChase').settings });
     }
   }
 
@@ -2176,12 +2332,47 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       return;
     }
 
-    const response = this.state.speedState === 'crawl' ? this.cameraLab.turnResponse * 1.45 : this.cameraLab.turnResponse;
-    const blend = 1 - Math.exp(-response * deltaSeconds);
-    const targetHeading = this.cameraHeadingTarget();
-    this.cameraHeading = wrapAngle(
-      this.cameraHeading + angleDifference(targetHeading, this.cameraHeading) * blend
-    );
+    const offset = angleDifference(this.state.rover.heading, this.cameraHeading);
+    const magnitude = Math.abs(offset);
+    const direction = Math.sign(offset) || 1;
+    const deadzone = (this.cameraLab.cameraYawDeadzone * Math.PI) / 180;
+    const maxLag = (this.cameraLab.cameraMaxYawLag * Math.PI) / 180;
+    const rate = this.state.speedState === 'crawl' ? this.cameraLab.cameraYawRate * 1.45 : this.cameraLab.cameraYawRate;
+
+    if (magnitude > maxLag) {
+      // Saturated. Hold the lag steady so a sustained turn parks the tractor at
+      // the edge of frame instead of swinging it out of shot.
+      this.cameraHeading = wrapAngle(this.state.rover.heading - direction * maxLag);
+      this.updateChaseFocus(deltaSeconds);
+      return;
+    }
+
+    if (magnitude <= deadzone) {
+      this.updateChaseFocus(deltaSeconds);
+      return;
+    }
+
+    const step = Math.min(magnitude, rate * deltaSeconds);
+    this.cameraHeading = wrapAngle(this.cameraHeading + direction * step);
+    this.updateChaseFocus(deltaSeconds);
+  }
+
+  private updateChaseFocus(deltaSeconds: number): void {
+    const desired = {
+      x: this.state.rover.x + Math.cos(this.cameraHeading) * this.cameraLab.lookAheadDistance,
+      y: this.state.rover.y + Math.sin(this.cameraHeading) * this.cameraLab.lookAheadDistance
+    };
+    const offsetX = desired.x - this.chaseCameraFocus.x;
+    const offsetY = desired.y - this.chaseCameraFocus.y;
+    const distance = Math.hypot(offsetX, offsetY);
+    const deadzone = Math.max(0, this.cameraLab.followDeadzone);
+    if (distance <= deadzone) return;
+
+    const blend = 1 - Math.exp(-this.cameraLab.smoothing * deltaSeconds);
+    this.chaseCameraFocus = {
+      x: Phaser.Math.Linear(this.chaseCameraFocus.x, desired.x, blend),
+      y: Phaser.Math.Linear(this.chaseCameraFocus.y, desired.y, blend)
+    };
   }
 
   private captureTransitions(
@@ -2194,6 +2385,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     previousNanobots: number,
     previousSolarSeconds: number
   ): void {
+    if (previousDroneStatus === 'ready' && this.state.drone.status !== 'ready') {
+      this.droneClaimAtMs = timeMs;
+    }
+
     let deliveredPayload = 0;
     if (previousDroneStatus !== 'ready' && this.state.drone.status === 'ready') {
       this.addEffect('recovery', this.state.rover.x, this.state.rover.y, 980);
@@ -2203,19 +2398,33 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       }
     }
 
-    if (previousSpeedState !== this.state.speedState) {
-      if (this.state.speedState === 'prepared') {
+    // The rail catching is the single best moment the machine has, so it gets
+    // said out loud with the number that matters: how much connected track you
+    // just picked up.
+    const railedNow = Boolean(this.state.rail);
+    if (railedNow !== this.previousRailed) {
+      if (railedNow) {
         this.addEffect('sprint', this.state.rover.x, this.state.rover.y, 620);
-        this.showEventMessage('Prepared field. Mining arms are free.', 1200, timeMs, 1);
+        this.showEventMessage(`On rail. ${Math.round(this.state.rail?.runwayAhead ?? 0)}m of track ahead.`, 1200, timeMs, 1);
+      } else {
+        this.showEventMessage('Off the rail. Steering is yours again.', 900, timeMs, 1);
+      }
+    }
+    this.previousRailed = railedNow;
+
+    if (previousSpeedState !== this.state.speedState) {
+      if (this.state.speedState === 'prepared' && !railedNow) {
+        this.addEffect('sprint', this.state.rover.x, this.state.rover.y, 620);
+        this.showEventMessage('Your own road. Free to drive, and the arms can mine.', 1200, timeMs, 1);
       }
       if (this.state.speedState === 'fabricating') {
         this.addEffect('build', this.state.rover.x, this.state.rover.y, 620);
-        this.showEventMessage('Building field. Mining arms constrained.', 1200, timeMs, 1);
+        this.showEventMessage('Raw ground. Every second here costs nanobots.', 1200, timeMs, 1);
       }
       if (this.state.speedState === 'crawl') {
         this.addEffect('crawl', this.state.rover.x, this.state.rover.y, 820);
         this.showEventMessage(
-          this.state.drone.status === 'ready' ? 'Crawl protocol. Launch drone now.' : 'Crawl protocol. Stay catchable.',
+          this.state.drone.status === 'ready' ? 'Out of nanobots. Press Space for a refill.' : 'Out of nanobots. Crawling until the drone returns.',
           1800,
           timeMs,
           2
@@ -2228,17 +2437,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.state.nanobots / this.state.maxNanobots < this.state.tuning.droneUrgencyRatio;
     if (crossedIntoLaunchPressure && this.state.drone.status === 'ready') {
       this.addEffect('crawl', this.state.rover.x, this.state.rover.y, 620);
-      this.showEventMessage('Low buffer. Drone is ready.', 1450, timeMs, 2);
+      this.showEventMessage('Nanobots low. Space sends the drone.', 1450, timeMs, 2);
     }
 
     if (this.state.arena.extraction && this.state.phase === 'playing') {
       const previousSolarRatio = previousSolarSeconds / Math.max(1, this.state.solarWindowSeconds);
       const solarRatio = this.getSolarRatio();
       if (previousSolarRatio >= 0.5 && solarRatio < 0.5) {
-        this.showEventMessage('Sun is past half. Keep the home line in sight.', 1900, timeMs, 1);
+        this.showEventMessage('Sun past half. Start working your way home.', 1900, timeMs, 1);
       }
       if (previousSolarRatio >= 0.25 && solarRatio < 0.25) {
-        this.showEventMessage('Last light closing. Turn toward extraction.', 2200, timeMs, 2);
+        this.showEventMessage('Last light. Turn toward extraction.', 2200, timeMs, 2);
       }
       if (previousSolarRatio >= 0.1 && solarRatio < 0.1) {
         this.showEventMessage('Extraction now. No more detours.', 2400, timeMs, 3);
@@ -2246,7 +2455,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     if (deliveredPayload > 0) {
-      this.showEventMessage(`Drone delivered +${deliveredPayload.toFixed(1)}. Field restored.`, 1800, timeMs, 2);
+      // The scene was composing its own line here and throwing away the one the
+      // simulation wrote, so the relaid rail -- the only thing the drone gives
+      // you rather than takes -- arrived unannounced.
+      this.showEventMessage(this.state.message, 1800, timeMs, 2);
     }
 
     if (this.state.rover.ore > previousOre + 0.02) {
@@ -2255,6 +2467,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     if (previousPhase !== this.state.phase) {
       this.addEffect(this.state.phase === 'won' ? 'win' : 'loss', this.state.rover.x, this.state.rover.y, 1200);
+      // The shift ends whether you made quota or not. What you laid well is
+      // still there in the morning; what you scraped out while dying is not.
+      if (this.state.phase !== 'playing') {
+        this.saveCarriedRoad();
+        void this.recordRunTrace();
+      }
     }
 
     this.previousDroneStatus = this.state.drone.status;
@@ -2309,7 +2527,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.fillStyle(0x070910, 1);
     this.graphics.fillRect(0, 0, layout.width, layout.height);
 
-    this.graphics.fillStyle(0x11151e, 1);
+    this.graphics.fillStyle(this.viewMode === 'tactical' ? 0x11151e : 0x05070e, 1);
     this.graphics.fillRect(0, layout.hudHeight, layout.width, layout.height - layout.hudHeight);
 
     if (this.viewMode === 'tactical') {
@@ -2318,14 +2536,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     if (this.cameraLab.horizonVisible) {
-      const planeTopLeft = this.project(this.cameraLocalPoint(-620, 540));
-      const planeTopRight = this.project(this.cameraLocalPoint(620, 540));
-      const planeBottomRight = this.project(this.cameraLocalPoint(620, -360));
-      const planeBottomLeft = this.project(this.cameraLocalPoint(-620, -360));
-      this.graphics.fillStyle(0x141924, 0.9);
-      this.graphics.fillPoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
-      this.graphics.lineStyle(2, 0x303846, 0.85);
-      this.graphics.strokePoints([planeTopLeft, planeTopRight, planeBottomRight, planeBottomLeft], true, true);
+      this.drawRegolith();
     }
 
     if (this.cameraLab.gridVisible) {
@@ -2350,6 +2561,108 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     this.graphics.lineStyle(1, 0x262e3b, 0.8);
     this.graphics.lineBetween(0, layout.hudHeight, layout.width, layout.hudHeight);
+  }
+
+  private static mixColor(from: number, to: number, amount: number): number {
+    const t = clamp(amount, 0, 1);
+    const fr = (from >> 16) & 0xff;
+    const fg = (from >> 8) & 0xff;
+    const fb = from & 0xff;
+    const tr = (to >> 16) & 0xff;
+    const tg = (to >> 8) & 0xff;
+    const tb = to & 0xff;
+    return (
+      ((Math.round(fr + (tr - fr) * t) & 0xff) << 16) |
+      ((Math.round(fg + (tg - fg) * t) & 0xff) << 8) |
+      (Math.round(fb + (tb - fb) * t) & 0xff)
+    );
+  }
+
+  // Ground used to be drawn one shade off the sky, which is why the world read
+  // as a void. Lay it down in depth bands instead: warm lit dust close to the
+  // tractor falling away to cold haze at the horizon.
+  private horizonScreenY(): number {
+    const rig = this.cameraRig();
+    return this.getCameraCenter().y - (rig.focal * rig.sin) / rig.cos;
+  }
+
+  // Sky only exists once there is a horizon to put it under: dusty just above
+  // the ground, falling to deep black overhead, with stars thinning downward.
+  private drawSky(): void {
+    const layout = this.getLayout();
+    const horizon = this.horizonScreenY();
+    const top = layout.hudHeight;
+    if (horizon <= top) return;
+
+    const SKY_BANDS = 18;
+    for (let index = 0; index < SKY_BANDS; index += 1) {
+      const t0 = index / SKY_BANDS;
+      const t1 = (index + 1) / SKY_BANDS;
+      const shade = ContinuousMoonMinerScene.mixColor(0x05070e, 0x2f3444, Math.pow(t0, 1.6));
+      this.graphics.fillStyle(shade, 1);
+      this.graphics.fillRect(0, top + (horizon - top) * t0, layout.width, (horizon - top) * (t1 - t0) + 1);
+    }
+
+    for (let index = 0; index < 90; index += 1) {
+      const x = (((index * 373) % 1000) / 1000) * layout.width;
+      const bias = Math.pow(((index * 173) % 1000) / 1000, 1.5);
+      const y = top + (horizon - top) * bias;
+      const twinkle = 0.25 + (((index * 37) % 100) / 100) * 0.5;
+      this.graphics.fillStyle(index % 7 === 0 ? 0xcfe6ff : 0x8fa3bd, twinkle * (1 - bias * 0.75));
+      this.graphics.fillCircle(x, y, index % 11 === 0 ? 1.6 : 1);
+    }
+  }
+
+  private drawRegolith(): void {
+    this.drawSky();
+    const NEAR = -360;
+    const FAR = 2600;
+    const BANDS = 34;
+    const nearColor = 0x7d7061;
+    const farColor = 0x1b2130;
+
+    const layout = this.getLayout();
+    const horizon = this.horizonScreenY();
+    this.graphics.fillStyle(farColor, 1);
+    this.graphics.fillRect(0, horizon, layout.width, layout.height - horizon);
+
+    for (let index = 0; index < BANDS; index += 1) {
+      const t0 = Math.pow(index / BANDS, 2.1);
+      const t1 = Math.pow((index + 1) / BANDS, 2.1);
+      const forward0 = NEAR + (FAR - NEAR) * t0;
+      const forward1 = NEAR + (FAR - NEAR) * t1;
+      const shade = ContinuousMoonMinerScene.mixColor(nearColor, farColor, Math.pow(index / BANDS, 0.55));
+      this.graphics.fillStyle(shade, 1);
+      this.graphics.fillPoints(
+        [
+          this.project(this.cameraLocalPoint(-(900 + forward0 * 2.2), forward0)),
+          this.project(this.cameraLocalPoint(900 + forward0 * 2.2, forward0)),
+          this.project(this.cameraLocalPoint(900 + forward1 * 2.2, forward1)),
+          this.project(this.cameraLocalPoint(-(900 + forward1 * 2.2), forward1))
+        ],
+        true,
+        true
+      );
+    }
+
+    // Scattered grit so the surface has texture to move against.
+    for (let index = 0; index < 120; index += 1) {
+      const lateral = -1200 + ((index * 617) % 2400);
+      const forward = NEAR + ((index * 331) % (FAR - NEAR));
+      const depth = (forward - NEAR) / (FAR - NEAR);
+      if (depth > 0.72) continue;
+      const point = this.project(this.cameraLocalPoint(lateral, forward));
+      const tone = index % 4 === 0 ? 0x8a8072 : 0x4a4640;
+      this.graphics.fillStyle(tone, 0.5 * (1 - depth));
+      this.graphics.fillCircle(point.x, point.y, (1 + (index % 3)) * (1 - depth * 0.6));
+    }
+
+    // Haze band where ground meets sky.
+    for (let index = 0; index < 7; index += 1) {
+      const spread = 4 + index * 7;
+      this.graphics.fillStyle(0x39414f, 0.16 - index * 0.02);
+      this.graphics.fillRect(0, horizon - spread * 0.35, this.getLayout().width, spread);
+    }
   }
 
   private drawTacticalBackdrop(layout: SceneLayout, visualCalm: number): void {
@@ -2425,34 +2738,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private drawSafeReturnPath(): void {
-    const path = this.state.arena.safePath;
-    if (!path || path.length < 2) {
-      this.drawStaticText('safe-path-label', 0, 0, '', 1, '#ffffff');
-      return;
-    }
-
-    this.graphics.lineStyle(22, 0x102d33, 0.2);
-    for (let index = 0; index < path.length - 1; index += 1) {
-      const from = this.project(path[index]);
-      const to = this.project(path[index + 1]);
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
-    }
-
-    this.graphics.lineStyle(3, 0x7bc6bd, 0.36);
-    for (let index = 0; index < path.length - 1; index += 1) {
-      const from = this.project(path[index]);
-      const to = this.project(path[index + 1]);
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
-    }
-
-    for (let index = 0; index < path.length; index += 1) {
-      const point = this.project(path[index]);
-      this.graphics.fillStyle(0x7bc6bd, index === path.length - 1 ? 0.58 : 0.26);
-      this.graphics.fillCircle(point.x, point.y, index === path.length - 1 ? 5 : 2.5);
-    }
-
-    const labelPoint = this.project(path[Math.min(2, path.length - 1)]);
-    this.drawStaticText('safe-path-label', labelPoint.x + 10, labelPoint.y + 18, 'safe way home', 11, '#9ddbd2');
+    // Deliberately empty. In a round trip the road home is the one you laid, so
+    // a pre-drawn line running away from the depot taught exactly the wrong
+    // lesson. The corridor data stays on the arena for self-play metrics.
+    this.drawStaticText('safe-path-label', 0, 0, '', 1, '#ffffff');
   }
 
   private drawExtractionZone(): void {
@@ -2477,7 +2766,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineStyle(2, 0xeafffb, urgent ? 0.72 : 0.58);
     this.graphics.lineBetween(center.x - radius * 0.72, center.y, center.x + radius * 0.72, center.y);
     this.graphics.lineBetween(center.x, center.y - radius * 0.72, center.x, center.y + radius * 0.72);
-    this.drawStaticText('extraction-label', center.x + 18, center.y - 12, urgent ? 'GO HOME' : 'HOME / EXTRACTION', 12, urgent ? '#fff0ba' : '#bfffee');
+    this.drawStaticText('extraction-label', center.x + 18, center.y - 12, urgent ? 'GO HOME' : 'EXTRACTION', 12, urgent ? '#fff0ba' : '#bfffee');
     this.drawHomeDirectionCue(center, urgent, color);
   }
 
@@ -2515,7 +2804,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineBetween(cue.x, cue.y, left.x, left.y);
     this.graphics.lineBetween(left.x, left.y, right.x, right.y);
     this.graphics.lineBetween(right.x, right.y, cue.x, cue.y);
-    this.drawStaticText('home-direction-label', cue.x + 12, cue.y - 8, urgent ? 'HOME NOW' : 'home', urgent ? 12 : 10, urgent ? '#fff0ba' : '#bfffee');
+    if (this.cameraLab.worldLabelsVisible || urgent) {
+      this.drawStaticText('home-direction-label', cue.x + 12, cue.y - 8, urgent ? 'HOME NOW' : 'home', urgent ? 12 : 10, urgent ? '#fff0ba' : '#bfffee');
+    } else {
+      this.drawStaticText('home-direction-label', 0, 0, '', 1, '#ffffff');
+    }
   }
 
   private drawSolarWindowOverlay(): void {
@@ -2562,14 +2855,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const width = radius * (1.45 + (index % 4) * 0.12) * scale;
     const height = radius * (0.72 + (index % 3) * 0.1) * yScale * scale;
 
-    this.graphics.fillStyle(index % 3 === 0 ? 0x1b211f : 0x161d24, 0.1 + visualCalm * 0.06);
-    this.graphics.fillEllipse(screen.x, screen.y, width, height);
-    this.graphics.lineStyle(1, index % 3 === 0 ? 0x58614e : 0x485467, 0.14 + visualCalm * 0.16);
-    this.graphics.strokeEllipse(screen.x, screen.y, width, height);
-    if (index % 4 === 0) {
-      this.graphics.lineStyle(1, 0x222a30, 0.32);
-      this.graphics.strokeEllipse(screen.x - width * 0.08, screen.y + height * 0.04, width * 0.54, height * 0.44);
-    }
+    // Lit from the upper left: a bright rim on the sun side, the bowl in shadow
+    // on the other, so craters read as holes in the ground instead of outlines
+    // drawn over it.
+    const lift = Math.max(2, height * 0.13);
+    this.graphics.fillStyle(0x8d8371, 0.5 + visualCalm * 0.14);
+    this.graphics.fillEllipse(screen.x - lift * 0.7, screen.y - lift, width * 1.04, height * 1.06);
+    this.graphics.fillStyle(0x231f1b, 0.62 + visualCalm * 0.12);
+    this.graphics.fillEllipse(screen.x + lift * 0.35, screen.y + lift * 0.4, width, height);
+    this.graphics.fillStyle(0x4a4339, 0.72);
+    this.graphics.fillEllipse(screen.x + lift * 0.1, screen.y + lift * 0.15, width * 0.74, height * 0.7);
   }
 
   private drawTerrainFissure(index: number, visualCalm: number): void {
@@ -2590,6 +2885,44 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.lineBetween(from.x + 2, from.y - 2, mid.x + 2, mid.y - 2);
   }
 
+  private static hashNoise(seed: number): number {
+    const value = Math.sin(seed * 127.1) * 43758.5453;
+    return value - Math.floor(value);
+  }
+
+  // An irregular patch hugging the vein, tapered at both ends, so ore reads as
+  // mineral in the ground rather than a rectangle laid on top of it.
+  private fertilePatchPolygon(zone: FertileZone, halfWidth: number, salt: number): Vec2[] {
+    if (!zone.vein) return [];
+    const from = zone.vein.from;
+    const to = zone.vein.to;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    const normalX = -dy / length;
+    const normalY = dx / length;
+    const STEPS = 10;
+    const seedBase = salt + zone.id.length * 17 + zone.radius;
+    const points: Vec2[] = [];
+
+    for (const side of [1, -1]) {
+      for (let index = 0; index <= STEPS; index += 1) {
+        const step = index / STEPS;
+        const t = side === 1 ? step : 1 - step;
+        const noise = ContinuousMoonMinerScene.hashNoise(seedBase + index * 3.7 + (side === 1 ? 0 : 51));
+        const taper = Math.pow(Math.max(0.001, Math.sin(Math.PI * clamp(t, 0, 1))), 0.34);
+        const width = halfWidth * (0.6 + noise * 0.75) * taper;
+        points.push(
+          this.project({
+            x: from.x + dx * t + normalX * width * side,
+            y: from.y + dy * t + normalY * width * side
+          })
+        );
+      }
+    }
+    return points;
+  }
+
   private drawFertileTerrainBed(zone: FertileZone, visualCalm: number): void {
     if (!zone.vein) {
       const center = this.project(zone);
@@ -2602,27 +2935,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       return;
     }
 
-    const polygon = this.fertileVeinScreenPolygon(zone, zone.vein.width + 76);
-    this.graphics.fillStyle(0x22281d, 0.18 + visualCalm * 0.07);
-    this.graphics.fillPoints(polygon.points, true, true);
-    this.graphics.lineStyle(1, 0x596342, 0.2 + visualCalm * 0.12);
-    this.graphics.strokePoints(polygon.points, true, true);
+    const outer = this.fertilePatchPolygon(zone, (zone.vein.width + 92) / 2, 11);
+    this.graphics.fillStyle(0x3d382c, 0.5 + visualCalm * 0.12);
+    this.graphics.fillPoints(outer, true, true);
 
-    const from = this.project(zone.vein.from);
-    const to = this.project(zone.vein.to);
-    const width = Math.max(polygon.fromWidth, polygon.toWidth);
-    for (const offset of [-0.46, -0.18, 0.2, 0.48]) {
-      const fromOffset = {
-        x: from.x + polygon.normal.x * width * offset,
-        y: from.y + polygon.normal.y * width * offset
-      };
-      const toOffset = {
-        x: to.x + polygon.normal.x * width * offset,
-        y: to.y + polygon.normal.y * width * offset
-      };
-      this.graphics.lineStyle(1, offset > 0 ? 0x445642 : 0x343224, 0.12 + visualCalm * 0.1);
-      this.graphics.lineBetween(fromOffset.x, fromOffset.y, toOffset.x, toOffset.y);
-    }
+    const inner = this.fertilePatchPolygon(zone, (zone.vein.width + 34) / 2, 29);
+    this.graphics.fillStyle(0x4a422f, 0.5 + visualCalm * 0.1);
+    this.graphics.fillPoints(inner, true, true);
   }
 
   private drawPreparedFieldTerrainBeds(visualCalm: number): void {
@@ -2790,7 +3109,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const activeZone = this.getCurrentAffordanceZone();
     const layout = this.getLayout();
-    const showLabels = layout.mode === 'desktop';
+    const showLabels = layout.mode === 'desktop' && this.cameraLab.worldLabelsVisible;
+    const liveKeys = new Set(this.state.arena.beats.map((beat) => `beat-label-${beat.id}`));
+    for (const key of [...this.drawnBeatLabelKeys]) {
+      if (liveKeys.has(key)) continue;
+      this.drawStaticText(key, 0, 0, '', 1, '#ffffff');
+      this.drawnBeatLabelKeys.delete(key);
+    }
     for (const beat of this.state.arena.beats) {
       const screen = this.project(beat);
       const active =
@@ -2806,6 +3131,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.graphics.strokeCircle(screen.x, screen.y, active ? 15 + pulse * 4 : 10);
 
       if (showLabels) {
+        this.drawnBeatLabelKeys.add(`beat-label-${beat.id}`);
         this.drawStaticText(
           `beat-label-${beat.id}`,
           screen.x + 13,
@@ -2816,14 +3142,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         );
       } else {
         this.drawStaticText(`beat-label-${beat.id}`, 0, 0, '', 1, '#ffffff');
+        this.drawnBeatLabelKeys.delete(`beat-label-${beat.id}`);
       }
     }
   }
 
   private clearBeatMarkerText(): void {
-    for (const beat of this.state.arena.beats) {
-      this.drawStaticText(`beat-label-${beat.id}`, 0, 0, '', 1, '#ffffff');
+    for (const key of this.drawnBeatLabelKeys) {
+      this.drawStaticText(key, 0, 0, '', 1, '#ffffff');
     }
+    this.drawnBeatLabelKeys.clear();
   }
 
   private drawFertileVeinPulse(
@@ -2865,14 +3193,27 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const toScreen = this.project(zone.vein.to);
     const remainingRatio = this.fertileZoneRemainingRatio(zone);
     const depletedRatio = 1 - remainingRatio;
-    const richnessRatio = clamp(zone.richness / 2.1, 0.45, 1);
+    // Floor lowered from 0.45 and the divisor raised to the actual top of the
+    // range, so pip size and scatter track richness across the whole field
+    // instead of across its upper half.
+    const richnessRatio = clamp(zone.richness / 3.1, 0.16, 1);
     const pulse = active ? 0.5 + Math.sin(this.time.now / 145) * 0.5 : 0;
     const activeMiningCue = active && this.state.lastYieldRate > 0.001;
 
-    this.graphics.fillStyle(0x664525, 0.14 + visualCalm * 0.1);
-    this.graphics.fillPoints(polygon.points, true, true);
-    this.graphics.lineStyle(active ? 5 : 3, active ? 0xffe48a : 0xbf9145, 0.34 + visualCalm * 0.22 + pulse * 0.18);
-    this.graphics.strokePoints(polygon.points, true, true);
+    // A worked-out seam goes grey. Depletion carries between shifts now, so
+    // "have I already stripped this" is a question the player asks on sight
+    // from across the map, and the ore-bearing rock has to stop looking
+    // ore-bearing once it isn't.
+    const spent = clamp(depletedRatio, 0, 1);
+    const rock = this.fertilePatchPolygon(zone, zone.vein.width / 2, 5);
+    const lit = rock.map((point) => ({ x: point.x - 3, y: point.y - 4 }));
+    this.graphics.fillStyle(mixColor(0xa8895a, 0x7c7970, spent), 0.9);
+    this.graphics.fillPoints(lit, true, true);
+    this.graphics.fillStyle(mixColor(0x6d5330, 0x4b4a46, spent), 0.95);
+    this.graphics.fillPoints(rock, true, true);
+    const rim = this.fertilePatchPolygon(zone, zone.vein.width / 2.6, 73);
+    this.graphics.fillStyle(mixColor(active ? 0x8f6a2f : 0x7d5c2b, 0x55534e, spent), 0.85 + pulse * 0.1);
+    this.graphics.fillPoints(rim, true, true);
 
     if (depletedRatio > 0.025) {
       this.drawVeinDepletionBand(zone, depletedRatio, polygon);
@@ -2880,12 +3221,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     if (remainingRatio > 0.025) {
       const richStart = depletedRatio;
-      const lineWidth = active ? 5 + richnessRatio * 4 : 3 + richnessRatio * 4;
-      const start = this.pointOnSegment(fromScreen, toScreen, richStart);
-      this.graphics.lineStyle(lineWidth + 5, 0x21170f, 0.54);
-      this.graphics.lineBetween(start.x, start.y, toScreen.x, toScreen.y);
-      this.graphics.lineStyle(lineWidth, active ? 0xfff0a8 : 0xffcf61, 0.72 + pulse * 0.2);
-      this.graphics.lineBetween(start.x, start.y, toScreen.x, toScreen.y);
       this.drawOreRichnessPips(zone, richStart, remainingRatio, richnessRatio, active);
     }
 
@@ -2956,16 +3291,22 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       const local = (index + 0.5) / visiblePips;
       const progress = clamp(richStart + local * remainingRatio, 0.04, 0.98);
       const center = this.pointOnSegment(fromScreen, toScreen, progress);
-      const offset = ((index % 3) - 1) * (3 + richnessRatio * 5);
+      const span = Math.max(1, Math.hypot(toScreen.x - fromScreen.x, toScreen.y - fromScreen.y));
+      const normalX = (toScreen.y - fromScreen.y) / span;
+      const normalY = -(toScreen.x - fromScreen.x) / span;
+      const scatter = ContinuousMoonMinerScene.hashNoise(index * 7.3 + zone.radius) - 0.5;
+      const along = (ContinuousMoonMinerScene.hashNoise(index * 13.1 + zone.richness) - 0.5) * 12;
+      const offset = scatter * (14 + richnessRatio * 16);
       const pip = {
-        x: center.x + ((toScreen.y - fromScreen.y) / Math.max(1, Math.hypot(toScreen.x - fromScreen.x, toScreen.y - fromScreen.y))) * offset,
-        y: center.y - ((toScreen.x - fromScreen.x) / Math.max(1, Math.hypot(toScreen.x - fromScreen.x, toScreen.y - fromScreen.y))) * offset
+        x: center.x + normalX * offset + (normalY * along),
+        y: center.y + normalY * offset - (normalX * along)
       };
-      const radius = 3.8 + richnessRatio * 3 + (active ? pulse * 1.8 : 0);
-      this.graphics.fillStyle(index % 2 === 0 ? 0xffdc75 : 0xffb84c, 0.86);
+      const grade = ContinuousMoonMinerScene.hashNoise(index * 3.9 + zone.radius * 2);
+      const radius = 2.2 + grade * (3.4 + richnessRatio * 3) + (active ? pulse * 1.2 : 0);
+      this.graphics.fillStyle(grade > 0.62 ? 0xffd166 : 0xc9913c, 0.95);
       this.graphics.fillCircle(pip.x, pip.y, radius);
-      this.graphics.lineStyle(1, 0xfff2b8, active ? 0.72 + pulse * 0.18 : 0.5);
-      this.graphics.strokeCircle(pip.x, pip.y, radius + 3);
+      this.graphics.fillStyle(0x2a1e10, 0.5);
+      this.graphics.fillCircle(pip.x + radius * 0.32, pip.y + radius * 0.34, radius * 0.55);
     }
   }
 
@@ -3047,8 +3388,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return clamp(zone.remaining / initial, 0, 1);
   }
 
+  // Widened hard. The field is three rings whose whole point is that richness
+  // rises with distance -- 0.85 near, 3.1 far -- and this compressed that 3.6x
+  // spread into 5 pips against 8, so a poor seam and a rich one looked the
+  // same from the tractor. The decision the level is built around was invisible
+  // in the one place the player looks.
   private fertileZoneRichnessPipCount(zone: FertileZone): number {
-    return clamp(Math.round(3 + zone.richness * 2.35), 4, 8);
+    return clamp(Math.round(1 + zone.richness * 3.8), 2, 15);
   }
 
   private fertileZoneDepletionScarCount(zone: FertileZone): number {
@@ -3083,13 +3429,38 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const ordinary = fields.filter((field) => !field.reservedByDrone);
     const reserved = fields.filter((field) => field.reservedByDrone);
 
-    this.drawFieldRibbon(ordinary, 0x6cf5dd, false);
+    // Your road is one thing and it is painted one colour. It used to be split
+    // live into "protected" and "spendable", and that reads as inscrutable
+    // because both of those are measured from the rover: the corridor runs to
+    // extraction from wherever you are, and the forward arc follows your
+    // heading. So a stretch of road flipped between cyan and amber as you drove
+    // past it, changing for reasons tied to your own motion rather than to
+    // anything about the road. Road that repaints itself while you look at it
+    // is not road.
+    //
+    // The distinction still exists and still matters, so it is shown at the
+    // only moment it is a decision: the cluster the drone would actually lift
+    // is highlighted while the launch is available. That is a targeting
+    // reticle, which is allowed to move, rather than a property of the ground,
+    // which is not.
+    const preview = getReclaimPreview(this.state);
+    const targeted = new Set<number>();
+    if (preview) {
+      for (const field of ordinary) {
+        if (Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius) {
+          targeted.add(field.id);
+        }
+      }
+    }
+
+    this.drawFieldRibbon(ordinary.filter((field) => !targeted.has(field.id)), 0x6cf5dd, false);
+    this.drawFieldRibbon(ordinary.filter((field) => targeted.has(field.id)), 0xd8a24a, false);
     this.drawFieldRibbon(reserved, 0xffa06c, true);
     this.drawFieldBirthMarkers(ordinary);
   }
 
   private drawFieldRibbon(
-    fields: Array<{ x: number; y: number; radius: number; value: number; age: number }>,
+    fields: Array<{ id: number; prevId?: number; x: number; y: number; radius: number; value: number; age: number }>,
     color: number,
     reserved: boolean
   ): void {
@@ -3105,28 +3476,63 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         const from = section[index];
         const to = section[index + 1];
         this.drawFieldSegment(from, to, color, reserved);
+        this.drawFieldJoint(to, reserved, color);
       }
 
+      this.drawFieldJoint(section[0], reserved, color);
       this.drawFieldCap(section[0], color, reserved, this.fieldAlpha(section[0]));
       this.drawFieldCap(section[section.length - 1], color, reserved, this.fieldAlpha(section[section.length - 1]));
       this.drawFieldCenterLine(section, color, reserved);
     }
   }
 
-  private fieldSections<T extends Vec2>(fields: T[]): T[][] {
-    const sections: T[][] = [];
-    let current: T[] = [];
+  // Draw the road along the links the road actually has, so what you see is the
+  // same object the rail follows.
+  //
+  // This used to group by array order and a flat 92 unit proximity gate, which
+  // is the same heuristic the movement code used to use for its tangent and it
+  // fails the same way: two unrelated passes through one area were drawn as a
+  // single ribbon, and a stretch the drone had bitten a hole in was drawn
+  // continuous across the hole. The picture said "one road" where the machine
+  // would fall off, which is most of why the road read as inscrutable.
+  private fieldSections<T extends Vec2 & { id: number; prevId?: number }>(fields: T[]): T[][] {
+    const byId = new Map<number, T>();
+    for (const field of fields) byId.set(field.id, field);
 
+    // Heads are the patches nothing in this set is chained to.
+    const linked = new Set<number>();
     for (const field of fields) {
-      const previous = current[current.length - 1];
-      if (previous && Math.hypot(field.x - previous.x, field.y - previous.y) > 92) {
-        if (current.length > 0) sections.push(current);
-        current = [];
-      }
-      current.push(field);
+      if (field.prevId !== undefined && byId.has(field.prevId)) linked.add(field.prevId);
     }
 
-    if (current.length > 0) sections.push(current);
+    const nextOf = new Map<number, T>();
+    for (const field of fields) {
+      if (field.prevId !== undefined && byId.has(field.prevId)) nextOf.set(field.prevId, field);
+    }
+
+    const sections: T[][] = [];
+    const walked = new Set<number>();
+    const walk = (head: T): void => {
+      const section: T[] = [];
+      let current: T | undefined = head;
+      while (current && !walked.has(current.id)) {
+        walked.add(current.id);
+        section.push(current);
+        current = nextOf.get(current.id);
+      }
+      if (section.length > 0) sections.push(section);
+    };
+
+    for (const field of fields) {
+      if (walked.has(field.id)) continue;
+      const isHead = field.prevId === undefined || !byId.has(field.prevId);
+      if (isHead) walk(field);
+    }
+    // Anything left is part of a chain that closes on itself; start it anywhere.
+    for (const field of fields) {
+      if (!walked.has(field.id)) walk(field);
+    }
+    void linked;
     return sections;
   }
 
@@ -3155,7 +3561,24 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const alpha = Math.min(this.fieldAlpha(from), this.fieldAlpha(to));
     const ordinaryAlpha = alpha * (0.34 + 0.24 * this.visualCalm());
 
-    this.graphics.fillStyle(color, reserved ? alpha * 0.36 : ordinaryAlpha);
+    const shadow = [
+      { x: fromScreen.x + normal.x * (fromWidth + 4), y: fromScreen.y + normal.y * (fromWidth + 4) },
+      { x: toScreen.x + normal.x * (toWidth + 4), y: toScreen.y + normal.y * (toWidth + 4) },
+      { x: toScreen.x - normal.x * (toWidth + 4), y: toScreen.y - normal.y * (toWidth + 4) },
+      { x: fromScreen.x - normal.x * (fromWidth + 4), y: fromScreen.y - normal.y * (fromWidth + 4) }
+    ];
+    this.graphics.fillStyle(0x14201f, alpha * 0.62);
+    this.graphics.fillPoints(shadow, true, true);
+    // The deck used to be filled with FIELD_DECK_COLOR unconditionally, so the
+    // `color` argument was thrown away for every road that is not reserved --
+    // which is nearly all of it. That is why the road read as a scuff in the
+    // regolith: 0x6d8f89 is very close to the ground it is drawn on. Tinting
+    // the deck toward the state colour is what makes the corridor rule visible
+    // at all, and it is the only reason this function takes a colour.
+    this.graphics.fillStyle(
+      reserved ? color : mixColor(FIELD_DECK_COLOR, color, 0.5),
+      reserved ? alpha * 0.5 : Math.min(0.94, ordinaryAlpha + 0.4)
+    );
     this.graphics.fillPoints(points, true, true);
     if (reserved) {
       this.graphics.lineStyle(4, color, alpha * 0.88);
@@ -3170,9 +3593,27 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.graphics.lineStyle(1, 0xfff0df, alpha * 0.82);
       this.graphics.strokeCircle(scan.x, scan.y, 10);
     } else {
-      this.graphics.lineStyle(2, color, alpha * (0.32 + 0.26 * this.visualCalm()));
+      // The edge is where the two road states read most cheaply, so it carries
+      // the colour at full strength while the deck stays ambient.
+      this.graphics.lineStyle(3, color, Math.min(0.92, alpha * 0.95));
       this.graphics.strokePoints(points, true, true);
     }
+  }
+
+  private drawFieldJoint(
+    field: { x: number; y: number; radius: number; value: number; age: number },
+    reserved: boolean,
+    color: number
+  ): void {
+    if (reserved) return;
+    const center = this.project(field);
+    const width = this.fieldRoadWidth(field);
+    const yScale = this.shapeYScale();
+    const alpha = Math.min(0.94, this.fieldAlpha(field) * (0.24 + 0.18 * this.visualCalm()) + 0.4);
+    // Joints take the same tint as the segments they connect, or the ribbon
+    // reads as coloured plates strung on a grey thread.
+    this.graphics.fillStyle(mixColor(FIELD_DECK_COLOR, color, 0.5), alpha);
+    this.graphics.fillEllipse(center.x, center.y, width * 2, width * 2 * yScale);
   }
 
   private drawFieldCap(
@@ -3235,22 +3676,33 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const pulse = 0.5 + Math.sin(this.time.now / 260) * 0.5;
     const radius = this.droneReservationRadius(targetScreen, previewFields);
 
-    this.graphics.fillStyle(0xffb36d, 0.05 + pulse * 0.03);
+    const previewThin = preview.netPayload < preview.payload * 0.55;
+    this.graphics.fillStyle(previewThin ? 0x8a6a5c : 0xffb36d, 0.05 + pulse * 0.03);
     this.graphics.fillCircle(targetScreen.x, targetScreen.y, radius + 10 + pulse * 3);
-    this.graphics.lineStyle(2, 0xffb36d, 0.38 + pulse * 0.18);
+    this.graphics.lineStyle(2, previewThin ? 0x8a6a5c : 0xffb36d, 0.38 + pulse * 0.18);
     this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + pulse * 4);
     this.graphics.lineStyle(1, 0xffeddf, 0.28 + pulse * 0.14);
     this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + 12);
 
     const labelPoint = this.clampScreenPoint({ x: targetScreen.x + radius + 16, y: targetScreen.y - radius - 8 }, 118, 28);
-    this.drawStaticText('drone-preview-readout', labelPoint.x, labelPoint.y, 'NEXT RECLAIM', 11, '#ffd2b7');
+    const thin = preview.netPayload < preview.payload * 0.55;
+    this.drawStaticText(
+      'drone-preview-readout',
+      labelPoint.x,
+      labelPoint.y,
+      `${preview.netPayload > 0 ? '+' : ''}${preview.netPayload.toFixed(1)} NET`,
+      14,
+      thin ? '#f0a58c' : '#ffd2b7'
+    );
     this.drawStaticText(
       'drone-preview-detail',
       labelPoint.x,
-      labelPoint.y + 15,
-      `+${preview.payload.toFixed(1)} refill ${preview.etaSeconds.toFixed(1)}s`,
+      labelPoint.y + 17,
+      preview.surcharge > 0.05
+        ? `${preview.payload.toFixed(1)} haul - ${preview.surcharge.toFixed(1)} fuel`
+        : `${preview.payload.toFixed(1)} haul, full tank`,
       10,
-      '#ffeddf'
+      thin ? '#dba894' : '#ffeddf'
     );
   }
 
@@ -3273,37 +3725,32 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const radius = this.droneReservationRadius(targetScreen, reservedFields);
     const reclaiming = this.state.drone.status === 'reclaiming';
 
-    this.graphics.fillStyle(0xff9a68, reclaiming ? 0.12 + pulse * 0.05 : 0.08 + pulse * 0.04);
-    this.graphics.fillCircle(targetScreen.x, targetScreen.y, radius + 14 + pulse * 4);
-    this.graphics.lineStyle(5, 0x5a2a20, 0.54);
-    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + 9);
-    this.graphics.lineStyle(3, reclaiming ? 0xffd2b7 : 0xff9a68, 0.82 + pulse * 0.14);
-    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + pulse * 6);
+    this.clearDroneReservationText();
 
-    const bracket = 13;
-    const outer = radius + 18;
-    this.graphics.lineStyle(3, 0xfff0df, 0.84);
-    for (const sx of [-1, 1]) {
-      for (const sy of [-1, 1]) {
-        const x = targetScreen.x + sx * outer;
-        const y = targetScreen.y + sy * outer;
-        this.graphics.lineBetween(x, y, x - sx * bracket, y);
-        this.graphics.lineBetween(x, y, x, y - sy * bracket);
+    // Beat one: "I took that one." A hard mark on the claimed field at the
+    // moment of reservation, gone within a second and a bit.
+    const claimAge = (this.time.now - this.droneClaimAtMs) / 1000;
+    if (claimAge < 1.15) {
+      const fade = 1 - claimAge / 1.15;
+      const bracket = 13;
+      const outer = radius + 18 + (1 - fade) * 12;
+      this.graphics.lineStyle(3, 0xfff0df, 0.9 * fade);
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          const x = targetScreen.x + sx * outer;
+          const y = targetScreen.y + sy * outer;
+          this.graphics.lineBetween(x, y, x - sx * bracket, y);
+          this.graphics.lineBetween(x, y, x, y - sy * bracket);
+        }
       }
+      this.graphics.lineStyle(3, 0xff9a68, 0.85 * fade);
+      this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + (1 - fade) * 10);
     }
 
-    const droneScreen = this.project(this.state.drone);
-    this.graphics.lineStyle(2, 0xffd2b7, 0.52 + pulse * 0.18);
-    this.graphics.lineBetween(droneScreen.x, droneScreen.y, targetScreen.x, targetScreen.y);
-
-    const label = reclaiming ? 'RECLAIMING' : 'RESERVED FIELD';
-    const outboundSeconds = Math.hypot(this.state.drone.x - target.x, this.state.drone.y - target.y) / this.state.tuning.droneSpeed;
-    const detail = reclaiming
-      ? `${Math.ceil(this.state.drone.reclaimSeconds * 10) / 10}s lock`
-      : `${outboundSeconds.toFixed(1)}s outbound`;
-    const labelPoint = this.clampScreenPoint({ x: targetScreen.x + radius + 22, y: targetScreen.y - radius - 10 }, 128, 28);
-    this.drawStaticText('drone-target-readout', labelPoint.x, labelPoint.y, label, 12, '#ffd2b7');
-    this.drawStaticText('drone-target-detail', labelPoint.x, labelPoint.y + 16, detail, 10, '#ffeddf');
+    // The rest of the flight is ambient: a quiet ring holding the claim, so the
+    // field reads as spoken for without narrating itself.
+    this.graphics.lineStyle(2, reclaiming ? 0xffd2b7 : 0xff9a68, reclaiming ? 0.34 + pulse * 0.12 : 0.24);
+    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + 4);
   }
 
   private clearDroneReservationText(): void {
@@ -3386,7 +3833,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         if (deliveryBurstActive) {
           this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
         } else {
-          this.drawStaticText('drone-callout', dockScreen.x + 16, dockScreen.y - 22, 'LAUNCH', 13, '#ffc7ba');
+          this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
         }
       } else {
         this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
@@ -3446,7 +3893,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.state.drone.status === 'reclaiming') label = 'RECLAIM';
     if (this.state.drone.status === 'outbound') label = 'TARGET';
 
-    this.drawStaticText('drone-callout', droneScreen.x + 16, droneScreen.y - 24, label, 12, '#ffd2b7');
+    this.drawStaticText('drone-callout', 0, 0, '', 1, '#ffffff');
   }
 
   private drawProgressRing(center: Vec2, radius: number, progress: number, color: number): void {
@@ -3485,37 +3932,64 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     this.drawStateAura(rover, preparedCoverage);
     this.drawStateMotionCues(rover, preparedCoverage);
-    this.drawArms(fertile);
+    this.drawArms(fertile, 'behind');
 
-    const nose = this.pointFromHeading(rover, rover.heading, 36);
-    const tailLeft = this.pointFromHeading(rover, rover.heading + Math.PI * 0.78, 30);
-    const tailRight = this.pointFromHeading(rover, rover.heading - Math.PI * 0.78, 30);
-    const sideLeft = this.pointFromHeading(rover, rover.heading + Math.PI * 0.5, 22);
-    const sideRight = this.pointFromHeading(rover, rover.heading - Math.PI * 0.5, 22);
-    const projectedHull = [nose, sideLeft, tailLeft, tailRight, sideRight].map((point) => this.project(point));
     const roverScreen = this.project(rover);
-    const noseScreen = this.project(nose);
     const scale = this.projectedScale(rover);
     const yScale = this.shapeYScale();
 
-    this.graphics.fillStyle(0x02050a, 0.54);
-    this.graphics.fillEllipse(roverScreen.x - 2 * scale, roverScreen.y + 10 * scale, 72 * scale, 36 * yScale * scale);
-    this.graphics.fillStyle(this.roverBodyColor(this.state.speedState), 1);
-    this.graphics.fillPoints(projectedHull, true, true);
-    this.graphics.lineStyle(3, 0xf8fbff, 0.92);
-    this.graphics.strokePoints(projectedHull, true, true);
-
-    this.graphics.lineStyle(2, 0x7b8798, 0.78);
-    this.graphics.lineBetween(this.project(sideLeft).x, this.project(sideLeft).y, noseScreen.x, noseScreen.y);
-    this.graphics.lineBetween(this.project(sideRight).x, this.project(sideRight).y, noseScreen.x, noseScreen.y);
-    this.graphics.fillStyle(0x151b25, 1);
-    this.graphics.fillCircle(roverScreen.x, roverScreen.y, 13 * scale);
-    this.graphics.fillStyle(0xaef8ff, 0.94);
-    this.graphics.fillCircle(noseScreen.x, noseScreen.y, 5 * scale);
+    this.graphics.fillStyle(0x02050a, 0.5);
+    this.graphics.fillEllipse(roverScreen.x - 3 * scale, roverScreen.y + 11 * scale, 78 * scale, 38 * yScale * scale);
+    this.drawTractorBody(rover, scale);
+    // Arms that reach toward the camera pass in front of the chassis. Drawing
+    // every arm behind the body left only the far ones visible, so they read as
+    // roof antennae instead of limbs wrapped around a machine.
+    this.drawArms(fertile, 'front');
 
     if (preparedCoverage > 0.2) {
       this.graphics.lineStyle(3, 0x78f7df, 0.4 + preparedCoverage * 0.5);
       this.graphics.strokeEllipse(roverScreen.x, roverScreen.y + 2, 82 * scale, 46 * yScale * scale);
+    }
+  }
+
+  // A machine with a front, a back and treads, in the one warm colour on a cold
+  // moon. Speed state moves to a roof beacon instead of recolouring the hull,
+  // so the tractor stays recognisable as the same object in every state.
+  private drawTractorBody(rover: Vec2, scale: number): void {
+    const heading = this.state.rover.heading;
+    const at = (lateral: number, forward: number): Vec2 =>
+      this.project(
+        this.pointFromHeading(this.pointFromHeading(rover, heading + Math.PI / 2, lateral), heading, forward)
+      );
+    const shape = (points: Vec2[], fill: number, alpha = 1, outline = 0x14161b): void => {
+      this.graphics.fillStyle(fill, alpha);
+      this.graphics.fillPoints(points, true, true);
+      this.graphics.lineStyle(2, outline, 0.9);
+      this.graphics.strokePoints(points, true, true);
+    };
+
+    const TREAD = 0x24262c;
+    const HULL = 0xd2a044;
+    const HULL_SHADE = 0x8d6a28;
+    const GLASS = 0x8fdcf5;
+
+    shape([at(-27, -28), at(-15, -28), at(-15, 30), at(-27, 30)], TREAD);
+    shape([at(27, -28), at(15, -28), at(15, 30), at(27, 30)], TREAD);
+
+    shape([at(-17, -27), at(17, -27), at(21, 12), at(13, 31), at(-13, 31), at(-21, 12)], HULL);
+    shape([at(-17, -27), at(17, -27), at(17, -12), at(-17, -12)], HULL_SHADE);
+    shape([at(-10, 3), at(10, 3), at(8, 22), at(-8, 22)], GLASS, 0.92);
+
+    const beaconScreen = at(0, -19);
+    this.graphics.fillStyle(this.roverBodyColor(this.state.speedState), 1);
+    this.graphics.fillCircle(beaconScreen.x, beaconScreen.y, 5 * scale);
+    this.graphics.lineStyle(2, 0x14161b, 0.9);
+    this.graphics.strokeCircle(beaconScreen.x, beaconScreen.y, 5 * scale);
+
+    for (const lateral of [-9, 9]) {
+      const lamp = at(lateral, 32);
+      this.graphics.fillStyle(0xfff3d0, 0.95);
+      this.graphics.fillCircle(lamp.x, lamp.y, 2.6 * scale);
     }
   }
 
@@ -3593,10 +4067,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  private drawArms(fertile: FertileZone | undefined): void {
+  private drawArms(fertile: FertileZone | undefined, layer: 'behind' | 'front'): void {
     const rover = this.state.rover;
     const armAngles = [-145, -108, -70, -32, 32, 70, 108, 145].map((degrees) => (degrees * Math.PI) / 180);
-    const roles = this.armRoles();
+
+    // Spread each duty across both flanks. Filling the angle slots in order put
+    // all four building arms on the left and left the right side bare, so the
+    // machine read as lopsided rather than as one thing allocating itself.
+    const ordered = this.armRoles();
+    const interleaved: ArmRole[] = [];
+    const slots = [0, 4, 1, 5, 2, 6, 3, 7];
+    ordered.forEach((role, index) => {
+      interleaved[slots[index] ?? index] = role;
+    });
+    const roles = interleaved;
 
     armAngles.forEach((angle, index) => {
       const role = roles[index] ?? 'stabilizing';
@@ -3617,7 +4101,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
                 : 0xc6b2ff;
         width = this.state.arms.helper.duty === 'miningAssist' ? 5 : 3;
       } else if (role === 'building') {
-        target = this.pointFromHeading(rover, rover.heading + angle * 0.28, this.state.speedState === 'crawl' ? 30 : 54);
+        target = this.pointFromHeading(rover, rover.heading + angle * 0.28, this.state.speedState === 'crawl' ? 34 : 64);
         color = 0x68f3ff;
         width = 4;
       } else if (role === 'mining') {
@@ -3631,38 +4115,136 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         color = 0xffd35a;
         width = 4;
       } else if (role === 'emergency') {
-        target = this.pointFromHeading(rover, rover.heading + angle, 25 + (index % 2) * 8);
-        target.y += 8;
+        // Canon calls these "tiny millipede-like emergency reclaim legs". At a
+        // reach of 25 to 33 they sat inside the chassis silhouette and were
+        // simply invisible -- the whole humiliating-crawl beat rendered as a
+        // red arc. Out past the body, splayed wide, and scuttling out of phase
+        // with each other so the machine looks like it is dragging itself.
+        const scuttle = Math.sin(this.time.now / 105 + index * 2.1) * 6;
+        target = this.pointFromHeading(rover, rover.heading + angle * 1.12, 46 + (index % 2) * 9 + scuttle);
+        target.y += 10;
         color = 0xff765f;
-        width = 3;
+        width = 2.6;
       } else {
-        target = this.pointFromHeading(rover, rover.heading + angle, 32);
+        target = this.pointFromHeading(rover, rover.heading + angle, 40);
       }
 
-      const anchorScreen = this.project(anchor);
-      const targetScreen = this.project(target);
+      // Screen-space depth: anything whose tip lands below the chassis centre is
+      // nearer the camera and belongs in front of it.
+      const roverScreen = this.project(rover);
+      const inFront = this.project(target).y > roverScreen.y;
+      if ((layer === 'front') !== inFront) return;
+
       const scale = this.projectedScale(anchor);
-      this.graphics.lineStyle(width, color, role === 'stabilizing' ? 0.56 : 0.94);
-      this.graphics.lineBetween(anchorScreen.x, anchorScreen.y, targetScreen.x, targetScreen.y);
-      this.graphics.fillStyle(color, role === 'stabilizing' ? 0.62 : 0.98);
-      this.graphics.fillCircle(targetScreen.x, targetScreen.y, (role === 'emergency' ? 3 : role === 'helper' ? 5 : 4) * scale);
+      this.drawArmLimb(anchor, target, angle, index, color, width, scale, role);
 
+      // A working tool throws sparks at the seam. Kept because it is the one
+      // cue that says a bite actually landed; the rest of the old decoration
+      // is now the tool silhouette's job.
       if ((role === 'mining' || (role === 'helper' && this.state.arms.helper.duty === 'miningAssist')) && fertile) {
+        const tip = this.project(target);
         const sparkle = 0.5 + Math.sin(this.time.now / 80 + index) * 0.5;
-        this.graphics.fillStyle(role === 'helper' ? 0xdfff8f : 0xffed9b, 0.5 + sparkle * 0.45);
-        this.graphics.fillCircle(targetScreen.x, targetScreen.y, (5 + sparkle * (role === 'helper' ? 5 : 3)) * scale);
-        this.graphics.lineStyle(1, role === 'helper' ? 0xf4ffd1 : 0xfff4c4, 0.55);
-        this.graphics.strokeCircle(targetScreen.x, targetScreen.y, (9 + sparkle * (role === 'helper' ? 7 : 4)) * scale);
-      }
-
-      if (role === 'building') {
-        this.graphics.fillStyle(0x9ffff7, 0.48);
-        this.graphics.fillCircle(targetScreen.x, targetScreen.y, 8 * scale);
-      } else if (role === 'helper') {
-        this.graphics.lineStyle(1, 0xffffff, 0.42);
-        this.graphics.strokeCircle(targetScreen.x, targetScreen.y, 8 * scale);
+        this.graphics.fillStyle(role === 'helper' ? 0xdfff8f : 0xffed9b, 0.32 + sparkle * 0.4);
+        this.graphics.fillCircle(tip.x, tip.y, (4 + sparkle * 3) * scale);
       }
     });
+  }
+
+  // An arm, rather than a spoke. The previous version stroked one straight line
+  // from the chassis to a point and capped it with a dot, which at the shipped
+  // camera reads as a cluster of dots and nothing else -- the machine that the
+  // design calls a "visible scheduler" was allocating eight arms and showing
+  // none of them. Two segments and a knee are the cheapest thing that reads as
+  // a limb: the elbow breaks the silhouette, and breaking the silhouette is
+  // what makes a shape look articulated rather than radial.
+  private drawArmLimb(
+    anchor: Vec2,
+    target: Vec2,
+    angle: number,
+    index: number,
+    color: number,
+    width: number,
+    scale: number,
+    role: ArmRole
+  ): void {
+    const shoulder = this.project(anchor);
+    const tip = this.project(target);
+    const span = Math.hypot(tip.x - shoulder.x, tip.y - shoulder.y);
+    if (span < 0.5) return;
+
+    // The knee bends away from the machine's centre line, so the left arms and
+    // the right arms mirror each other and the whole thing reads as a spider
+    // rather than a starburst. Working arms flex; idle ones sit still.
+    const busy = role === 'building' || role === 'mining' || role === 'emergency';
+    const flex = busy ? Math.sin(this.time.now / 150 + index * 1.7) * 0.14 : Math.sin(this.time.now / 900 + index) * 0.04;
+    const bend = (angle < 0 ? -1 : 1) * (0.34 + flex);
+    const normal = { x: -(tip.y - shoulder.y) / span, y: (tip.x - shoulder.x) / span };
+    const knee = {
+      x: shoulder.x + (tip.x - shoulder.x) * 0.52 + normal.x * span * bend,
+      y: shoulder.y + (tip.y - shoulder.y) * 0.52 + normal.y * span * bend
+    };
+
+    // Widths track the projection so the limbs do not vanish when the camera
+    // pulls back, with a floor so they never fall under a pixel.
+    const upper = Math.max(2.2, width * scale * 1.15);
+    const lower = Math.max(1.4, width * scale * 0.72);
+    const alpha = role === 'stabilizing' ? 0.6 : 0.95;
+
+    // A dark underlay gives the limb an edge against both regolith and field.
+    this.graphics.lineStyle(upper + 2.2, 0x0d1117, 0.5);
+    this.graphics.beginPath();
+    this.graphics.moveTo(shoulder.x, shoulder.y);
+    this.graphics.lineTo(knee.x, knee.y);
+    this.graphics.lineTo(tip.x, tip.y);
+    this.graphics.strokePath();
+
+    this.graphics.lineStyle(upper, color, alpha);
+    this.graphics.lineBetween(shoulder.x, shoulder.y, knee.x, knee.y);
+    this.graphics.lineStyle(lower, color, alpha);
+    this.graphics.lineBetween(knee.x, knee.y, tip.x, tip.y);
+
+    this.graphics.fillStyle(0x1b2430, 0.95);
+    this.graphics.fillCircle(knee.x, knee.y, Math.max(1.8, upper * 0.62));
+    this.graphics.fillStyle(color, alpha);
+    this.graphics.fillCircle(knee.x, knee.y, Math.max(1.1, upper * 0.36));
+
+    this.drawArmTool(tip, color, scale, role, index);
+  }
+
+  // The business end. Each duty gets a silhouette you can tell apart at a
+  // glance, because telling them apart at a glance is the entire job.
+  private drawArmTool(tip: { x: number; y: number }, color: number, scale: number, role: ArmRole, index: number): void {
+    const size = Math.max(2.3, 3.9 * scale);
+
+    if (role === 'building') {
+      // A printing head: a square nozzle laying field.
+      this.graphics.fillStyle(color, 0.98);
+      this.graphics.fillRect(tip.x - size, tip.y - size * 0.72, size * 2, size * 1.44);
+      this.graphics.fillStyle(0x9ffff7, 0.55 + Math.sin(this.time.now / 110 + index) * 0.35);
+      this.graphics.fillRect(tip.x - size * 0.45, tip.y + size * 0.5, size * 0.9, size * 1.1);
+      return;
+    }
+
+    if (role === 'mining') {
+      // A claw: two prongs biting the seam.
+      this.graphics.lineStyle(Math.max(1.4, 2 * scale), color, 0.98);
+      const gape = 0.5 + Math.sin(this.time.now / 130 + index) * 0.35;
+      this.graphics.lineBetween(tip.x, tip.y, tip.x - size * 1.2, tip.y - size * gape);
+      this.graphics.lineBetween(tip.x, tip.y, tip.x - size * 1.2, tip.y + size * gape);
+      this.graphics.fillStyle(color, 0.98);
+      this.graphics.fillCircle(tip.x, tip.y, size * 0.6);
+      return;
+    }
+
+    if (role === 'emergency') {
+      // A scraping foot, flat to the ground and planted.
+      this.graphics.fillStyle(color, 0.95);
+      this.graphics.fillRect(tip.x - size * 1.1, tip.y, size * 2.2, Math.max(1.4, size * 0.5));
+      return;
+    }
+
+    this.graphics.fillStyle(color, role === 'stabilizing' ? 0.7 : 0.98);
+    this.graphics.fillCircle(tip.x, tip.y, role === 'helper' ? size * 1.1 : size * 0.8);
   }
 
   private getHelperArmTarget(anchor: Vec2, angle: number, fertile: FertileZone | undefined): Vec2 {
@@ -3801,7 +4383,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const nanobotRatio = this.state.nanobots / this.state.maxNanobots;
     const extractionRun = Boolean(this.state.arena.extraction);
-    const oreRatio = extractionRun ? clamp(this.state.rover.ore / 36, 0, 1) : this.state.rover.ore / this.state.targetOre;
+    const oreTarget = extractionRun ? this.state.arena.extraction?.oreRequired ?? 1 : this.state.targetOre;
+    const oreRatio = clamp(this.state.rover.ore / Math.max(0.001, oreTarget), 0, 1);
     const sunRatio = this.getSolarRatio();
 
     this.drawVital(
@@ -3815,7 +4398,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     );
     this.drawVital(
       'Ore',
-      extractionRun ? this.state.rover.ore.toFixed(1) : `${this.state.rover.ore.toFixed(1)}/${this.state.targetOre}`,
+      extractionRun
+        ? `${this.state.rover.ore.toFixed(1)}/${this.state.arena.extraction?.oreRequired ?? 0}`
+        : `${this.state.rover.ore.toFixed(1)}/${this.state.targetOre}`,
       layout.vitals[1].x,
       layout.vitals[1].y + 5,
       layout.vitals[1].width,
@@ -3832,20 +4417,38 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       sunRatio < 0.1 ? 0xffd36d : sunRatio < 0.25 ? 0xff7d77 : sunRatio < 0.5 ? 0xffb36b : 0xa8c9ff
     );
 
+    // Which day this is, and what yesterday left you. Without it the carried
+    // road is indistinguishable from a level that always looked like this.
+    this.drawStaticText(
+      'hud-shift',
+      layout.vitals[0].x,
+      layout.hudHeight + 16,
+      this.isShiftModeEnabled()
+        ? `SHIFT ${this.shiftNumber}${this.carriedIn > 0 ? ` · ${this.carriedIn} lengths inherited` : ' · bare ground'}`
+        : '',
+      11,
+      '#8fa3ba'
+    );
+
     this.drawStateChip(layout.stateChip.x, layout.stateChip.y, layout.stateChip.width, layout.stateChip.height);
     if (layout.mode === 'mobilePortrait') this.drawMobileControls(layout);
     this.drawDroneHudButton();
     this.drawResetButton();
     this.drawLoopDebugPanel();
-    this.drawStaticText(
-      'yield-readout',
-      layout.yieldReadout.x,
-      layout.yieldReadout.y,
-      `Yield ${this.state.lastYieldRate.toFixed(1)}/s | U ${this.state.arms.helper.miningAssistRate.toFixed(1)}/s`,
-      layout.yieldReadout.fontSize,
-      '#aeb9c8'
-    );
-    if (layout.mode === 'desktop') this.drawArmRoleStrip(128, layout.yieldReadout.y);
+    if (this.debugOverlayVisible) {
+      this.drawStaticText(
+        'yield-readout',
+        layout.yieldReadout.x,
+        layout.yieldReadout.y,
+        `Yield ${this.state.lastYieldRate.toFixed(1)}/s | U ${this.state.arms.helper.miningAssistRate.toFixed(1)}/s`,
+        layout.yieldReadout.fontSize,
+        '#aeb9c8'
+      );
+      if (layout.mode === 'desktop') this.drawArmRoleStrip(128, layout.yieldReadout.y);
+    } else {
+      this.drawStaticText('yield-readout', 0, 0, '', 1, '#ffffff');
+      this.clearArmRoleStrip();
+    }
   }
 
   private syncMessageLayout(layout: SceneLayout): void {
@@ -3913,7 +4516,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStaticText(`vital-${label}-label`, x, y + 2, label, 12, '#9eabbc');
     this.drawStaticText(`vital-${label}-value`, x, y + 23, value, 19, '#f6f8fb');
     this.drawBar(x, y + 43, width, 10, progress, color);
-    if (label === 'Ore' && !this.state.arena.extraction) {
+    if (label === 'Ore') {
       this.graphics.lineStyle(2, 0xfff0ba, 0.84);
       this.graphics.lineBetween(x + width - 2, y + 40, x + width - 2, y + 56);
     }
@@ -3936,6 +4539,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       cursor += 48;
     }
     this.drawStaticText('arm-role-helper-duty', cursor + 2, y, this.getHelperArmHudLabel(), 11, '#aeb9c8');
+  }
+
+  private clearArmRoleStrip(): void {
+    for (const label of ['B', 'M', 'E', 'U']) {
+      this.drawStaticText(`arm-role-${label}`, 0, 0, '', 1, '#ffffff');
+    }
+    this.drawStaticText('arm-role-helper-duty', 0, 0, '', 1, '#ffffff');
   }
 
   private getHelperArmHudColor(): number {
@@ -3966,6 +4576,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private getSpeedStateDisplay(): { label: string; detail: string; color: number; fill: number; text: string; subtext: string } {
+    // Rail gets its own chip, and the detail line is the runway rather than a
+    // mood word. Before committing to a run home the only question is how much
+    // connected track is ahead, and this is where it is answered.
+    if (this.state.rail) {
+      return {
+        label: 'Rail',
+        detail: this.getRailStatusLine(),
+        color: 0xb6ff6c,
+        fill: 0x1e3a12,
+        text: '#f4fff0',
+        subtext: '#d3ffb2'
+      };
+    }
+
     if (this.state.speedState === 'prepared') {
       return {
         label: 'Sprint',
@@ -4037,7 +4661,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       'button-launch-status',
       button.rect.x + 14,
       button.rect.y + 36,
-      this.getDroneStatusLine(),
+      this.getDroneFuelDetail() ?? this.getDroneStatusLine(),
       11,
       urgent ? '#ffd2b7' : ready ? '#bcfff3' : returning ? '#a8f7e9' : '#ffd2b7'
     );
@@ -4051,7 +4675,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.fillRoundedRect(button.rect.x, button.rect.y, button.rect.width, button.rect.height, 8);
     this.graphics.lineStyle(1, 0x6f8094, 1);
     this.graphics.strokeRoundedRect(button.rect.x, button.rect.y, button.rect.width, button.rect.height, 8);
-    this.drawStaticText('button-reset', button.rect.centerX, button.rect.centerY, button.label, 13, '#eef3f8', 0.5);
+    const label = this.isShiftModeEnabled() && this.state.phase !== 'playing' ? 'Next Day' : button.label;
+    this.drawStaticText('button-reset', button.rect.centerX, button.rect.centerY, label, 13, '#eef3f8', 0.5);
   }
 
   private drawLoopDebugPanel(): void {
@@ -4349,6 +4974,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStaticText('camera-projection-label', 0, 0, '', 1, '#ffffff');
   }
 
+  private getDroneFuelDetail(): string | undefined {
+    if (this.state.drone.status !== 'ready') return undefined;
+    const preview = getReclaimPreview(this.state);
+    if (!preview) return undefined;
+    if (preview.surcharge <= 0.05) return `+${preview.netPayload.toFixed(1)} NET`;
+    if (preview.netPayload < preview.payload * 0.55) return 'THIN - FUEL STILL HOT';
+    return `+${preview.netPayload.toFixed(1)} NET AFTER FUEL`;
+  }
+
   private getDroneActionLabel(): string {
     if (this.state.drone.status === 'ready') return 'Launch Drone';
     if (this.state.drone.status === 'returning') return 'Returning';
@@ -4360,6 +4994,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.state.phase !== 'playing') return false;
     if (this.state.drone.status !== 'ready') return false;
     return this.state.speedState === 'crawl' || this.state.nanobots / this.state.maxNanobots < this.state.tuning.droneUrgencyRatio;
+  }
+
+  // What the player needs before committing to a run home: how much connected
+  // track is under and ahead of them.
+  private getRailStatusLine(): string {
+    if (!this.state.rail) return 'no rail';
+    return `${Math.round(this.state.rail.runwayAhead)}m of track`;
   }
 
   private getDroneStatusLine(): string {
@@ -4419,7 +5060,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.eventMessage && this.time.now > this.eventMessage.expiresAtMs) {
       this.eventMessage = undefined;
     }
-    return this.formatPlayerMessage(this.state.message);
+    const guidance = getContinuousGuidance(this.state);
+    return `${guidance.objective}. ${guidance.nudge}`;
   }
 
   private drawPhaseBanner(): void {
@@ -4427,6 +5069,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.state.phase === 'playing') {
       this.drawStaticText('phase-title', 0, 0, '', 1, '#ffffff');
       this.drawStaticText('phase-body', 0, 0, '', 1, '#ffffff');
+      this.drawStaticText('phase-shift', 0, 0, '', 1, '#ffffff');
+      this.drawStaticText('phase-cta', 0, 0, '', 1, '#ffffff');
       return;
     }
 
@@ -4449,6 +5093,36 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       0.5
     );
     this.drawStaticText('phase-body', layout.width / 2, y + 76, this.formatPlayerMessage(this.state.message), layout.mode === 'mobilePortrait' ? 14 : 16, '#dfe8f2', 0.5);
+    this.drawStaticText(
+      'phase-shift',
+      layout.width / 2,
+      y + height + 24,
+      this.isShiftModeEnabled()
+        ? `${this.survivedTheNight} lengths of rail survive the night`
+        : '',
+      layout.mode === 'mobilePortrait' ? 13 : 15,
+      '#9fb3c8',
+      0.5
+    );
+
+    // The call to action, sized like one and pulsing so it reads as live.
+    const pulse = 0.68 + Math.sin(this.time.now / 420) * 0.32;
+    const ctaWidth = Math.min(layout.width - 96, 330);
+    const ctaX = (layout.width - ctaWidth) / 2;
+    const ctaY = y + height + 48;
+    this.graphics.fillStyle(0x1c6f5c, 0.42 + pulse * 0.3);
+    this.graphics.fillRoundedRect(ctaX, ctaY, ctaWidth, 44, 10);
+    this.graphics.lineStyle(2, 0x77f2ca, 0.6 + pulse * 0.4);
+    this.graphics.strokeRoundedRect(ctaX, ctaY, ctaWidth, 44, 10);
+    this.drawStaticText(
+      'phase-cta',
+      layout.width / 2,
+      ctaY + 22,
+      this.isShiftModeEnabled() ? `Tap or press R for shift ${this.shiftNumber + 1}` : 'Tap or press R to run again',
+      layout.mode === 'mobilePortrait' ? 15 : 17,
+      '#ecfffa',
+      0.5
+    );
   }
 
   private drawStaticText(
@@ -4493,6 +5167,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       setArena: (arenaId) => this.setArena(arenaId),
       getCameraLab: () => this.getCameraLabSnapshot(),
       setCameraPreset: (presetId) => this.applyCameraPreset(presetId),
+      setCameraSettings: (settings) => this.applyCameraSettings(settings),
       setViewMode: (viewMode) => this.setCameraViewMode(viewMode),
       getDynamicsPresets: () =>
         DYNAMICS_PRESETS.map((preset) => ({
@@ -4757,6 +5432,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     };
   }
 
+  private cameraRig(): { sin: number; cos: number; distance: number; height: number; focal: number } {
+    const pitch = (clamp(this.cameraLab.cameraPitchDegrees, 8, 80) * Math.PI) / 180;
+    const distance = Math.max(40, this.cameraLab.cameraRigDistance);
+    const sin = Math.sin(pitch);
+    const cos = Math.cos(pitch);
+    const height = distance * (sin / cos);
+    const depthAtFocus = distance / cos;
+    return { sin, cos, distance, height, focal: this.getCameraZoom() * depthAtFocus };
+  }
+
   private project(point: Vec2): Vec2 {
     const center = this.getCameraCenter();
     const zoom = this.getCameraZoom();
@@ -4775,9 +5460,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const offset = { x: point.x - camera.x, y: point.y - camera.y };
     const lateral = offset.x * axes.right.x + offset.y * axes.right.y;
     const forward = offset.x * axes.forward.x + offset.y * axes.forward.y;
+    const rig = this.cameraRig();
+    const along = forward + rig.distance;
+    const depth = Math.max(24, along * rig.cos + rig.height * rig.sin);
+    const up = along * rig.sin - rig.height * rig.cos;
     return {
-      x: center.x + (lateral + forward * this.cameraLab.projectionShear) * zoom,
-      y: center.y - forward * this.cameraLab.projectedYScale * zoom
+      x: center.x + (rig.focal * lateral) / depth,
+      y: center.y - (rig.focal * up) / depth
     };
   }
 
@@ -4796,8 +5485,18 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     const axes = this.cameraAxes();
-    const forward = (center.y - point.y) / (this.cameraLab.projectedYScale * zoom);
-    const lateral = (point.x - center.x) / zoom - forward * this.cameraLab.projectionShear;
+    const rig = this.cameraRig();
+    const normalizedX = (point.x - center.x) / rig.focal;
+    const normalizedY = (center.y - point.y) / rig.focal;
+    const denominator = rig.sin - normalizedY * rig.cos;
+    // At or above the horizon the ray never meets the ground; hold it far out.
+    const along = Math.abs(denominator) < 1e-4
+      ? 100000
+      : (rig.height * (rig.cos + normalizedY * rig.sin)) / denominator;
+    const clampedAlong = clamp(along, 1, 100000);
+    const depth = clampedAlong * rig.cos + rig.height * rig.sin;
+    const forward = clampedAlong - rig.distance;
+    const lateral = normalizedX * depth;
     return {
       x: camera.x + axes.right.x * lateral + axes.forward.x * forward,
       y: camera.y + axes.right.y * lateral + axes.forward.y * forward
@@ -4807,24 +5506,34 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private projectedScale(point: Vec2): number {
     const zoom = this.getCameraZoom();
     if (this.usesTacticalProjection() && !this.tacticalPerspectiveEnabled()) return zoom;
-    const layout = this.getLayout();
-    const screen = this.project(point);
-    const normalizedDepth = clamp((screen.y - layout.hudHeight) / (layout.height - layout.hudHeight), 0, 1);
-    const perspective = 1 - this.cameraLab.projectedScaleStrength * 0.5 + normalizedDepth * this.cameraLab.projectedScaleStrength;
-    return zoom * clamp(perspective, 0.45, 1.8);
+    if (this.usesTacticalProjection()) {
+      const layout = this.getLayout();
+      const screen = this.project(point);
+      const normalizedDepth = clamp((screen.y - layout.hudHeight) / (layout.height - layout.hudHeight), 0, 1);
+      const perspective = 1 - this.cameraLab.projectedScaleStrength * 0.5 + normalizedDepth * this.cameraLab.projectedScaleStrength;
+      return zoom * clamp(perspective, 0.45, 1.8);
+    }
+
+    const camera = this.cameraFocus();
+    const axes = this.cameraAxes();
+    const offset = { x: point.x - camera.x, y: point.y - camera.y };
+    const forward = offset.x * axes.forward.x + offset.y * axes.forward.y;
+    const rig = this.cameraRig();
+    const depth = Math.max(24, (forward + rig.distance) * rig.cos + rig.height * rig.sin);
+    return clamp(rig.focal / depth, zoom * 0.25, zoom * 3);
   }
 
   private shapeYScale(): number {
-    return this.usesTacticalProjection() && !this.tacticalPerspectiveEnabled() ? 1 : this.cameraLab.projectedYScale;
+    if (this.usesTacticalProjection()) {
+      return this.tacticalPerspectiveEnabled() ? this.cameraLab.projectedYScale : 1;
+    }
+    return this.cameraRig().sin;
   }
 
   private cameraFocus(): Vec2 {
     if (this.viewMode === 'tactical') return this.tacticalCameraFocus;
 
-    const chaseFocus = {
-      x: this.state.rover.x + Math.cos(this.cameraHeading) * this.cameraLab.lookAheadDistance,
-      y: this.state.rover.y + Math.sin(this.cameraHeading) * this.cameraLab.lookAheadDistance
-    };
+    const chaseFocus = this.chaseCameraFocus;
     const pullback = this.getHybridPullbackAmount() * this.cameraLab.tacticalPullbackStrength;
     const blend = clamp(this.cameraLab.followBlend + pullback, 0, 1);
     return {
@@ -4834,15 +5543,18 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private tacticalCameraTarget(): Vec2 {
-    const beats = this.state.arena.beats.length > 0 ? this.state.arena.beats : [{ ...this.state.rover, id: 'rover', label: 'rover' }];
-    const beatCenter = beats.reduce(
-      (sum, beat) => ({ x: sum.x + beat.x / beats.length, y: sum.y + beat.y / beats.length }),
-      { x: 0, y: 0 }
-    );
-    const target = {
-      x: Phaser.Math.Linear(this.state.rover.x, beatCenter.x, 0.56),
-      y: Phaser.Math.Linear(this.state.rover.y, beatCenter.y, 0.5)
-    };
+    // The camera rides with the miner. A deadzone lets ordinary maneuvering happen
+    // without the view moving at all; the camera only gives chase once the rover
+    // genuinely leaves the box.
+    const deadzone = Math.max(0, this.cameraLab.followDeadzone);
+    const anchor = this.tacticalCameraFocus;
+    const offsetX = this.state.rover.x - anchor.x;
+    const offsetY = this.state.rover.y - anchor.y;
+    const distance = Math.hypot(offsetX, offsetY);
+    const target =
+      distance <= deadzone || distance === 0
+        ? { x: anchor.x, y: anchor.y }
+        : { x: this.state.rover.x, y: this.state.rover.y };
     const layout = this.getLayout();
     const playTop = layout.hudHeight;
     const playBottom = layout.controlBandTop ?? layout.height;
@@ -4870,7 +5582,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         ? Math.floor(DESKTOP_HUD_HEIGHT + (layout.height - DESKTOP_HUD_HEIGHT) * 0.52)
         : DESKTOP_CAMERA_CENTER_Y;
     const baseCenterY = layout.mode === 'mobilePortrait' ? mobileCenterY : desktopCenterY;
-    const bias = this.viewMode === 'tactical' ? 0 : this.cameraLab.roverScreenBias;
+    const bias = this.cameraLab.roverScreenBias;
 
     return {
       x: layout.width / 2 + this.cameraLab.cameraCenterX,
@@ -4881,7 +5593,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private getCameraZoom(forceMode?: ViewMode): number {
     const mode = forceMode ?? this.viewMode;
     const layout = this.getLayout();
-    const mobileMultiplier = layout.mode === 'mobilePortrait' ? 1.12 : 1;
+    const mobileMultiplier =
+      layout.mode === 'mobilePortrait' ? (mode === 'tactical' ? 1.12 : 0.72) : 1;
     if (mode === 'tactical') return this.cameraLab.tacticalZoom * mobileMultiplier;
 
     const pullback = mode === 'hybrid' ? this.getHybridPullbackAmount() * this.cameraLab.tacticalPullbackStrength : 0;
@@ -4896,7 +5609,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private tacticalPerspectiveEnabled(): boolean {
     return (
       this.viewMode === 'tactical' &&
-      (this.cameraLab.preset === 'threeQuarterTactical' ||
+      (
         Math.abs(this.cameraLab.projectedYScale - 1) > 0.001 ||
         Math.abs(this.cameraLab.projectionShear) > 0.001)
     );
@@ -4922,15 +5635,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private cameraHeadingTarget(): number {
-    const routeTarget = this.pointerTarget ?? this.getSelfPlayTarget() ?? this.tacticalCameraFocus;
-    const routeHeading = Math.atan2(routeTarget.y - this.state.rover.y, routeTarget.x - this.state.rover.x);
-    const maxRotation = (this.cameraLab.maxCameraRotation * Math.PI) / 180;
-    const desiredOffset = clamp(
-      angleDifference(routeHeading, this.state.rover.heading) * this.cameraLab.rotationBlendAmount,
-      -maxRotation,
-      maxRotation
-    );
-    return wrapAngle(this.state.rover.heading + desiredOffset);
+    return this.state.rover.heading;
   }
 
   private getProjectionModeLabel(): string {
