@@ -183,16 +183,43 @@ export function getDefaultContinuousSelfPlayRouteId(arenaId: ContinuousArenaId =
   return arenaId === 'last-light-return' ? 'safeReturn' : 'firstLoop';
 }
 
+const WAYPOINT_ARRIVAL_RADIUS = 58;
+const WAYPOINT_WORKED_OUT_ORE = 0.6;
+
 export function getContinuousSelfPlayTarget(
   route: ContinuousSelfPlayRoute,
   elapsedSeconds: number,
   world?: ContinuousWorldState
 ): ContinuousSelfPlayWaypoint {
-  // Time-based, deliberately. An arrival-based advance was tried to make the
-  // routes survive a faster machine, and it defeated dwelling: a route that
-  // skips a waypoint the moment it arrives never stays on a seam long enough
-  // to mine it, and every rung collapsed. The dwell IS the time gate.
-  return route.waypoints.find((waypoint) => elapsedSeconds <= waypoint.untilSeconds) ?? route.waypoints[route.waypoints.length - 1];
+  // Advance when the work is done, with the clock as a deadline rather than as
+  // the only gate.
+  //
+  // Pure time made every route a script calibrated to one machine speed:
+  // raising prepared speed from 96 to 104 flipped deepLobe from 22.8 ore to a
+  // loss, because the script sailed past a waypoint it was still steering at
+  // and circled for the rest of the run. A route that cannot survive the
+  // tractor going faster is not measuring the tractor, and that made the rig
+  // the reason the road could not be allowed to pay what it should.
+  //
+  // A plain arrival advance was the first fix and was worse: skipping a
+  // waypoint the moment you reach it never dwells long enough to mine, and
+  // every rung collapsed. The dwell is the point. So dwell until the seam under
+  // the waypoint is actually worked out -- which is what a player does -- and
+  // treat untilSeconds as the moment to give up and move on regardless.
+  for (const waypoint of route.waypoints) {
+    if (elapsedSeconds > waypoint.untilSeconds) continue;
+    if (!world) return waypoint;
+
+    const arrived = Math.hypot(waypoint.x - world.rover.x, waypoint.y - world.rover.y) <= WAYPOINT_ARRIVAL_RADIUS;
+    if (!arrived) return waypoint;
+
+    // Arrived. Hold only while there is still ore worth taking here.
+    const seam = world.fertileZones.find(
+      (zone) => Math.hypot(zone.x - waypoint.x, zone.y - waypoint.y) <= zone.radius + WAYPOINT_ARRIVAL_RADIUS
+    );
+    if (seam && seam.remaining > WAYPOINT_WORKED_OUT_ORE) return waypoint;
+  }
+  return route.waypoints[route.waypoints.length - 1];
 }
 
 export function getContinuousSelfPlayInput(world: ContinuousWorldState, target: Vec2): ContinuousInput {

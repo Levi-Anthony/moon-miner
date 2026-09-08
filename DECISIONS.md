@@ -672,3 +672,38 @@ So 96 is what the instrument can currently see, not what the road should pay.
 The honest next step for this is a self-play controller that steers toward a
 waypoint and holds until the seam is worked, rather than until the clock says
 so -- at which point the road can pay what it should.
+
+## 2026-09-08: Crawl Had No Door
+
+Chasing why a faster road cost ore, three hypotheses were wrong in a row --
+the self-play fixtures, the mining flow speed cap, the magnet failing to hold a
+faster machine -- each proposed and each measured and each ruled out. The
+fourth attempt instrumented the run second by second instead of theorising, and
+found something none of them were about.
+
+Crawl recovery was hardcoded to stop at 1.2 nanobots. The threshold for leaving
+crawl is 2.0. So the emergency legs could never scrape the machine past the
+line that would let it drive again: once in crawl, the only exit was the drone,
+for the rest of the run. Traced runs sat at exactly 1.2 for twenty-five
+consecutive seconds, ore frozen, position crawling home at 16 units a second.
+
+That is a direct contradiction of what crawl is for. Levi: "the crawl beat
+being necessary doesn't make it the game's core. It's necessary as a half-fail
+hinge state." A hinge you cannot swing back through is not a hinge.
+
+The ceiling is now a tuning value above the threshold, so the exit exists. The
+rate is deliberately left at 0.1/s, which means about twenty seconds of
+scraping to use that exit -- most of a day, so it is not yet the hinge it
+should be. The reason is the same limitation as the road speed: every recovery
+rate that makes self-rescue practical, 0.18/s and up, flips the mid ring from a
+comfortable win to a loss, and the self-play routes cannot say whether that is
+the game getting worse or the fixture. Removing the impossibility costs nothing
+measurable. Making the hinge usable is a rebalance needing an instrument that
+does not exist yet.
+
+Two process notes worth keeping. Guessing cost three rounds where instrumenting
+would have cost one, and the tell was available immediately: the symptom was
+crawl doubling, and crawl is a state with an entry and an exit, so the exit was
+always the thing to look at. And the probe that found it was initially wrong
+too -- it omitted the scheduled drone launches, so its first output described a
+run nobody plays. Check what the probe leaves out before believing what it says.

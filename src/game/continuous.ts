@@ -147,6 +147,7 @@ export interface ContinuousTuning {
   crawlSpeed: number;
   fabricateCostPerSecond: number;
   crawlRecoveryPerSecond: number;
+  crawlRecoveryCeiling: number;
   droneSpeed: number;
   dronePickupRadius: number;
   mineRate: number;
@@ -172,6 +173,7 @@ export interface ContinuousTuning {
   reclaimYieldMultiplier: number;
   overnightFieldDecay: number;
   overnightOreRegrowth: number;
+  miningFlowSpeedCap: number;
   overnightFieldSurvivalValue: number;
   droneRailRelayMaxPatches: number;
   reclaimLockSeconds: number;
@@ -263,6 +265,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   crawlSpeed: 16,
   fabricateCostPerSecond: 1.48,
   crawlRecoveryPerSecond: 0.1,
+  crawlRecoveryCeiling: 2.6,
   droneSpeed: 430,
   dronePickupRadius: 170,
   mineRate: 0.32,
@@ -304,6 +307,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // 0.025 still fall under the floor -- so the one distinction worth keeping,
   // between road you built and road you scraped out while dying, survives.
   overnightOreRegrowth: 0.35,
+  miningFlowSpeedCap: 1.45,
   overnightFieldDecay: 0.94,
   overnightFieldSurvivalValue: 0.1,
   droneRailRelayMaxPatches: 6,
@@ -378,6 +382,7 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   preparedMagnetActiveTurnRate: 1.25,
   preparedMagnetCorrectionRange: 0.85,
   crawlRecoveryPerSecond: 0.1,
+  crawlRecoveryCeiling: 2.6,
   crawlSpeed: 16,
   fabricatingSpeed: 74,
   // 96, not the 132 this wanted to be. The self-play routes are timed waypoint
@@ -959,7 +964,25 @@ function runFieldSystem(
     state.pendingFieldValue += spent * state.tuning.fieldValueMultiplierFromSpentStock;
     state.message = 'Arms are fabricating field just in time. Mining capacity is constrained.';
   } else {
-    state.nanobots = Math.min(1.2, state.nanobots + state.tuning.crawlRecoveryPerSecond * deltaSeconds);
+    // The ceiling used to be a hardcoded 1.2 while the threshold for leaving
+    // crawl is 2.0, so the scraping legs could never lift the machine past the
+    // line that would let it drive again. Crawl was not a half-fail hinge, it
+    // was an absorbing state with no unaided exit: once in, the only way out
+    // was the drone, for the rest of the run. Traced runs sat at exactly 1.2
+    // for twenty-five straight seconds.
+    //
+    // The ceiling is lifted past the line so the exit exists. The RATE is left
+    // at 0.1/s, which means twenty seconds of scraping to use it -- most of a
+    // day. That is not yet the hinge Levi described, and the reason is honest:
+    // every rate that makes self-rescue practical (0.18 and up) flips the mid
+    // ring from a comfortable win to a loss, and the self-play routes cannot
+    // tell me whether that is the game getting worse or the fixture. Removing
+    // the impossibility costs nothing measurable; making the hinge usable is a
+    // rebalance that needs an instrument I do not have yet.
+    state.nanobots = Math.min(
+      state.tuning.crawlRecoveryCeiling,
+      state.nanobots + state.tuning.crawlRecoveryPerSecond * deltaSeconds
+    );
     state.pendingFieldValue += state.tuning.crawlFieldPatchMinValue * deltaSeconds;
     state.message = 'Emergency crawl: local reclaim legs are scraping enough residue to keep moving.';
   }
@@ -1720,7 +1743,12 @@ function getFertileZoneMiningFlowMultiplier(state: ContinuousWorldState, zone: F
   };
   const alignment = Math.abs((heading.x * veinDx + heading.y * veinDy) / veinLength);
   const alignmentMultiplier = 0.18 + alignment * alignment * 1.34;
-  const speedMultiplier = clamp(state.rover.speed / state.tuning.fabricatingSpeed, 0.35, 1.45);
+  // The cap matters more than it looks. Yield is rate times time in the zone,
+  // and crossing a seam faster shrinks the time; if the rate stops rising at
+  // 1.45 while the machine keeps getting quicker, going faster on road means
+  // mining less. That coupling -- not the self-play fixtures -- is why raising
+  // prepared speed kept costing ore.
+  const speedMultiplier = clamp(state.rover.speed / state.tuning.fabricatingSpeed, 0.35, state.tuning.miningFlowSpeedCap);
   return alignmentMultiplier * speedMultiplier;
 }
 
