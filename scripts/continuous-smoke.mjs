@@ -52,7 +52,7 @@ async function main() {
       ]
     });
 
-    const { page } = await newHarnessPage(browser, appUrl, {
+    const { context: desktopContext, page } = await newHarnessPage(browser, appUrl, {
       viewport: DESKTOP_VIEWPORT,
       deviceScaleFactor: 1
     });
@@ -66,13 +66,23 @@ async function main() {
     const drone = await verifyDroneLaunch(page);
     const droneReadability = await verifyDroneReadability(page);
     const oreVisibility = await verifyOreVeinVisibility(page);
-    const { page: mobilePage } = await newHarnessPage(browser, `${appUrl}?mobile=1`, {
+
+    // Every open page keeps running its own Phaser loop, software-rasterised because
+    // the browser launches with --disable-gpu. Leaving finished ones alive makes each
+    // later page boot compete with them for the CPU, and page.goto's timeout is wall
+    // clock, so the last navigation loses that race on a loaded runner rather than on
+    // anything being broken. Close each section's context when the section is done.
+    await desktopContext.close();
+
+    const { context: mobileContext, page: mobilePage } = await newHarnessPage(browser, `${appUrl}?mobile=1`, {
       viewport: MOBILE_VIEWPORT,
       deviceScaleFactor: 2,
       hasTouch: true,
       isMobile: true
     });
     const mobile = await verifyMobilePortrait(mobilePage);
+    await mobileContext.close();
+
     const { page: mobileDebugPage } = await newHarnessPage(browser, `${appUrl}?mobile=1&debug=1`, {
       viewport: DESKTOP_VIEWPORT,
       deviceScaleFactor: 1

@@ -14,7 +14,8 @@
     "verify": "npm test && npm run build",
     "verify:known-green": "npm run verify",
     "verify:full": "npm run verify && npm run smoke:continuous && npm run verify:audit",
-    "verify:audit": "npm audit"
+    "verify:audit": "npm audit",
+    "play:through": "node scripts/playthrough.mjs"
   },
   "dependencies": {
     "phaser": "^3.90.0"
