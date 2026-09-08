@@ -238,7 +238,15 @@ const INDUSTRIAL_ARMS = 7;
 const UTILITY_ARMS = 1;
 const TOTAL_ARMS = INDUSTRIAL_ARMS + UTILITY_ARMS;
 const TURN_RATE = 2.25;
-const STATIONARY_MINING_FLOW_MULTIPLIER = 1;
+// Canon, CONCEPT_REFRAME: "Mining should not be 'stop on ore and press mine'
+// ... average deposits should mostly clear during the same traversal that lays
+// road." The live-pass system was built -- alignment with the vein and speed
+// multiply up to about 1.94 -- and then this constant let a parked rover score
+// a flat 1.0 for free. Parking costs no nanobots, carries no risk, and beat
+// driving badly (0.18), so it was strictly optimal, and the on-screen guidance
+// taught it. A game about continuous motion whose scoring rewards stopping is
+// going to feel wrong in a way that is hard to name.
+const STATIONARY_MINING_FLOW_MULTIPLIER = 0.25;
 const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
 export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -617,7 +625,7 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
   }
 
   if (findFertileZoneAt(state, state.rover)) {
-    return { objective: 'Mining this seam', nudge: 'Stay on it. Mining runs while parked.' };
+    return { objective: 'Mining this seam', nudge: 'Keep rolling along it. Speed and line are the yield.' };
   }
 
   if (!homeArena && state.rover.ore >= state.targetOre) {

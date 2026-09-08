@@ -911,6 +911,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // able to play chained shifts in a published build. Off by default, because
   // carrying road across runs is adjacent to a documented deferral and that is
   // the author's call to make, not a default to slip in.
+  private shiftNumber = 1;
+  private carriedIn = 0;
+  private survivedTheNight = 0;
+
   private isShiftModeEnabled(): boolean {
     try {
       return new URLSearchParams(window.location.search).get('shift') === '1';
@@ -920,14 +924,24 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private loadCarriedRoad(): FieldPatch[] {
-    if (!this.isShiftModeEnabled()) return [];
+    const save = this.loadShiftSave();
+    this.shiftNumber = save.shift;
+    this.carriedIn = save.fields.length;
+    return save.fields;
+  }
+
+  private loadShiftSave(): { shift: number; fields: FieldPatch[] } {
+    if (!this.isShiftModeEnabled()) return { shift: 1, fields: [] };
 
     try {
       const raw = window.localStorage.getItem(CARRIED_ROAD_STORAGE_KEY);
-      const parsed = raw ? (JSON.parse(raw) as FieldPatch[]) : [];
-      return Array.isArray(parsed) ? parsed : [];
+      const parsed = raw ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[] }) : undefined;
+      return {
+        shift: typeof parsed?.shift === 'number' ? parsed.shift : 1,
+        fields: Array.isArray(parsed?.fields) ? parsed.fields : []
+      };
     } catch {
-      return [];
+      return { shift: 1, fields: [] };
     }
   }
 
@@ -936,7 +950,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     try {
       const carried = carryFieldsOvernight(this.state.fields, this.state.tuning);
-      window.localStorage.setItem(CARRIED_ROAD_STORAGE_KEY, JSON.stringify(carried));
+      this.survivedTheNight = carried.length;
+      window.localStorage.setItem(
+        CARRIED_ROAD_STORAGE_KEY,
+        JSON.stringify({ shift: this.shiftNumber + 1, fields: carried })
+      );
     } catch {
       // Storage can be unavailable; the shift simply does not carry.
     }
@@ -4093,6 +4111,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       sunRatio < 0.1 ? 0xffd36d : sunRatio < 0.25 ? 0xff7d77 : sunRatio < 0.5 ? 0xffb36b : 0xa8c9ff
     );
 
+    // Which day this is, and what yesterday left you. Without it the carried
+    // road is indistinguishable from a level that always looked like this.
+    this.drawStaticText(
+      'hud-shift',
+      layout.vitals[0].x,
+      layout.hudHeight + 16,
+      this.isShiftModeEnabled()
+        ? `SHIFT ${this.shiftNumber}${this.carriedIn > 0 ? ` · ${this.carriedIn} lengths inherited` : ' · bare ground'}`
+        : '',
+      11,
+      '#8fa3ba'
+    );
+
     this.drawStateChip(layout.stateChip.x, layout.stateChip.y, layout.stateChip.width, layout.stateChip.height);
     if (layout.mode === 'mobilePortrait') this.drawMobileControls(layout);
     this.drawDroneHudButton();
@@ -4324,7 +4355,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.fillRoundedRect(button.rect.x, button.rect.y, button.rect.width, button.rect.height, 8);
     this.graphics.lineStyle(1, 0x6f8094, 1);
     this.graphics.strokeRoundedRect(button.rect.x, button.rect.y, button.rect.width, button.rect.height, 8);
-    this.drawStaticText('button-reset', button.rect.centerX, button.rect.centerY, button.label, 13, '#eef3f8', 0.5);
+    const label = this.isShiftModeEnabled() && this.state.phase !== 'playing' ? 'Next Day' : button.label;
+    this.drawStaticText('button-reset', button.rect.centerX, button.rect.centerY, label, 13, '#eef3f8', 0.5);
   }
 
   private drawLoopDebugPanel(): void {
@@ -4710,6 +4742,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.state.phase === 'playing') {
       this.drawStaticText('phase-title', 0, 0, '', 1, '#ffffff');
       this.drawStaticText('phase-body', 0, 0, '', 1, '#ffffff');
+      this.drawStaticText('phase-shift', 0, 0, '', 1, '#ffffff');
       return;
     }
 
@@ -4732,6 +4765,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       0.5
     );
     this.drawStaticText('phase-body', layout.width / 2, y + 76, this.formatPlayerMessage(this.state.message), layout.mode === 'mobilePortrait' ? 14 : 16, '#dfe8f2', 0.5);
+    this.drawStaticText(
+      'phase-shift',
+      layout.width / 2,
+      y + height + 22,
+      this.isShiftModeEnabled()
+        ? `Shift ${this.shiftNumber} over. ${this.survivedTheNight} lengths of rail survive the night. R for shift ${this.shiftNumber + 1}.`
+        : '',
+      layout.mode === 'mobilePortrait' ? 13 : 15,
+      '#9fb3c8',
+      0.5
+    );
   }
 
   private drawStaticText(

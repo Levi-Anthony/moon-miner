@@ -355,3 +355,41 @@ free early-run loops without exposing the late-run return.
 Standing rule from this: a metric with a horizon can only falsify claims inside
 that horizon. Before removing a rule because a measurement says it is inert,
 check whether the measurement can see what the rule was built for.
+
+## 2026-09-08: Mining Is A Pass Again, And The Next Day Is Visible
+
+Two reports: no way to see the next day, and the single day still feels wrong
+without being able to say why.
+
+The second one first, because it is the canon violation that has been sitting
+in ECO-91 since the drift audit. CONCEPT_REFRAME: "Mining should not be 'stop
+on ore and press mine' ... average deposits should mostly clear during the same
+traversal that lays road." The live-pass system was built -- alignment with the
+vein times speed, up to about 1.94 -- and one constant bypassed it, with
+STATIONARY_MINING_FLOW_MULTIPLIER at a flat 1. Measured on the same seam facing
+along the same vein:
+
+  before   parked 0.94/s    rolling 0.61/s     parking 54% better
+  after    parked 0.24/s    rolling 0.61/s     rolling 2.5x better
+
+A game about continuous motion whose scoring rewarded stopping is going to feel
+wrong in a way that is hard to name, and the on-screen guidance was teaching the
+stop. It now says the line and the speed are the yield. The route ladder does
+not move at all, because self-play never parks -- which is the point: this costs
+a driving player nothing and takes away a parked player's free ride.
+
+The first report is a bug I shipped. Carry-over saved and restored correctly and
+had no interface whatsoever: no shift number, no statement of what survived, and
+the only way forward was a button labelled Reset, which reads as start over.
+State without a surface, which is the failure this project keeps repeating and
+which I committed again while fixing it. There is now a shift line in the HUD
+("SHIFT 2 - 11 lengths inherited", or "bare ground"), a line under the run-end
+panel naming what survived the night and which key starts the next day, and the
+Reset button reads Next Day once the run is over.
+
+Worth recording about the decay floor, because it looked like a bug and is not.
+End-of-run field values are cleanly bimodal -- 0.025 for crawl scrapings and
+0.385 for road laid while fabricating properly, nothing in between -- so a floor
+of 0.10 against a 0.4 decay keeps exactly the well-laid road and drops exactly
+the desperate road. A first browser run carried nothing at all, which was
+correct: that run crawled almost the whole day and had nothing worth keeping.
