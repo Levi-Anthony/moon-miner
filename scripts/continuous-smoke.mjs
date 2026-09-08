@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -35,8 +36,9 @@ async function main() {
     const appUrl = `http://127.0.0.1:${appPort}${GAME_URL_PATH}`;
     await waitForHttp(appUrl, 'Vite dev server');
 
+    const chromePath = findChrome();
     browser = await chromium.launch({
-      executablePath: findChrome(),
+      ...(chromePath ? { executablePath: chromePath } : {}),
       headless: true,
       args: [
         '--disable-background-networking',
@@ -1014,11 +1016,49 @@ function findChrome() {
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
   ].filter(Boolean);
 
-  const chromePath = candidates.find((candidate) => existsSync(candidate));
-  if (!chromePath) {
-    throw new Error('Could not find Chrome/Chromium. Set CHROME_PATH to a headless-capable browser executable.');
+  // Resolution order: CHROME_PATH override, then a system browser, then any
+  // Chromium already sitting in PLAYWRIGHT_BROWSERS_PATH, then undefined so
+  // Playwright resolves the build it installed itself. The third step matters
+  // in containers that ship a Chromium at a different revision than the
+  // installed Playwright expects: without it the check cannot run at all.
+  return candidates.find((candidate) => existsSync(candidate)) ?? findPlaywrightChrome();
+}
+
+function findPlaywrightChrome() {
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !existsSync(root)) return undefined;
+
+  let entries;
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return undefined;
   }
-  return chromePath;
+
+  // Prefer the full browser over the headless shell, and the newest revision
+  // of either. Directory names look like `chromium-1194`.
+  const revisionOf = (name) => Number.parseInt(name.split('-').pop(), 10) || 0;
+  const ranked = entries
+    .filter((name) => name.startsWith('chromium'))
+    .sort((a, b) => {
+      const shell = Number(a.startsWith('chromium_headless_shell')) - Number(b.startsWith('chromium_headless_shell'));
+      return shell !== 0 ? shell : revisionOf(b) - revisionOf(a);
+    });
+
+  for (const name of ranked) {
+    for (const relative of [
+      path.join('chrome-linux', 'chrome'),
+      path.join('chrome-linux', 'headless_shell'),
+      path.join('chrome-headless-shell-linux64', 'chrome-headless-shell'),
+      path.join('chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'),
+      path.join('chrome-win', 'chrome.exe')
+    ]) {
+      const candidate = path.join(root, name, relative);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+
+  return undefined;
 }
 
 async function waitFor(label, probe, timeoutMs = 8000, intervalMs = 50) {
