@@ -211,13 +211,21 @@ npm run verify
 
 This runs unit tests and a production build.
 
-Known-green baseline with dependency audit:
+Known-green baseline:
 
 ```bash
 npm run verify:known-green
 ```
 
-This runs unit tests, production build, and `npm audit`.
+An alias for `npm run verify` — unit tests and a production build. It depends only on the contents of this repository, so a red result always means something here changed.
+
+Dependency audit, separately:
+
+```bash
+npm run verify:audit
+```
+
+This is deliberately not part of the baseline. `npm audit` reads a live advisory feed, so it can turn red with no code change at all — which is exactly what happened between July and September 2026. A baseline that moves on its own cannot answer "did my change break something."
 
 Full verification:
 
@@ -225,18 +233,30 @@ Full verification:
 npm run verify:full
 ```
 
-This also runs the browser smoke check. As of July 1, 2026, `npm run smoke:continuous` is a known-red integration check. That means `verify:full` is allowed to fail until the smoke issue is fixed in a separate slice.
+Tests, build, browser smoke, then the audit last. Audit runs last on purpose: it used to sit ahead of the smoke check, so a red audit short-circuited the chain and the browser check never ran at all. As of September 8, 2026 this passes end to end on `main`.
 
-## Current Known Red
+## Current Check Status
 
-As of July 1, 2026:
+As of September 8, 2026, measured on `main` at `787d502` plus the lockfile fix in this change:
 
-- `npm test` passes.
+- `npm test` passes, 62 tests.
 - `npm run build` passes.
-- `npm audit` last reported 0 vulnerabilities.
-- `npm run smoke:continuous` is known red. The most recent run on July 1, 2026 timed out waiting for `return payload cue` during the browser smoke route.
+- `npm audit` passes, 0 vulnerabilities.
+- `npm run smoke:continuous` passes.
+- `npm run verify`, `npm run verify:known-green`, and `npm run verify:full` all exit 0.
 
-Do not let an agent say "all checks pass" unless it includes the known-red smoke status or has actually fixed it.
+Nothing is known red on `main` right now.
+
+Two things not to assume from that:
+
+- **Branches differ.** The open PR #1 branch fails smoke with `Expected tactical view mode, got chase.` A green `main` says nothing about a branch.
+- **This section ages.** `npm audit` reads a live advisory feed, so it can go red with no code change at all. Between July 1 and September 8, 2026 this section was wrong in both directions at once: it called smoke red while smoke passed, and called audit clean while audit was failing on two high-severity advisories. Nobody noticed, because nothing re-runs these commands automatically.
+
+Do not let an agent say "all checks pass" unless it includes the current known-red status or has actually fixed it.
+
+As of September 8, 2026 nothing is known red on `main`. So an agent claiming green must also say which branch and which commit it measured, because a branch can differ. Re-run the commands; do not quote this section as evidence.
+
+Since September 8, 2026 these checks also run in GitHub Actions on every push and pull request, so a red result shows up on the pull request instead of waiting for someone to notice. That is the actual fix for how this section went stale: it was hand-maintained, and nothing re-ran the commands for two months.
 
 ## When Something Goes Wrong
 
