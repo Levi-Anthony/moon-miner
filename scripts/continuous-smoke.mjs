@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -35,8 +36,9 @@ async function main() {
     const appUrl = `http://127.0.0.1:${appPort}${GAME_URL_PATH}`;
     await waitForHttp(appUrl, 'Vite dev server');
 
+    const chromePath = findChrome();
     browser = await chromium.launch({
-      executablePath: findChrome(),
+      ...(chromePath ? { executablePath: chromePath } : {}),
       headless: true,
       args: [
         '--disable-background-networking',
@@ -355,8 +357,7 @@ async function verifyDroneReadability(page) {
         throw new Error(`Expected launch urgency cue at ${snapshot.state.nanobots.toFixed(1)} nanobots.`);
       }
       return snapshot;
-    },
-    30000
+    }
   );
 
   const reserved = await waitForSnapshot(
@@ -370,8 +371,7 @@ async function verifyDroneReadability(page) {
         throw new Error(`Expected reserved target snapshot for ${reservedCount} reserved fields.`);
       }
       return { snapshot, reservedCount };
-    },
-    50000
+    }
   );
 
   const returning = await waitForSnapshot(
@@ -383,8 +383,7 @@ async function verifyDroneReadability(page) {
         throw new Error(`Expected return payload cue for +${snapshot.state.drone.payload.toFixed(1)}.`);
       }
       return snapshot;
-    },
-    12000
+    }
   );
 
   const delivery = await waitForSnapshot(
@@ -396,8 +395,7 @@ async function verifyDroneReadability(page) {
         throw new Error('Expected positive delivery amount in the delivery readout cue.');
       }
       return snapshot;
-    },
-    12000
+    }
   );
 
   return {
@@ -754,13 +752,45 @@ async function readOverlayState(page) {
   });
 }
 
-async function waitForSnapshot(page, label, predicate = () => true, timeoutMs = 8000, intervalMs = 50) {
-  return waitFor(label, async () => {
-    const snapshot = await readSnapshot(page);
-    if (!snapshot) return undefined;
-    const result = predicate(snapshot);
-    return result === true ? snapshot : result;
-  }, timeoutMs, intervalMs);
+// Snapshot waits observe a simulation that advances per rendered frame. A fixed
+// wall-clock budget therefore measures how busy the machine is rather than
+// whether the game works, which is why the identical commit passed locally four
+// times and failed on a loaded CI runner.
+//
+// stallMs is how long to tolerate NO simulation progress - state.elapsedSeconds
+// failing to advance - rather than a total time budget. capMs is an absolute
+// ceiling so a genuinely unsatisfiable predicate still ends the run. Predicate
+// throws are retried until one of those limits, as before.
+async function waitForSnapshot(page, label, predicate = () => true, stallMs = 8000, intervalMs = 50, capMs = 120000) {
+  const hardDeadline = Date.now() + capMs;
+  let stallDeadline = Date.now() + stallMs;
+  let lastElapsed = -Infinity;
+  let lastError;
+
+  while (Date.now() < hardDeadline && Date.now() < stallDeadline) {
+    try {
+      const snapshot = await readSnapshot(page);
+      if (snapshot) {
+        const elapsed = snapshot.state?.elapsedSeconds;
+        if (typeof elapsed === 'number' && elapsed > lastElapsed) {
+          lastElapsed = elapsed;
+          stallDeadline = Date.now() + stallMs;
+        }
+        const result = predicate(snapshot);
+        if (result) return result === true ? snapshot : result;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(intervalMs);
+  }
+
+  const seen = Number.isFinite(lastElapsed) ? `${lastElapsed.toFixed(1)}s of sim time` : 'no simulation clock';
+  const why = Date.now() < hardDeadline
+    ? `no simulation progress for ${(stallMs / 1000).toFixed(0)}s, last seen ${seen}`
+    : `hit the ${(capMs / 1000).toFixed(0)}s ceiling at ${seen}`;
+  const cause = lastError instanceof Error ? ` Last error: ${lastError.message}` : '';
+  throw new Error(`Timed out waiting for ${label} (${why}).${cause}`);
 }
 
 function assertUiLayout(snapshot, expectedMode, expectedViewMode = 'tactical') {
@@ -1014,11 +1044,49 @@ function findChrome() {
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
   ].filter(Boolean);
 
-  const chromePath = candidates.find((candidate) => existsSync(candidate));
-  if (!chromePath) {
-    throw new Error('Could not find Chrome/Chromium. Set CHROME_PATH to a headless-capable browser executable.');
+  // Resolution order: CHROME_PATH override, then a system browser, then any
+  // Chromium already sitting in PLAYWRIGHT_BROWSERS_PATH, then undefined so
+  // Playwright resolves the build it installed itself. The third step matters
+  // in containers that ship a Chromium at a different revision than the
+  // installed Playwright expects: without it the check cannot run at all.
+  return candidates.find((candidate) => existsSync(candidate)) ?? findPlaywrightChrome();
+}
+
+function findPlaywrightChrome() {
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !existsSync(root)) return undefined;
+
+  let entries;
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return undefined;
   }
-  return chromePath;
+
+  // Prefer the full browser over the headless shell, and the newest revision
+  // of either. Directory names look like `chromium-1194`.
+  const revisionOf = (name) => Number.parseInt(name.split('-').pop(), 10) || 0;
+  const ranked = entries
+    .filter((name) => name.startsWith('chromium'))
+    .sort((a, b) => {
+      const shell = Number(a.startsWith('chromium_headless_shell')) - Number(b.startsWith('chromium_headless_shell'));
+      return shell !== 0 ? shell : revisionOf(b) - revisionOf(a);
+    });
+
+  for (const name of ranked) {
+    for (const relative of [
+      path.join('chrome-linux', 'chrome'),
+      path.join('chrome-linux', 'headless_shell'),
+      path.join('chrome-headless-shell-linux64', 'chrome-headless-shell'),
+      path.join('chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'),
+      path.join('chrome-win', 'chrome.exe')
+    ]) {
+      const candidate = path.join(root, name, relative);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+
+  return undefined;
 }
 
 async function waitFor(label, probe, timeoutMs = 8000, intervalMs = 50) {
