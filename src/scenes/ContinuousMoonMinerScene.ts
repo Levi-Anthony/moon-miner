@@ -922,6 +922,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private shiftNumber = 1;
   private carriedIn = 0;
   private carriedDepletion: Record<string, number> = {};
+  private saveDiagnostic: 'loaded' | 'absent' | 'empty' | 'unreadable' | 'off' = 'off';
   private survivedTheNight = 0;
 
   // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
@@ -960,6 +961,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         recordedAt: new Date().toISOString(),
         shift: this.shiftNumber,
         carriedIn: this.carriedIn,
+        // What the save looked like when this run started.
+        saveOnLoad: this.saveDiagnostic,
         survivedTheNight: this.survivedTheNight,
         arenaId: this.state.arenaId,
         result: this.state.phase,
@@ -1017,6 +1020,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     try {
       const raw = window.localStorage.getItem(CARRIED_ROAD_STORAGE_KEY);
+      // Two runs a minute apart both recorded as shift one with nothing
+      // carried, which could be storage being cleared, storage being
+      // unreadable, or a save that was never written -- and no way to tell
+      // which from the outside. Recording what the load actually saw makes the
+      // next occurrence diagnose itself instead of being argued about.
+      this.saveDiagnostic = raw === null ? 'absent' : raw.length < 3 ? 'empty' : 'loaded';
       const parsed = raw
         ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[]; depletion?: Record<string, number> })
         : undefined;
@@ -1026,6 +1035,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {}
       };
     } catch {
+      this.saveDiagnostic = 'unreadable';
       return { shift: 1, fields: [], depletion: {} };
     }
   }
