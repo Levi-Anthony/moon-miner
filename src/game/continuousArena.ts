@@ -400,8 +400,12 @@ export function createArenaStarterFields(
   startingFieldValue: number,
   fieldRadius: number
 ): FieldPatch[] {
+  // The apron is one continuous piece of track, so it is chained like any other
+  // pass the tractor lays. Without the links it is a row of unrelated circles
+  // and the rail cannot follow it out of the depot.
   return arena.starterFieldPoints.map((point, index) => ({
     id: index + 1,
+    prevId: index > 0 ? index : undefined,
     x: point.x,
     y: point.y,
     radius: fieldRadius,

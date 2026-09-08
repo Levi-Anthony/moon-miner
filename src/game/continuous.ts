@@ -40,6 +40,28 @@ export interface FieldPatch extends Vec2 {
   value: number;
   age: number;
   reservedByDrone?: boolean;
+  // The patch this one was laid immediately after, which is what makes the road
+  // a road. Until now the only thing connecting two patches was that their ids
+  // happened to be adjacent after filtering and sorting, with anything inside
+  // 2.8 radii -- 129 units, five patch spacings -- counted as the same stretch.
+  // So two unrelated passes through the same area read as one piece of track,
+  // and a stretch the drone had taken a bite out of read as continuous across
+  // the hole. That is the "inscrutable" road: there was no topology to read,
+  // only a bag of overlapping circles.
+  prevId?: number;
+}
+
+// A continuous piece of laid road under the tractor, and where it runs.
+export interface RailLock {
+  // Unit vector along the track, oriented the way the tractor is facing.
+  tangent: Vec2;
+  // The centreline point the tractor is being pulled onto.
+  center: Vec2;
+  // Signed distance from that centreline. Zero is dead on the rail.
+  offset: number;
+  // How far ahead the connected track continues, in units. This is what tells
+  // you whether flooring it will get you home or drop you onto bare ground.
+  runwayAhead: number;
 }
 
 export interface ReclaimPreview {
@@ -169,7 +191,8 @@ export interface ContinuousTuning {
   reclaimMinDistanceFromRover: number;
   reclaimRouteHomeCorridor: number;
   reclaimLookaheadSeconds: number;
-  // How close the tractor has to get to a claimed patch to take it back.
+  // How close the tractor may be to a patch the drone is flying to. Inside it
+  // the target is dropped and re-picked, every tick, for the whole flight.
   reclaimClaimBreakRadius: number;
   reclaimPathClearance: number;
   reclaimYieldMultiplier: number;
@@ -190,6 +213,31 @@ export interface ContinuousTuning {
   preparedMagnetPassiveTurnRate: number;
   preparedMagnetActiveTurnRate: number;
   preparedMagnetCorrectionRange: number;
+  // Speed on connected track. Deliberately far above preparedSpeed: laid road
+  // that is only a third quicker than bare ground is a bonus painted on the
+  // floor, not a rail you would turn around and run for.
+  railSpeed: number;
+  // How far off the centreline the tractor can be and still be considered on
+  // the track.
+  railCaptureDistance: number;
+  // How closely the tractor has to be pointing along the track to lock onto it,
+  // as a dot product. 0.5 is sixty degrees either side -- generous, because
+  // being unable to get ON the rail is far worse than getting on it by accident.
+  railCaptureAlignment: number;
+  // Steering past this breaks the lock. Below it the wheel does nothing, which
+  // is the whole point: on rail you do not steer.
+  railBreakSteer: number;
+  // Seconds the rail stays released after you steer off it, so leaving does not
+  // fight a magnet that drags you back.
+  railReleaseSeconds: number;
+  // How hard heading converges on the track direction, per second.
+  railHeadingSnap: number;
+  // How hard the tractor is drawn back to the centreline, in units per second
+  // per unit of offset.
+  railCenterSnap: number;
+  // Connected track ahead, in units, that earns full rail speed. Below it the
+  // rail tapers back toward prepared speed.
+  railRunwayForFullSpeed: number;
   lowStockWarningRatio: number;
   droneUrgencyRatio: number;
 }
@@ -227,6 +275,17 @@ export interface ContinuousWorldState {
   lastYieldRate: number;
   message: string;
   nextFieldId: number;
+  // The patch the arms laid last, or undefined when they are not laying. New
+  // patches chain onto it, so one pass is one piece of track.
+  layingChainId?: number;
+  // Recomputed every tick from the track under the tractor. Undefined means
+  // there is nothing connected to run on.
+  rail?: RailLock;
+  // Counts down while the player is deliberately off the rail, so leaving a
+  // track does not fight a pull that snaps you straight back onto it.
+  railReleaseRemaining: number;
+  // The last piece of road the tractor was standing on.
+  lastRoadPatchId?: number;
   fieldEmitDistance: number;
   pendingFieldValue: number;
 }
@@ -326,6 +385,14 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   preparedMagnetPassiveTurnRate: 2.25,
   preparedMagnetActiveTurnRate: 1.35,
   preparedMagnetCorrectionRange: 0.7,
+  railSpeed: 236,
+  railCaptureDistance: 40,
+  railCaptureAlignment: 0.5,
+  railBreakSteer: 0.34,
+  railReleaseSeconds: 0.55,
+  railHeadingSnap: 9,
+  railCenterSnap: 4.2,
+  railRunwayForFullSpeed: 210,
   lowStockWarningRatio: 0.18,
   droneUrgencyRatio: 0.32
 };
@@ -384,6 +451,14 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   preparedMagnetPassiveTurnRate: 2.1,
   preparedMagnetActiveTurnRate: 1.25,
   preparedMagnetCorrectionRange: 0.85,
+  railSpeed: 236,
+  railCaptureDistance: 40,
+  railCaptureAlignment: 0.5,
+  railBreakSteer: 0.34,
+  railReleaseSeconds: 0.55,
+  railHeadingSnap: 9,
+  railCenterSnap: 4.2,
+  railRunwayForFullSpeed: 210,
   crawlRecoveryPerSecond: 0.1,
   crawlRecoveryCeiling: 2.6,
   crawlSpeed: 16,
@@ -505,7 +580,8 @@ export function createContinuousWorld(
         : 'Raw field start. Drive to lay your first line, then reclaim it.',
     nextFieldId,
     fieldEmitDistance: 0,
-    pendingFieldValue: 0
+    pendingFieldValue: 0,
+    railReleaseRemaining: 0
   };
 
   state.speedState = resolveSpeedState(state);
@@ -891,14 +967,53 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     1
   );
   const playerTurn = state.rover.steerInput * TURN_RATE * turnMultiplier;
-  const magnetTurn = getPreparedMagnetTurn(state, input);
-  // Smoothed, because the projection below reads it and a single jittery frame
-  // should not swing where the drone is allowed to go.
-  state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + magnetTurn) * 0.3;
-  state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + magnetTurn) * deltaSeconds);
 
-  const baseSpeed =
-    state.speedState === 'prepared'
+  // Steering past the break is how you get OFF the rail, and it is the only
+  // thing the wheel is for while you are on it. Held for railReleaseSeconds so
+  // one deliberate flick actually leaves, instead of the centreline pull
+  // hauling you straight back the moment you let go.
+  if (Math.abs(input.steer) >= state.tuning.railBreakSteer) {
+    state.railReleaseRemaining = state.tuning.railReleaseSeconds;
+  } else {
+    state.railReleaseRemaining = Math.max(0, state.railReleaseRemaining - deltaSeconds);
+  }
+
+  state.lastRoadPatchId = findRoadPatchUnderRover(state)?.id ?? state.lastRoadPatchId;
+  state.rail = state.railReleaseRemaining > 0 ? undefined : getRailLock(state, Boolean(state.rail));
+
+  if (state.rail) {
+    // On rail the machine is not steered, it is carried. Heading converges on
+    // the track and the chassis is drawn back to the centreline, so a curve you
+    // laid at walking pace can be taken flat out without touching the wheel --
+    // which is the thing that makes a long connected run home worth having.
+    const trackHeading = Math.atan2(state.rail.tangent.y, state.rail.tangent.x);
+    const snap = clamp(state.tuning.railHeadingSnap * deltaSeconds, 0, 1);
+    const correction = angleDifference(trackHeading, state.rover.heading);
+    state.rover.heading = wrapAngle(state.rover.heading + correction * snap);
+    state.rover.turnRate = state.rover.turnRate * 0.7 + (correction * snap / Math.max(deltaSeconds, 0.0001)) * 0.3;
+
+    const pull = clamp(state.tuning.railCenterSnap * deltaSeconds, 0, 1);
+    state.rover.x += (state.rail.center.x - state.rover.x) * pull;
+    state.rover.y += (state.rail.center.y - state.rover.y) * pull;
+  } else {
+    const magnetTurn = getPreparedMagnetTurn(state, input);
+    // Smoothed, because the projection below reads it and a single jittery frame
+    // should not swing where the drone is allowed to go.
+    state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + magnetTurn) * 0.3;
+    state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + magnetTurn) * deltaSeconds);
+  }
+
+  // Rail speed is earned by the road ahead, not by the patch underneath. Ramped
+  // over railRunwayForFullSpeed so a short stub hands you back to ordinary
+  // driving instead of firing you off the end of it at full pelt -- and so the
+  // speed itself tells you how much connected track you have, which is the
+  // readout you need before committing to a run home.
+  const railRunway = state.rail
+    ? clamp(state.rail.runwayAhead / state.tuning.railRunwayForFullSpeed, 0, 1)
+    : 0;
+  const baseSpeed = state.rail
+    ? state.tuning.preparedSpeed + (state.tuning.railSpeed - state.tuning.preparedSpeed) * railRunway
+    : state.speedState === 'prepared'
       ? state.tuning.preparedSpeed
       : state.speedState === 'fabricating'
         ? state.tuning.fabricatingSpeed
@@ -940,12 +1055,17 @@ function runFieldSystem(
   if (state.speedState === 'prepared') {
     state.fieldEmitDistance = 0;
     state.pendingFieldValue = 0;
+    // Running on prepared road lays nothing, so the piece being laid ends here.
+    // The next pass is welded to the road under the tractor instead of starting
+    // an unrelated chain -- see the emit below.
+    state.layingChainId = undefined;
     return;
   }
 
   if (!driveIntent) {
     state.fieldEmitDistance = 0;
     state.pendingFieldValue = 0;
+    state.layingChainId = undefined;
     // The movement step has already said what reversing or swinging is doing,
     // and this ran after it and overwrote both with the pivot line -- so S read
     // as "pivoting in place" while the machine was plainly backing up. Only
@@ -988,6 +1108,20 @@ function runFieldSystem(
     );
     state.pendingFieldValue += state.tuning.crawlFieldPatchMinValue * deltaSeconds;
     state.message = 'Emergency crawl: local reclaim legs are scraping enough residue to keep moving.';
+  }
+
+  // Starting a new pass: weld it to the road just left, and lay the first patch
+  // at once rather than after a full spacing.
+  //
+  // This is where the road's holes came from. The arms lay nothing while the
+  // tractor is on prepared ground, so the first patch of a new pass landed
+  // wherever the machine happened to fall off -- up to a patch spacing past the
+  // end of the old track, with no link between them. Every rail-to-bare
+  // transition left a gap in the geometry and a break in the topology, so a
+  // road driven out and back was never one road: walking it stopped dead at the
+  // depot apron, which is exactly where a run home most needs it not to.
+  if (state.layingChainId === undefined) {
+    state.fieldEmitDistance = state.tuning.fieldEmitDistance;
   }
 
   state.fieldEmitDistance += movedDistance;
@@ -1091,7 +1225,7 @@ function breakDroneClaimIfRoverArrives(state: ContinuousWorldState): boolean {
     state.drone.target = undefined;
     state.drone.targetPatchId = undefined;
     state.drone.reclaimSeconds = 0;
-    state.message = 'You got there first. Drone released the rail and is coming back empty.';
+    state.message = 'You closed on that rail. Drone let go and is coming back empty.';
     return true;
   }
 
@@ -1228,6 +1362,7 @@ function layReturnedRail(state: ContinuousWorldState, patches: number): number {
     y += Math.sin(heading) * spacing;
     state.fields.push({
       id: state.nextFieldId,
+      prevId: index > 0 ? state.nextFieldId - 1 : undefined,
       x,
       y,
       radius: state.tuning.fieldRadius,
@@ -1243,15 +1378,49 @@ function layReturnedRail(state: ContinuousWorldState, patches: number): number {
 
 function addFieldPatch(state: ContinuousWorldState, value: number): void {
   const offset = state.speedState === 'crawl' ? 6 : 14;
+  const x = state.rover.x - Math.cos(state.rover.heading) * offset;
+  const y = state.rover.y - Math.sin(state.rover.heading) * offset;
   state.fields.push({
     id: state.nextFieldId,
-    x: state.rover.x - Math.cos(state.rover.heading) * offset,
-    y: state.rover.y - Math.sin(state.rover.heading) * offset,
+    prevId: findJoinablePatchId(state, { x, y }),
+    x,
+    y,
     radius: state.speedState === 'crawl' ? Math.max(12, state.tuning.fieldRadius * 0.59) : state.tuning.fieldRadius,
     value,
     age: 0
   });
+  state.layingChainId = state.nextFieldId;
   state.nextFieldId += 1;
+}
+
+// What this patch continues from. Prefer the patch laid immediately before it,
+// and otherwise join whatever road it physically touches.
+//
+// The link has to be earned by adjacency, not by id order. The old tangent
+// treated any two patches within 2.8 radii -- 129 units, five spacings -- as
+// the same stretch, which welded unrelated passes together and made the road
+// unreadable. But refusing to join anything at all is the opposite failure: the
+// arms stop while the tractor is on road and restart when it falls off, so a
+// road driven out and back came home as a pile of two-patch stubs. Joining
+// within a spacing and a half is real overlap: patches that close together are
+// one continuous piece of road whatever pass laid them, and the tractor can
+// drive from one onto the other without leaving the track.
+function findJoinablePatchId(state: ContinuousWorldState, at: Vec2): number | undefined {
+  const reach = state.tuning.fieldEmitDistance * 1.5;
+  const previous = state.layingChainId !== undefined
+    ? state.fields.find((field) => field.id === state.layingChainId)
+    : undefined;
+  if (previous && distance(previous, at) <= reach * 2) return previous.id;
+
+  let best: number | undefined;
+  let bestDistance = reach;
+  for (const field of state.fields) {
+    const fieldDistance = distance(field, at);
+    if (fieldDistance > bestDistance) continue;
+    best = field.id;
+    bestDistance = fieldDistance;
+  }
+  return best;
 }
 
 function preserveFieldPatches(state: ContinuousWorldState): void {
@@ -1352,6 +1521,168 @@ function getPreparedFieldMagnet(state: ContinuousWorldState): { correction: numb
     correction: angleDifference(Math.atan2(desired.y, desired.x), state.rover.heading),
     strength: clamp(totalWeight, 0.12, 1)
   };
+}
+
+// Where the connected track under the tractor runs, and how far it runs for.
+//
+// This is the piece the road never had. Prepared coverage answered "am I on
+// something" and the magnet answered "roughly which way does the stuff near me
+// point", but neither could answer "is this one continuous piece, and where
+// does it go" -- so laid road could never be a rail, only a patch of faster
+// floor with a nudge attached. Walking the chain answers both, and everything
+// the rail does is built on it: the heading snap, the centreline pull, the
+// speed, and the runway readout that tells you whether flooring it gets you
+// home.
+export function getRailLock(state: ContinuousWorldState, held = false): RailLock | undefined {
+  // Hysteresis, the same shape crawl already uses. Catching the rail should be
+  // easy and losing it should take something happening: without this the lock
+  // dropped and recaught twenty times in a thirty-six second day, which is a
+  // speed swing between 236 and 74 every second and a half. Changing what the
+  // machine IS that often is most of what "not smooth" means from the seat.
+  const captureDistance = state.tuning.railCaptureDistance * (held ? 1.7 : 1);
+  const captureAlignment = state.tuning.railCaptureAlignment * (held ? 0.45 : 1);
+  const byId = new Map<number, FieldPatch>();
+  const nextOf = new Map<number, FieldPatch>();
+  for (const field of state.fields) {
+    if (!isRailworthy(state, field)) continue;
+    byId.set(field.id, field);
+  }
+  for (const field of byId.values()) {
+    if (field.prevId !== undefined && byId.has(field.prevId)) nextOf.set(field.prevId, field);
+  }
+
+  // The nearest piece of track, not the nearest patch: a patch whose chain
+  // neighbours are gone is a stub, and locking onto a stub is what made the old
+  // magnet swing the machine at nothing.
+  let best: FieldPatch | undefined;
+  let bestDistance = captureDistance;
+  for (const field of byId.values()) {
+    const fieldDistance = distance(state.rover, field);
+    if (fieldDistance > bestDistance) continue;
+    const previous = field.prevId !== undefined ? byId.get(field.prevId) : undefined;
+    if (!previous && !nextOf.get(field.id)) continue;
+    best = field;
+    bestDistance = fieldDistance;
+  }
+  if (!best) return undefined;
+
+  const previous = best.prevId !== undefined ? byId.get(best.prevId) : undefined;
+  const next = nextOf.get(best.id);
+  const from = previous ?? best;
+  const to = next ?? best;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0.001) return undefined;
+
+  // Oriented to the way the tractor is pointing, so the same physical track
+  // works in both directions -- which is the entire point of turning round and
+  // running home on it.
+  const forward = Math.cos(state.rover.heading) * dx + Math.sin(state.rover.heading) * dy >= 0 ? 1 : -1;
+  const tangent = { x: (dx / length) * forward, y: (dy / length) * forward };
+  if (Math.cos(state.rover.heading) * tangent.x + Math.sin(state.rover.heading) * tangent.y < captureAlignment) {
+    return undefined;
+  }
+
+  // Project onto the centreline through the nearest patch rather than onto the
+  // patch itself, so the pull is sideways onto the track and never backwards
+  // along it.
+  const alongX = state.rover.x - best.x;
+  const alongY = state.rover.y - best.y;
+  const along = alongX * tangent.x + alongY * tangent.y;
+  const center = { x: best.x + tangent.x * along, y: best.y + tangent.y * along };
+  const offset = (state.rover.x - center.x) * -tangent.y + (state.rover.y - center.y) * tangent.x;
+
+  return {
+    tangent,
+    center,
+    offset,
+    runwayAhead: measureRunway(byId, nextOf, best, tangent)
+  };
+}
+
+// The piece of road the tractor is standing on, whether or not it is locked to
+// it. Used to weld a new pass onto the old track at the moment the arms restart.
+function findRoadPatchUnderRover(state: ContinuousWorldState): FieldPatch | undefined {
+  let best: FieldPatch | undefined;
+  let bestDistance = state.tuning.fieldRadius;
+  for (const field of state.fields) {
+    if (!isRailworthy(state, field)) continue;
+    const fieldDistance = distance(state.rover, field);
+    if (fieldDistance > bestDistance) continue;
+    best = field;
+    bestDistance = fieldDistance;
+  }
+  return best;
+}
+
+function isRailworthy(state: ContinuousWorldState, field: FieldPatch): boolean {
+  return field.age >= state.tuning.preparedFieldMinAgeSeconds && field.value >= state.tuning.preparedFieldMinValue;
+}
+
+// How much connected track is left in front of you. Walking the chain the way
+// the tractor is facing gives an honest number even where the drone has taken a
+// bite out of the middle: the walk stops at the hole, because that is exactly
+// where the tractor will drop off the rail.
+function measureRunway(
+  byId: Map<number, FieldPatch>,
+  nextOf: Map<number, FieldPatch>,
+  from: FieldPatch,
+  tangent: Vec2
+): number {
+  const seen = new Set<number>([from.id]);
+  // The direction carried along the walk, updated at every patch. Holding the
+  // starting tangent for the whole run was wrong on exactly the roads that
+  // matter: a track that curves bends away from where it started, so the walk
+  // either stopped at the bend or jumped to a different branch, and the runway
+  // readout swung between 27 and 368 on consecutive frames. A number you cannot
+  // trust is worse than no number, because the whole point of it is deciding
+  // whether to turn round and floor it.
+  let heading = { ...tangent };
+  let current = from;
+  let total = 0;
+
+  const step = (): FieldPatch | undefined => {
+    const next = nextOf.get(current.id);
+    const previous = current.prevId !== undefined ? byId.get(current.prevId) : undefined;
+    for (const candidate of [next, previous]) {
+      if (!candidate || seen.has(candidate.id)) continue;
+      if ((candidate.x - current.x) * heading.x + (candidate.y - current.y) * heading.y > 0) return candidate;
+    }
+
+    // The chain ended, but the road may not have. A pass laid to bridge a gap
+    // is its own chain, and where it meets the old track the tractor carries
+    // straight on, so the runway has to as well -- otherwise the readout would
+    // call a route home short at exactly the junction you built to make it
+    // long. Only scanned when a chain runs out, never per step.
+    let hop: FieldPatch | undefined;
+    let hopDistance = current.radius;
+    for (const candidate of byId.values()) {
+      if (seen.has(candidate.id)) continue;
+      if ((candidate.x - current.x) * heading.x + (candidate.y - current.y) * heading.y <= 0) continue;
+      const gap = distance(current, candidate);
+      if (gap > hopDistance) continue;
+      hop = candidate;
+      hopDistance = gap;
+    }
+    return hop;
+  };
+
+  // Bounded so a chain that loops back on itself cannot spin here forever.
+  for (let index = 0; index < 400; index += 1) {
+    const next = step();
+    if (!next) break;
+    const gap = distance(current, next);
+    if (gap > 0.001) {
+      // Turn with the road rather than through it. A track can bend as sharply
+      // as the tractor laid it, and the walk has to bend with it.
+      heading = { x: (next.x - current.x) / gap, y: (next.y - current.y) / gap };
+    }
+    total += gap;
+    seen.add(next.id);
+    current = next;
+  }
+  return total;
 }
 
 function getPreparedFieldTangent(fields: FieldPatch[], index: number): Vec2 | undefined {

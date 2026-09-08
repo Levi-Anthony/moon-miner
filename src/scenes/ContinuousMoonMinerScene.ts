@@ -706,6 +706,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private cameraToggleControls = new Map<BooleanCameraControlKey, HTMLInputElement>();
   private debugOverlayVisible = false;
   private previousDroneStatus: DroneStatus = 'ready';
+  private previousRailed = false;
   private previousSpeedState: SpeedState = 'prepared';
   private previousPhase: ContinuousPhase = 'playing';
   private previousOre = 0;
@@ -2397,8 +2398,22 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       }
     }
 
+    // The rail catching is the single best moment the machine has, so it gets
+    // said out loud with the number that matters: how much connected track you
+    // just picked up.
+    const railedNow = Boolean(this.state.rail);
+    if (railedNow !== this.previousRailed) {
+      if (railedNow) {
+        this.addEffect('sprint', this.state.rover.x, this.state.rover.y, 620);
+        this.showEventMessage(`On rail. ${Math.round(this.state.rail?.runwayAhead ?? 0)}m of track ahead.`, 1200, timeMs, 1);
+      } else {
+        this.showEventMessage('Off the rail. Steering is yours again.', 900, timeMs, 1);
+      }
+    }
+    this.previousRailed = railedNow;
+
     if (previousSpeedState !== this.state.speedState) {
-      if (this.state.speedState === 'prepared') {
+      if (this.state.speedState === 'prepared' && !railedNow) {
         this.addEffect('sprint', this.state.rover.x, this.state.rover.y, 620);
         this.showEventMessage('Your own road. Free to drive, and the arms can mine.', 1200, timeMs, 1);
       }
@@ -3445,7 +3460,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private drawFieldRibbon(
-    fields: Array<{ x: number; y: number; radius: number; value: number; age: number }>,
+    fields: Array<{ id: number; prevId?: number; x: number; y: number; radius: number; value: number; age: number }>,
     color: number,
     reserved: boolean
   ): void {
@@ -3471,20 +3486,53 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  private fieldSections<T extends Vec2>(fields: T[]): T[][] {
-    const sections: T[][] = [];
-    let current: T[] = [];
+  // Draw the road along the links the road actually has, so what you see is the
+  // same object the rail follows.
+  //
+  // This used to group by array order and a flat 92 unit proximity gate, which
+  // is the same heuristic the movement code used to use for its tangent and it
+  // fails the same way: two unrelated passes through one area were drawn as a
+  // single ribbon, and a stretch the drone had bitten a hole in was drawn
+  // continuous across the hole. The picture said "one road" where the machine
+  // would fall off, which is most of why the road read as inscrutable.
+  private fieldSections<T extends Vec2 & { id: number; prevId?: number }>(fields: T[]): T[][] {
+    const byId = new Map<number, T>();
+    for (const field of fields) byId.set(field.id, field);
 
+    // Heads are the patches nothing in this set is chained to.
+    const linked = new Set<number>();
     for (const field of fields) {
-      const previous = current[current.length - 1];
-      if (previous && Math.hypot(field.x - previous.x, field.y - previous.y) > 92) {
-        if (current.length > 0) sections.push(current);
-        current = [];
-      }
-      current.push(field);
+      if (field.prevId !== undefined && byId.has(field.prevId)) linked.add(field.prevId);
     }
 
-    if (current.length > 0) sections.push(current);
+    const nextOf = new Map<number, T>();
+    for (const field of fields) {
+      if (field.prevId !== undefined && byId.has(field.prevId)) nextOf.set(field.prevId, field);
+    }
+
+    const sections: T[][] = [];
+    const walked = new Set<number>();
+    const walk = (head: T): void => {
+      const section: T[] = [];
+      let current: T | undefined = head;
+      while (current && !walked.has(current.id)) {
+        walked.add(current.id);
+        section.push(current);
+        current = nextOf.get(current.id);
+      }
+      if (section.length > 0) sections.push(section);
+    };
+
+    for (const field of fields) {
+      if (walked.has(field.id)) continue;
+      const isHead = field.prevId === undefined || !byId.has(field.prevId);
+      if (isHead) walk(field);
+    }
+    // Anything left is part of a chain that closes on itself; start it anywhere.
+    for (const field of fields) {
+      if (!walked.has(field.id)) walk(field);
+    }
+    void linked;
     return sections;
   }
 
@@ -4528,6 +4576,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private getSpeedStateDisplay(): { label: string; detail: string; color: number; fill: number; text: string; subtext: string } {
+    // Rail gets its own chip, and the detail line is the runway rather than a
+    // mood word. Before committing to a run home the only question is how much
+    // connected track is ahead, and this is where it is answered.
+    if (this.state.rail) {
+      return {
+        label: 'Rail',
+        detail: this.getRailStatusLine(),
+        color: 0xb6ff6c,
+        fill: 0x1e3a12,
+        text: '#f4fff0',
+        subtext: '#d3ffb2'
+      };
+    }
+
     if (this.state.speedState === 'prepared') {
       return {
         label: 'Sprint',
@@ -4932,6 +4994,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (this.state.phase !== 'playing') return false;
     if (this.state.drone.status !== 'ready') return false;
     return this.state.speedState === 'crawl' || this.state.nanobots / this.state.maxNanobots < this.state.tuning.droneUrgencyRatio;
+  }
+
+  // What the player needs before committing to a run home: how much connected
+  // track is under and ahead of them.
+  private getRailStatusLine(): string {
+    if (!this.state.rail) return 'no rail';
+    return `${Math.round(this.state.rail.runwayAhead)}m of track`;
   }
 
   private getDroneStatusLine(): string {

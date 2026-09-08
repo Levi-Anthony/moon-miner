@@ -215,6 +215,12 @@ const SEAM_WORKED_OUT_ORE = 0.6;
 // the policy does not retry every tick once stock is low and nothing is legal
 // to lift.
 const LAUNCH_RETRY_SECONDS = 2.5;
+
+// How closely a rail has to point at where you are going before riding it beats
+// steering off it. Loose on purpose: a rail that is roughly right and four
+// times as fast beats a straight line on bare ground almost always, which is
+// the judgement the mechanic is asking the player to make.
+const RAIL_RIDE_ALIGNMENT = 0.35;
 const WAYPOINT_ARRIVAL_RADIUS = 58;
 const WAYPOINT_WORKED_OUT_ORE = 0.6;
 
@@ -314,10 +320,20 @@ export function getContinuousSelfPlayPolicyTarget(route: ContinuousSelfPlayRoute
 
 export function getContinuousSelfPlayInput(world: ContinuousWorldState, target: Vec2): ContinuousInput {
   const targetAngle = Math.atan2(target.y - world.rover.y, target.x - world.rover.x);
-  return {
-    steer: clamp(angleDifference(targetAngle, world.rover.heading) / 0.85, -1, 1),
-    throttle: 1
-  };
+  const steer = clamp(angleDifference(targetAngle, world.rover.heading) / 0.85, -1, 1);
+
+  // Let go of the wheel when the rail is already going your way. A player on
+  // track does not steer, and without this the controller could never use the
+  // rail at all: it corrects toward its target every tick, and any correction
+  // past railBreakSteer -- seventeen degrees -- releases the lock. It would
+  // have measured a rail nobody rides and reported the mechanic as worthless.
+  const rail = world.rail;
+  if (rail) {
+    const towardTarget = Math.cos(targetAngle) * rail.tangent.x + Math.sin(targetAngle) * rail.tangent.y;
+    if (towardTarget >= RAIL_RIDE_ALIGNMENT) return { steer: 0, throttle: 1 };
+  }
+
+  return { steer, throttle: 1 };
 }
 
 // Spend road when the tank says to, not when the clock says to. The threshold

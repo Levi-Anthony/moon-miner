@@ -845,3 +845,102 @@ pickup radius -- the exact change that makes the drone take road the player is
 using. Shipped with the gradient intact and the crawl beat displaced, recorded
 here rather than traded away quietly, because which half to keep is a call
 about how the game should feel.
+
+## The road is a rail now, and it has topology for the first time
+
+Play report: controls and gameplay are not smooth, the road needs far more
+continuity, and driving back onto prepared ground should carry you along it with
+no steering -- so that far from home with connected track behind you, you can
+turn round and floor it without navigating at all, steering only to get off, and
+laying a bridge where there is a gap.
+
+The thing standing in the way was that the road had no topology. Patches were a
+bag of overlapping circles, and everything that needed to know where the road
+ran inferred it from proximity: the movement tangent treated any two patches
+within 2.8 radii -- 129 units, five spacings -- as the same stretch, and the
+renderer grouped ribbons by array order plus a flat 92-unit gate. So two
+unrelated passes through one area read as a single piece of road, a stretch the
+drone had bitten a hole in read as continuous across the hole, and the picture
+said "one road" exactly where the machine would fall off it.
+
+Patches now carry prevId, the patch they were laid after, and every consumer
+walks that instead of guessing. The renderer draws the chains, so what you see
+is the same object the rail follows.
+
+### The road had real holes in it, and nobody had looked
+
+Walking the chains found the arms lay nothing while the tractor is on prepared
+ground, so the first patch of every new pass landed wherever the machine
+happened to fall off -- up to a full spacing past the end of the old track, with
+no link between them. Traced out of the depot: patches 1-7 are the apron,
+patches 8+ are the first pass, and #8 has no predecessor. Every rail-to-bare
+transition left a gap in the geometry and a break in the topology. A road driven
+out and back was never one road, and the break sat at the depot apron -- exactly
+where a run home most needs it not to be.
+
+New patches now join whatever road they physically touch, within a spacing and a
+half, and the first patch of a pass is laid at the boundary rather than a full
+spacing later. 50 of 51 patches in a traced run are chained, against a road that
+previously fell into two-patch stubs.
+
+### What the rail does
+
+On connected track the machine is not steered, it is carried: heading converges
+on the track, the chassis is drawn to the centreline, and speed goes to 236
+against 96 on prepared ground and 74 on bare. Steering past railBreakSteer is
+the only thing the wheel does while you are on it, and it lets go for half a
+second so leaving does not fight the pull dragging you back.
+
+Rail speed is earned by the road AHEAD, not the patch underneath, ramped over
+210 units of runway. A stub hands you back to ordinary driving instead of firing
+you off the end of it, and the speed itself becomes the readout: how fast you
+are going is how much connected track you have. The chip and the event line say
+it in metres as well.
+
+The acceptance test is the report's own words -- drive out, turn round, floor it,
+hands off the wheel:
+
+  out 7s   17.4s on rail, 3160 units, closest approach to the depot 1 unit
+  out 10s  11.5s on rail, 1928 units, closest approach 1 unit
+  out 13s   5.7s on rail,  652 units, closest approach 1 unit
+
+with no steering input at all after the about-face.
+
+### Smoothness was hysteresis
+
+The first build caught and lost the rail twenty times in a thirty-six second
+day: a speed swing between 236 and 74 every second and a half. Changing what the
+machine IS that often is most of what "not smooth" means from the seat. Catching
+the rail is now easy and losing it takes something happening -- retention uses a
+1.7x capture distance and a 0.45x alignment gate, the same shape crawl already
+used. Rail flips fell from 20 to 12, speed-state changes from 16 to 10, and
+short-lived states (under 0.75s) from 7 to 3.
+
+The self-play controller needed the same idea: it corrects toward its target
+every tick, and any correction past seventeen degrees releases the lock, so it
+would have measured a rail nobody rides and reported the mechanic as worthless.
+It now lets go of the wheel when the rail already points roughly where it is
+going.
+
+The ladder survives: 0/19/17/16/0 wins over twenty seeds with ore 6.9, 13.4,
+27.6, 29.8, 38.5. The drone did not become optional -- without it the same
+routes win 0, 0, 0, 5 and 2 times, and the mid ring drops from 27.6 ore to 3.8.
+
+## Correction: the drone's claim break is not a race
+
+The previous entry, the commit message and what I told Levi all described the
+reclaim fix as "the road is yours until you leave it" -- a race the player wins
+by reaching the claimed patch first. That is not what the code does, and the
+measurement is unambiguous: rewritten as an actual race, with the break measured
+against how far the target was at launch, it fires ZERO times across eight seeds
+of self-play and thefts go straight back to 15%. The drone flies at 260 and
+lifts within half a second. There is no race for a 96-unit-per-second tractor to
+win.
+
+What the rule actually does is re-pick the target every tick of the outbound
+flight, and refuse to settle on anything within 120 units of where the tractor
+now is. A guess that goes stale while the drone is in the air is replaced rather
+than committed to. That is worth having -- thefts 15% to 8%, with launches
+slightly up rather than down -- and it is worth naming correctly, because a
+mechanic described as something it is not is how the next person tunes the wrong
+number.
