@@ -97,8 +97,16 @@ npm run verify:known-green
 npm run smoke:continuous
 ```
 
-4. Record the exact pass/fail result in `PROGRESS.md`.
-5. If the work is good, make a Git checkpoint.
+4. Check dependencies separately:
+
+```bash
+npm run verify:audit
+```
+
+This is its own step because it is not part of the baseline. `npm audit` reads a live advisory feed, so it can turn red without anyone changing the code. CI also runs it weekly.
+
+5. Record the exact pass/fail result in `PROGRESS.md`.
+6. If the work is good, make a Git checkpoint.
 
 ## Plain-English Git Model
 

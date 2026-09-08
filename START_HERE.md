@@ -252,7 +252,9 @@ Two things not to assume from that:
 - **Branches differ.** The open PR #1 branch fails smoke with `Expected tactical view mode, got chase.` A green `main` says nothing about a branch.
 - **This section ages.** `npm audit` reads a live advisory feed, so it can go red with no code change at all. Between July 1 and September 8, 2026 this section was wrong in both directions at once: it called smoke red while smoke passed, and called audit clean while audit was failing on two high-severity advisories. Nobody noticed, because nothing re-runs these commands automatically.
 
-Do not let an agent say "all checks pass" unless it names the date, the branch, and the commit it measured. Re-run the commands; do not quote this section as evidence.
+Do not let an agent say "all checks pass" unless it includes the current known-red status or has actually fixed it.
+
+As of September 8, 2026 nothing is known red on `main`. So an agent claiming green must also say which branch and which commit it measured, because a branch can differ. Re-run the commands; do not quote this section as evidence.
 
 Since September 8, 2026 these checks also run in GitHub Actions on every push and pull request, so a red result shows up on the pull request instead of waiting for someone to notice. That is the actual fix for how this section went stale: it was hand-maintained, and nothing re-ran the commands for two months.
 
