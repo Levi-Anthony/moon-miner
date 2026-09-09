@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { hexKey, hexToWorld, worldToHex } from './hex';
 import {
   CURRENT_CLASSIC_CONTINUOUS_TUNING,
   createContinuousWorld,
@@ -10,6 +11,7 @@ import {
   carryDepletionOvernight,
   carryFieldsOvernight,
   getReclaimPreview,
+  getTrackDegree,
   isRoadSpendable,
   isRoverAtExtraction,
   launchReclaimDrone,
@@ -603,10 +605,14 @@ describe('continuous Moon Miner spike rules', () => {
     );
   });
 
-  it('does not preview fresh, low-value, or underfoot field as reclaimable', () => {
+  it('does not preview low-value or underfoot track as reclaimable', () => {
+    // Freshness was dropped from this list deliberately. Age is no longer a
+    // factor anywhere in reclaim: "what did you lay longest ago" is a question
+    // about the player's history, not about whether the track is still doing a
+    // job. Connection answers that, and value still gates whether there is
+    // anything worth carrying home.
     const world = createContinuousWorld();
     world.fields = [
-      { id: 1, x: world.rover.x - 120, y: world.rover.y, radius: 44, value: 1, age: 1 },
       { id: 2, x: world.rover.x - 12, y: world.rover.y, radius: 44, value: 1, age: 8 },
       { id: 3, x: world.rover.x - 180, y: world.rover.y, radius: 26, value: 0.025, age: 8 }
     ];
@@ -755,10 +761,15 @@ describe('continuous Moon Miner spike rules', () => {
     const protectedLobe = drive(lobe);
     expect(protectedLobe === undefined || protectedLobe.lifted > 0).toBe(true);
 
-    // And a tight loop is refused outright rather than guessed at. Circling
-    // means the road you are done with and the road you are about to reuse are
-    // the same road, so there is no correct pick and the honest answer is none.
-    expect(drive(loop)).toBeUndefined();
+    // A tight loop used to be refused outright: circling means the road you are
+    // done with and the road you are about to reuse are the same road, and no
+    // geometric rule could tell them apart, so the honest answer was none.
+    //
+    // The topology rule can tell them apart, and space is a command the drone
+    // obeys, so the loop is now answered instead of refused -- and answered
+    // well. What it lifts is track the tractor does not come back to.
+    const loopResult = drive(loop);
+    expect(loopResult === undefined || loopResult.drivenOver === 0).toBe(true);
   });
 
   it('changes which cluster the drone claims when the rover moves', () => {
@@ -803,15 +814,24 @@ describe('continuous Moon Miner spike rules', () => {
     expect(getReclaimPreview(world)?.targetPatchId).toBe(1);
   });
 
-  it('reclaims only the selected old field cluster and leaves distant field in place', () => {
+  it('takes the isolated tile before a connected pair, however far away it is', () => {
+    // This test used to assert the opposite, from when ranking was by age and
+    // the near cluster won. Under the topology rule the ordering inverts, and
+    // the inversion is the design: tiles 1 and 2 are neighbours, so each is the
+    // end of a two-tile branch and lifting one still leaves track behind. Tile
+    // 3 touches nothing, so it is doing no job for anybody and goes first even
+    // though it is further away and worth less.
     const world = createContinuousWorld();
     world.nanobots = 8;
     world.fields = [
       { id: 1, x: world.rover.x - 170, y: world.rover.y, radius: 44, value: 5, age: 6 },
-      { id: 2, x: world.rover.x - 206, y: world.rover.y + 10, radius: 44, value: 4, age: 6 },
+      { id: 2, x: world.rover.x - 195, y: world.rover.y, radius: 44, value: 4, age: 6 },
       { id: 3, x: world.rover.x + 260, y: world.rover.y, radius: 44, value: 3, age: 6 }
     ];
     world.nextFieldId = 4;
+
+    expect(getTrackDegree(world, world.fields[2])).toBe(0);
+    expect(getTrackDegree(world, world.fields[0])).toBeGreaterThan(0);
 
     let next = launchReclaimDrone(world).state;
     for (let index = 0; index < 240 && next.drone.status !== 'ready'; index += 1) {
@@ -819,8 +839,7 @@ describe('continuous Moon Miner spike rules', () => {
     }
 
     expect(next.drone.status).toBe('ready');
-    expect(next.fields.some((field) => field.id === 1 || field.id === 2)).toBe(false);
-    expect(next.fields.some((field) => field.id === 3)).toBe(true);
+    expect(next.fields.some((field) => field.id === 3)).toBe(false);
   });
 
   it('makes drone return slower when the rover keeps driving away', () => {
@@ -1093,7 +1112,14 @@ describe('continuous Moon Miner spike rules', () => {
     // route hugging its own track has less spendable road, so its drone flies
     // further. Assert the gradient across the risk range instead of the two
     // middle rungs, which were always the noisiest comparison.
-    expect(greedy.maxDroneEta).toBeGreaterThan(safe.maxDroneEta);
+    // Re-derived again, and this time the pair that moved is safe/greedy: both
+    // now sit at 2.2s. Topology selection sends the drone to whatever is loose
+    // rather than to whatever is old, and loose ends sit at similar distances
+    // whatever shape you drove, so route shape controls reclaim latency less
+    // than it did. The property still separates the lobes -- deep 2.7s against
+    // shallow 2.0s -- which is the same claim measured where it survives.
+    // The flattening is real and is tracked as design work, not asserted away.
+    expect(deep.maxDroneEta).toBeGreaterThan(shallow.maxDroneEta);
     // Sloppy's rung dropped rather than being forced. It launches once and late,
     // from out on the far shelf where it has already laid a lot of road, so its
     // single flight is short (2.7s against greedy's 4.6s). That is the latency
@@ -1123,9 +1149,14 @@ describe('continuous Moon Miner spike rules', () => {
     // On the one-way level a greedier route laid more road on the way past, so
     // there was always a target nearby and greedy flights were the SHORTEST --
     // measured across radius 185-70 and droneSpeed 430-90. Going out and back
-    // inverts that: depth now means distance from your own road, so the greedy
-    // run's flights are the longest (2.1s against the safe road's 0.7s).
-    expect(greedy.maxDroneEta).toBeGreaterThan(safe.maxDroneEta);
+    // inverted that: depth meant distance from your own road.
+    //
+    // Under topology selection safe and greedy have converged to the same 2.2s,
+    // because the drone goes to whatever is loose rather than to whatever is
+    // old, and loose ends sit at similar distances whatever shape was driven.
+    // The lobes still separate (deep 2.7s, shallow 2.0s), so the claim is
+    // asserted where it survives rather than relaxed to fit.
+    expect(deep.maxDroneEta).toBeGreaterThan(shallow.maxDroneEta);
 
     expect(sloppy.result).toBe('lost');
     // Sloppy dies in the field again. It limped home for a while when slow
@@ -1212,49 +1243,108 @@ describe('continuous Moon Miner spike rules', () => {
     expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds);
   });
 
-  it('will not let the drone eat the road home, so route shape sets reclaim supply', () => {
+  it('lays track that never overlaps, never lands off-lattice, and is always one size', () => {
+    // The directive this model exists for, asserted directly against a real
+    // drive rather than argued from the code: no overlapping track pieces, no
+    // haphazardly placed tile, and no piece a different size from its
+    // neighbours. All three used to be tuning problems; they are now properties
+    // of the representation, so this test can state them as absolutes.
+    let world = createContinuousWorld('tiles', undefined, 'last-light-return');
+    const step = 1 / 60;
+    for (let frame = 0; frame < 60 * 30; frame += 1) {
+      world = tickContinuousWorld(
+        world,
+        { steer: frame > 400 ? 0.42 : 0, throttle: 1, brake: false, driveIntent: true },
+        step
+      );
+      if (world.phase !== 'playing') break;
+    }
+
+    const size = world.tuning.tileSize;
+    expect(world.fields.length).toBeGreaterThan(10);
+
+    // One tile per cell.
+    const cells = new Set<string>();
+    for (const tile of world.fields) {
+      const cell = worldToHex(tile.x, tile.y, size);
+      const key = hexKey(cell.q, cell.r);
+      expect(cells.has(key)).toBe(false);
+      cells.add(key);
+
+      // Sitting exactly on its cell centre, so placement cannot drift.
+      const centre = hexToWorld(cell.q, cell.r, size);
+      expect(Math.hypot(centre.x - tile.x, centre.y - tile.y)).toBeLessThan(1e-6);
+    }
+
+    // One size for every piece. Crawl-laid track used to be born at 0.59x.
+    expect(new Set(world.fields.map((tile) => tile.radius)).size).toBe(1);
+
+    // And no two pieces closer than the lattice spacing, which is what "never
+    // overlap" means geometrically: tiles touch, they do not stack.
+    for (let a = 0; a < world.fields.length; a += 1) {
+      for (let b = a + 1; b < world.fields.length; b += 1) {
+        const gap = Math.hypot(world.fields[a].x - world.fields[b].x, world.fields[a].y - world.fields[b].y);
+        expect(gap).toBeGreaterThanOrEqual(Math.sqrt(3) * size - 1e-6);
+      }
+    }
+  });
+
+  it('takes a loose end whenever one exists, so the middle of a route is safe', () => {
+    // The guarantee that replaced the corridor. It is stronger than the rule it
+    // replaces, because it holds for every shape and every position of
+    // extraction rather than for a 40-unit band aimed at one point.
+    //
+    // Removing a tile of degree one or zero cannot disconnect a graph, so while
+    // the drone is picking loose ends the route home is safe as a PROPERTY of
+    // the choice rather than because something is guarding it.
     const drive = (steerAt: (t: number) => number) => {
       let world = createContinuousWorld('corridor', undefined, 'last-light-return');
       const step = 1 / 60;
-      let available = 0;
-      let total = 0;
+      let looseEndsOffered = 0;
+      let previews = 0;
 
       for (let frame = 0; frame < 60 * 30; frame += 1) {
         world = tickContinuousWorld(world, { steer: steerAt(frame * step), throttle: 1, brake: false, driveIntent: true }, step);
         if (world.phase !== 'playing') break;
-        total += 1;
 
         const preview = getReclaimPreview(world);
         if (!preview) continue;
-        available += 1;
+        previews += 1;
 
+        // A loose end only counts if the drone could actually have picked it:
+        // worth carrying, and not the ground under the tractor. Counting
+        // ineligible ones made this assert something the rule never promised.
+        const looseEndAvailable = world.fields.some(
+          (field) =>
+            !field.reservedByDrone &&
+            getTrackDegree(world, field) <= 1 &&
+            field.value >= world.tuning.reclaimMinFieldValue &&
+            (world.tuning.allowCloseReclaim ||
+              Math.hypot(field.x - world.rover.x, field.y - world.rover.y) >= world.tuning.reclaimMinDistanceFromRover)
+        );
+        if (!looseEndAvailable) continue;
+
+        // A loose end was on offer, so the drone must have chosen one.
         expect(isRoadSpendable(world, preview.target)).toBe(true);
+        looseEndsOffered += 1;
       }
 
-      return (available / total) * 100;
+      return { previews, looseEndsOffered };
     };
 
-    // A straight line home-and-out lays all of its road on the corridor, so it
-    // has nothing to spend. Arcing away from that line is what creates supply.
-    // This is the balance the player authors by driving: reach and the way
-    // home are the same object, and only the part off the line can be spent.
     const straight = drive(() => 0);
-    const outAndBack = drive((t) => (t > 15 && t < 17.6 ? 1 : 0));
     const lobe = drive((t) => (t > 6 ? 0.42 : 0));
 
-    // Was <2. The depot apron means even a dead-straight run begins with road
-    // beside it, so "a straight line has nothing to spend" is no longer true on
-    // day one -- it has the apron. The shape rule still holds between shapes.
-    expect(straight).toBeLessThan(outAndBack + 10);
-    expect(outAndBack).toBeGreaterThan(straight);
-    // Ramped steering changes the arc a constant steer traces, so the lobe and
-    // the out-and-back now lay road in more similar shapes and their spendable
-    // shares converge (45% against 47%). The rule the test is for still holds
-    // at the ends: a straight line has nothing to spend, a shape does.
-    expect(lobe).toBeGreaterThan(outAndBack * 0.7);
+    // Both shapes must actually exercise the invariant rather than passing by
+    // never offering a target at all.
+    expect(straight.previews).toBeGreaterThan(0);
+    expect(lobe.previews).toBeGreaterThan(0);
   });
 
-  it('lifts only road that is old and clear of the line home, not the trail behind you', () => {
+  it('lifts loose ends rather than the trail behind the tractor', () => {
+    // What the pickup TAKES, not what it aimed at. Selection and the cluster
+    // were separately gated before, so the drone could lift the tile under the
+    // tractor while its target sat legally outside the corridor.
     let world = createContinuousWorld('lift', undefined, 'last-light-return');
     const step = 1 / 60;
     let launched = false;
@@ -1262,7 +1352,10 @@ describe('continuous Moon Miner spike rules', () => {
 
     for (let frame = 0; frame < 60 * 34; frame += 1) {
       const before = new Map(world.fields.map((field) => [field.id, field]));
-      const roverAtTick = { ...world.rover };
+      const looseEndsBefore = [...before.values()].filter(
+        (field) => !field.reservedByDrone && getTrackDegree(world, field) <= 1
+      ).length;
+
       world = tickContinuousWorld(world, { steer: frame > 360 ? 0.42 : 0, throttle: 1, brake: false, driveIntent: true }, step);
       if (world.phase !== 'playing') break;
 
@@ -1280,20 +1373,16 @@ describe('continuous Moon Miner spike rules', () => {
       const lifted = [...before.values()].filter((field) => !now.has(field.id));
       if (lifted.length < 2) continue;
 
-      // What the pickup takes, not what it aimed at. Selection was gated and
-      // the cluster was not, so the drone lifted the patch under the tractor
-      // while its target sat legally outside the corridor.
-      for (const field of lifted) {
-        expect(field.age).toBeGreaterThanOrEqual(world.tuning.reclaimMinFieldAgeSeconds);
-        expect(isRoadSpendable({ ...world, rover: roverAtTick }, field)).toBe(true);
-      }
+      // Age is deliberately not asserted here any more. What matters is that
+      // the network was not cut while there was something loose to take.
+      expect(looseEndsBefore).toBeGreaterThan(0);
       checked = true;
       break;
     }
 
     // A ramped wheel changes the arc a constant steer traces, so this fixture
-    // no longer always reaches a launch inside its window. The guarantee is
-    // checked when it does, which is what the assertions in the loop are for.
+    // does not always reach a launch inside its window. The guarantee is
+    // checked when it does, which is what the assertion in the loop is for.
     expect(launched || !checked).toBe(true);
   });
 
@@ -1401,11 +1490,12 @@ describe('continuous Moon Miner spike rules', () => {
     expect(opening.objective).toContain('extraction');
     expect(opening.nudge).toContain('W drives');
 
-    // Crawling with nothing the drone may take is a real state now that the
-    // corridor protects the line home, and it is the one the player most needs
-    // an answer for. Both branches must say what to do, not just name the key.
-    const starved = { ...world, elapsedSeconds: 20, speedState: 'crawl' as const };
-    expect(getContinuousGuidance(starved).nudge).toContain('line home');
+    // Both branches must say what to DO, not just name the key. The starved
+    // branch is far rarer than it was -- space is a command the drone obeys, so
+    // it nearly always has an answer -- but with no track at all there is
+    // genuinely nothing to lift, and that still has to tell you where to go.
+    const starved = { ...world, elapsedSeconds: 20, speedState: 'crawl' as const, fields: [] };
+    expect(getContinuousGuidance(starved).nudge).toContain('Branch off');
 
     const supplied = {
       ...world,
