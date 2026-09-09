@@ -253,6 +253,13 @@ export interface ContinuousTuning {
   railRunwayForFullSpeed: number;
   lowStockWarningRatio: number;
   droneUrgencyRatio: number;
+  // Refill rate (stock per second) while moving on prepared track when drone is
+  // not flying. Zero makes prepared state a pure cost-free waiting state (no
+  // fabrication, no refill). Positive values create the consequence that long
+  // drone flights are costly -- they're time you don't spend refilling.
+  // Set low (~0.05-0.1) so a deployed drone creates real pressure but doesn't
+  // make prepared movement feel like active refill.
+  preparedRefillPerSecond: number;
 }
 
 export type DynamicsPresetId = 'stable-first-run' | 'current-classic' | 'drone-playground' | 'strict-logistics';
@@ -406,7 +413,12 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   railCenterSnap: 4.2,
   railRunwayForFullSpeed: 210,
   lowStockWarningRatio: 0.18,
-  droneUrgencyRatio: 0.32
+  droneUrgencyRatio: 0.32,
+  // Refill while on prepared ground. Zero means no passive refill on track —
+  // stock only refills during crawl. This makes time cost; the drone creates
+  // friction through flight distance (weighted in compareReclaimCandidates),
+  // not through a baseline cost. Tune up if crawl pressure becomes insufficient.
+  preparedRefillPerSecond: 0
 };
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -482,7 +494,10 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // the other way by making the distances uncoverable. So +30% is the most the
   // measurement rig can currently evaluate, not the most the road should pay.
   // The magnet below is doing the larger part of the felt reward.
-  preparedSpeed: 96
+  preparedSpeed: 96,
+  // Refill while on prepared ground. Zero means consequence comes from distance
+  // weighting in drone selection, not from a baseline stock mechanic.
+  preparedRefillPerSecond: 0
 };
 
 export const DEFAULT_DYNAMICS_PRESET_ID: DynamicsPresetId = 'stable-first-run';
@@ -895,6 +910,25 @@ export function cloneContinuousWorld(state: ContinuousWorldState): ContinuousWor
   };
 }
 
+function advanceNanobotStock(state: ContinuousWorldState, deltaSeconds: number): void {
+  // Stock management: refill at different rates based on speed state. This
+  // creates the consequence mechanism for drone timing -- asking when the drone
+  // is out costs you refill time.
+  if (state.speedState === 'prepared') {
+    // Prepared state: on track, slowly refilling. No fabrication cost, so this
+    // is when stock recovery happens. The rate is tuned low (0.15/sec) so bad
+    // timing (long drone flights) is felt as lost refill opportunity.
+    state.nanobots = Math.min(state.maxNanobots, state.nanobots + state.tuning.preparedRefillPerSecond * deltaSeconds);
+  } else if (state.speedState === 'crawl') {
+    // Crawl state: emergency scraping. Refill at the crawl rate, capped by ceiling.
+    state.nanobots = Math.min(
+      state.tuning.crawlRecoveryCeiling,
+      state.nanobots + state.tuning.crawlRecoveryPerSecond * deltaSeconds
+    );
+  }
+  // Fabricating: no refill (stock is only depleted by fabrication in runFieldSystem)
+}
+
 function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInput, deltaSeconds: number): void {
   if (state.phase !== 'playing') return;
 
@@ -906,6 +940,10 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
   }
 
   state.speedState = resolveSpeedState(state);
+  // Stock refill happens independently of field fabrication. This creates the
+  // consequence that long drone flights cost time you would otherwise spend
+  // refilling -- the drone is out, you're not fabricating or refilling as fast.
+  advanceNanobotStock(state, deltaSeconds);
   const driveIntent = Boolean(input.driveIntent);
   const movedDistance = steerAndMoveRover(state, input, deltaSeconds);
   // Derived from the same condition the movement step uses, so the field system
@@ -1116,26 +1154,8 @@ function runFieldSystem(
     state.nanobots = Math.max(0, state.nanobots - spent);
     state.pendingFieldValue += spent * state.tuning.fieldValueMultiplierFromSpentStock;
     state.message = 'Arms are fabricating field just in time. Mining capacity is constrained.';
-  } else {
-    // The ceiling used to be a hardcoded 1.2 while the threshold for leaving
-    // crawl is 2.0, so the scraping legs could never lift the machine past the
-    // line that would let it drive again. Crawl was not a half-fail hinge, it
-    // was an absorbing state with no unaided exit: once in, the only way out
-    // was the drone, for the rest of the run. Traced runs sat at exactly 1.2
-    // for twenty-five straight seconds.
-    //
-    // The ceiling is lifted past the line so the exit exists. The RATE is left
-    // at 0.1/s, which means twenty seconds of scraping to use it -- most of a
-    // day. That is not yet the hinge Levi described, and the reason is honest:
-    // every rate that makes self-rescue practical (0.18 and up) flips the mid
-    // ring from a comfortable win to a loss, and the self-play routes cannot
-    // tell me whether that is the game getting worse or the fixture. Removing
-    // the impossibility costs nothing measurable; making the hinge usable is a
-    // rebalance that needs an instrument I do not have yet.
-    state.nanobots = Math.min(
-      state.tuning.crawlRecoveryCeiling,
-      state.nanobots + state.tuning.crawlRecoveryPerSecond * deltaSeconds
-    );
+  } else if (state.speedState === 'crawl') {
+    // Emergency crawl: scraping residue. Stock refill happens in advanceNanobotStock.
     state.pendingFieldValue += state.tuning.crawlFieldPatchMinValue * deltaSeconds;
     state.message = 'Emergency crawl: local reclaim legs are scraping enough residue to keep moving.';
   }
