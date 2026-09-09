@@ -289,11 +289,6 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
     controls: [
       { key: 'preparedFieldMinAgeSeconds', label: 'Prepared min age', min: 0.1, max: 4, step: 0.05, precision: 2 },
       { key: 'preparedCoverageThreshold', label: 'Coverage threshold', min: 0.02, max: 0.8, step: 0.01, precision: 2 },
-      { key: 'preparedMagnetInfluenceMultiplier', label: 'Magnet influence', min: 0, max: 3.5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetPassiveTurnRate', label: 'Passive turn', min: 0, max: 5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetActiveTurnRate', label: 'Active turn', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCorrectionRange', label: 'Correction range', min: 0.1, max: 2, step: 0.05, precision: 2 }
     ]
   },
   {
@@ -2390,15 +2385,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     // The rail catching is the single best moment the machine has, so it gets
-    // said out loud with the number that matters: how much connected track you
-    // just picked up.
-    const railedNow = Boolean(this.state.rail);
+    const railedNow = this.state.speedState === 'prepared';
     if (railedNow !== this.previousRailed) {
       if (railedNow) {
         this.addEffect('sprint', this.state.rover.x, this.state.rover.y, 620);
-        this.showEventMessage(`On rail. ${Math.round(this.state.rail?.runwayAhead ?? 0)}m of track ahead.`, 1200, timeMs, 1);
+        this.showEventMessage('On prepared road. Running fast.', 1200, timeMs, 1);
       } else {
-        this.showEventMessage('Off the rail. Steering is yours again.', 900, timeMs, 1);
+        this.showEventMessage('Off the road. Fabricating as you go.', 900, timeMs, 1);
       }
     }
     this.previousRailed = railedNow;
@@ -4491,19 +4484,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private getSpeedStateDisplay(): { label: string; detail: string; color: number; fill: number; text: string; subtext: string } {
-    // Rail gets its own chip, and the detail line is the runway rather than a
-    // mood word. Before committing to a run home the only question is how much
-    // connected track is ahead, and this is where it is answered.
-    if (this.state.rail) {
-      return {
-        label: 'Rail',
-        detail: this.getRailStatusLine(),
-        color: 0xb6ff6c,
-        fill: 0x1e3a12,
-        text: '#f4fff0',
-        subtext: '#d3ffb2'
-      };
-    }
 
     if (this.state.speedState === 'prepared') {
       return {
@@ -4727,14 +4707,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.drawStaticText('drone-rail-prepared-coverage', 0, 0, '', 1, '#ffffff');
     }
 
-    if (this.droneRailLab.overlayPreparedMagnetInfluence) {
-      for (const field of this.state.fields) {
-        if (field.age < this.state.tuning.preparedFieldMinAgeSeconds) continue;
-        const screen = this.project(field);
-        this.graphics.lineStyle(1, 0x78f7df, 0.24);
-        this.graphics.strokeCircle(screen.x, screen.y, field.radius * this.projectedScale(field) * this.state.tuning.preparedMagnetInfluenceMultiplier);
-      }
-    }
 
     if (this.droneRailLab.overlayFieldEmissionPoints || this.droneRailLab.overlayCrawlEmissionPoints) {
       const offset = this.state.speedState === 'crawl' ? 6 : 14;
@@ -4913,12 +4885,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return this.state.speedState === 'crawl' || this.state.nanobots / this.state.maxNanobots < this.state.tuning.droneUrgencyRatio;
   }
 
-  // What the player needs before committing to a run home: how much connected
-  // track is under and ahead of them.
-  private getRailStatusLine(): string {
-    if (!this.state.rail) return 'no rail';
-    return `${Math.round(this.state.rail.runwayAhead)}m of track`;
-  }
 
   private getDroneStatusLine(): string {
     if (this.state.drone.status === 'ready') {
