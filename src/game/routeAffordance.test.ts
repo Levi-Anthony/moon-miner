@@ -10,34 +10,38 @@ import {
   type RouteHome
 } from './routeAffordance';
 
-// Three ways home to the depot at (900, 535) from the western half of
-// last-light-return. They are chosen to differ in BEARING, because that is
-// what makes them topologically distinct rather than three drawings of one
-// path -- the ticket's requirement 1.
+// The three ways home this level actually offers, to the depot at (900, 535).
+//
+// They differ in BEARING, which is what makes them distinct rather than three
+// drawings of one path, and -- since the seams sit north and the lower path
+// runs south -- they also differ in what they are made of. That is the pair of
+// properties requirements 1 and 2 ask for, and it is authored into the terrain
+// rather than asserted here.
 const ROUTES_HOME: RouteHome[] = [
   {
-    id: 'middle-corridor',
-    label: 'back down the middle, over the ground you roaded on the way out',
+    id: 'own-track',
+    label: 'back the way you came, over the road you laid working the seams',
     via: [
-      { x: 450, y: 470 },
-      { x: 568, y: 514 },
-      { x: 712, y: 486 }
+      { x: 452, y: 396 },
+      { x: 552, y: 512 },
+      { x: 700, y: 468 }
     ]
   },
   {
     id: 'north-arc',
-    label: 'north over the shelf, longer but away from the outbound track',
+    label: 'north over the shelf, away from the outbound track and entirely raw',
     via: [
-      { x: 600, y: 280 },
-      { x: 830, y: 250 }
+      { x: 606, y: 282 },
+      { x: 812, y: 268 }
     ]
   },
   {
-    id: 'south-swing',
-    label: 'south past the bench, longest and entirely raw',
+    id: 'lower-path',
+    label: 'cut south across raw ground onto the authored road, then run it home',
     via: [
-      { x: 400, y: 640 },
-      { x: 660, y: 660 }
+      { x: 356, y: 626 },
+      { x: 520, y: 638 },
+      { x: 700, y: 604 }
     ]
   }
 ];
@@ -55,7 +59,7 @@ function driveOutboundTo(target: Vec2, untilSeconds: number): ContinuousWorldSta
   return world;
 }
 
-const WEST_CUT: Vec2 = { x: 450, y: 470 };
+const WEST_CUT: Vec2 = { x: 452, y: 396 };
 
 describe('route affordance', () => {
   it('forks a live state without disturbing it, so candidates are compared from the same moment', () => {
@@ -102,14 +106,17 @@ describe('route affordance', () => {
         `crawl ${separation.crawlSpread}, separated: ${separation.separated}\n`
     );
 
-    // Asserted on the instrument, not on the game: the spreads must be real
-    // numbers derived from every candidate, so the reading can be trusted
-    // whichever way it comes out. What the reading currently SAYS about
-    // last-light-return is recorded in DEV-16, not frozen into an assertion --
-    // pinning today's answer here would make the test defend the defect.
-    expect(Number.isFinite(separation.sunSpread)).toBe(true);
-    expect(Number.isFinite(separation.nanobotSpread)).toBe(true);
-    expect(separation.sunSpread).toBeGreaterThanOrEqual(0);
+    // This is a gate now.
+    //
+    // It was deliberately left as a recorded reading while the answer was no:
+    // routes home differed in sun and cost 0.0 nanobots between them, because
+    // reclaim minted stock and the tank never emptied, so pinning it would
+    // have made the test defend the defect. Conservation gave a route a stock
+    // cost and the terrain gave the routes different ground, so requirement 2
+    // is met and the test can hold it.
+    expect(separation.separated).toBe(true);
+    expect(separation.nanobotSpread).toBeGreaterThan(0);
+    expect(separation.sunSpread).toBeGreaterThan(0);
   });
 
   it('reports whether the map affords a choice of route home', () => {
@@ -129,5 +136,12 @@ describe('route affordance', () => {
     for (const sample of verdict.samples) {
       expect(ROUTES_HOME.some((route) => route.id === sample.winner)).toBe(true);
     }
+
+    // And this is the gate the whole file exists for: the best way home is not
+    // the same one from every state. A map where one route always wins offers
+    // paths, not a decision. This is also the acceptance test a procedural
+    // generator has to pass before it can be trusted to author these.
+    expect(verdict.affordsDecision).toBe(true);
+    expect(verdict.dominantRoute).toBeUndefined();
   });
 });
