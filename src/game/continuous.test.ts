@@ -233,6 +233,50 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.message).toBe('Chassis pivoting in place. Field fabrication is idle.');
   });
 
+  it('rotates in place from a standstill on steer alone, with no pivot flag passed', () => {
+    const world = createContinuousWorld();
+    world.rover.heading = 0.5;
+    const start = { ...world.rover };
+
+    // No pivotIntent in the input at all. Standing still and steering is the
+    // whole condition, so rotate-only has to be available on its own.
+    const next = tickContinuousWorld(world, { steer: -1, throttle: 0, driveIntent: false }, 0.4);
+
+    expect(next.rover.x).toBe(start.x);
+    expect(next.rover.y).toBe(start.y);
+    expect(next.rover.heading).toBeLessThan(start.heading - 0.5);
+    expect(next.rover.speed).toBe(0);
+  });
+
+  it('reports the turn rate while pivoting, the same as swinging on the spot does', () => {
+    // The two rotate-in-place paths used to differ here: S plus steer assigned
+    // turnRate and bare steer did not, so a pivot from a standstill left the
+    // previous value behind. isOnForwardPath reads heading plus turnRate to
+    // project where the machine is about to be, so a stale rate describes an
+    // arc the rover is not on and the drone protects the wrong road.
+    const pivot = createContinuousWorld();
+    pivot.rover.turnRate = 99;
+    const pivoted = tickContinuousWorld(pivot, { steer: -1, throttle: 0, driveIntent: false }, 0.2);
+
+    const swing = createContinuousWorld();
+    swing.rover.turnRate = 99;
+    const swung = tickContinuousWorld(swing, { steer: -1, throttle: 0, driveIntent: false, reverseIntent: true }, 0.2);
+
+    expect(pivoted.rover.turnRate).not.toBe(99);
+    expect(pivoted.rover.turnRate).toBeLessThan(0);
+    expect(pivoted.rover.turnRate).toBe(swung.rover.turnRate);
+  });
+
+  it('clears the turn rate when standing still without steering', () => {
+    const world = createContinuousWorld();
+    world.rover.turnRate = 99;
+
+    const next = tickContinuousWorld(world, { steer: 0, throttle: 0, driveIntent: false }, 0.2);
+
+    expect(next.rover.turnRate).toBe(0);
+    expect(next.rover.speed).toBe(0);
+  });
+
   it('stopped pivot steering does not move, print field, or spend nanobots', () => {
     const world = createContinuousWorld();
     world.fields = [];

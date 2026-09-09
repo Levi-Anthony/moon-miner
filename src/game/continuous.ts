@@ -895,7 +895,10 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
   state.speedState = resolveSpeedState(state);
   const driveIntent = Boolean(input.driveIntent);
   const movedDistance = steerAndMoveRover(state, input, deltaSeconds);
-  runFieldSystem(state, driveIntent, Boolean(input.pivotIntent), Boolean(input.reverseIntent), movedDistance, deltaSeconds);
+  // Derived from the same condition the movement step uses, so the field system
+  // cannot describe the machine as idle while it is visibly pivoting.
+  const pivoting = !driveIntent && Math.abs(input.steer) > 0.001;
+  runFieldSystem(state, driveIntent, pivoting, Boolean(input.reverseIntent), movedDistance, deltaSeconds);
   const fertileZone = findFertileZoneAt(state, state.rover);
   state.arms = allocateArms(state.speedState, Boolean(fertileZone), driveIntent, state.drone.status);
   runMiningSystem(state, fertileZone, driveIntent, deltaSeconds);
@@ -907,6 +910,7 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
 function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, deltaSeconds: number): number {
   if (!input.driveIntent) {
     const pivotRate = state.speedState === 'prepared' ? 1.0 : state.speedState === 'crawl' ? 0.54 : 0.82;
+    const isSteering = Math.abs(input.steer) > 0.001;
 
     // S on its own backs straight up. Add A or D and the machine stops and
     // swings on the spot instead.
@@ -919,15 +923,30 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     // Bare S doing nothing at all was the other candidate and is worse: a key
     // that waits silently for a second key reads as broken, which is the
     // complaint rather than the fix.
-    if (input.reverseIntent) {
-      if (Math.abs(input.steer) > 0.001) {
-        state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * pivotRate * deltaSeconds);
-        state.rover.turnRate = input.steer * TURN_RATE * pivotRate;
-        state.rover.speed = 0;
-        state.message = 'Swinging on the spot.';
-        return 0;
-      }
+    //
+    // Rotating on the spot is ONE behaviour with one implementation, whether it
+    // was asked for with S plus A/D or with A/D alone from a standstill. It used
+    // to be two paths that only looked alike: the reverse one assigned turnRate
+    // and the bare one did not, so pivoting from a standstill left the previous
+    // turn rate in place. That value is read as live elsewhere -- the forward
+    // path projection asks heading plus turn rate where the machine is about to
+    // be, so a stale one describes an arc the rover is not on, and the drone
+    // protects road accordingly.
+    //
+    // Steering with no drive intent is the whole condition, so rotate-only is
+    // always available from a standstill rather than waiting on a separate
+    // pivot flag to be derived somewhere else.
+    if (isSteering) {
+      state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * pivotRate * deltaSeconds);
+      state.rover.turnRate = input.steer * TURN_RATE * pivotRate;
+      state.rover.speed = 0;
+      state.message = input.reverseIntent
+        ? 'Swinging on the spot.'
+        : 'Chassis pivoting in place. Field fabrication is idle.';
+      return 0;
+    }
 
+    if (input.reverseIntent) {
       const reverseSpeed = state.tuning.fabricatingSpeed * REVERSE_SPEED_RATIO;
       state.rover.x = clamp(state.rover.x - Math.cos(state.rover.heading) * reverseSpeed * deltaSeconds, 34, state.width - 34);
       state.rover.y = clamp(state.rover.y - Math.sin(state.rover.heading) * reverseSpeed * deltaSeconds, 76, state.height - 34);
@@ -937,11 +956,10 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
       return 0;
     }
 
-    if (input.pivotIntent && Math.abs(input.steer) > 0.001) {
-      state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * pivotRate * deltaSeconds);
-      state.message = 'Chassis pivoting in place. Field fabrication is idle.';
-    }
+    // Standing still and not steering: the machine is not turning, and saying so
+    // matters for the same reason the pivot branch above assigns it.
     state.rover.speed = 0;
+    state.rover.turnRate = 0;
     return 0;
   }
 
