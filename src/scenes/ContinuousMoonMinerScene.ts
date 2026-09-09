@@ -2537,11 +2537,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       // pins them to the world, so the grid streams toward you and wraps.
       const camera = this.cameraFocus();
       const axes = this.cameraAxes();
-      const camLateral = camera.x * axes.right.x + camera.y * axes.right.y;
       const camForward = camera.x * axes.forward.x + camera.y * axes.forward.y;
-      const wrapInto = (value: number, min: number, span: number): number =>
-        min + ((((value - min) % span) + span) % span);
-
       const rungPhase = ((camForward % 120) + 120) % 120;
       for (let index = 0; index < 8; index += 1) {
         const forward = 500 - index * 120 - rungPhase;
@@ -2551,18 +2547,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         this.graphics.lineBetween(from.x, from.y, to.x, to.y);
       }
 
-      for (let index = 0; index < 46; index += 1) {
-        if (visualCalm < 0.7 && index % 2 === 1) continue;
-        const point = this.project(
-          this.cameraLocalPoint(
-            wrapInto(-560 + ((index * 173) % 1120) - camLateral, -560, 1120),
-            wrapInto(-330 + ((index * 89) % 840) - camForward, -330, 840)
-          )
-        );
-        const radius = 1 + (index % 3);
-        this.graphics.fillStyle(index % 5 === 0 ? 0x465060 : 0x252c38, (0.32 + 0.33 * visualCalm));
-        this.graphics.fillCircle(point.x, point.y, radius);
-      }
+      // A second speckle field ran here on its own palette and its own density,
+      // stacked over the world-anchored grit in drawRegolith. Two unrelated
+      // ground textures at once is two grounds. The grit survives: it carries
+      // the optical flow the surface needs to read as moving at all.
     }
 
     this.graphics.lineStyle(1, 0x262e3b, 0.8);
@@ -2623,9 +2611,18 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawSky();
     const NEAR = -360;
     const FAR = 2600;
-    const BANDS = 34;
+    // Was 34 bands whose colour ramped at pow(t, 0.55) while their spacing
+    // ramped at pow(t, 2.1). The near bands were therefore both the widest on
+    // screen and the most colour-separated, so the ground read as terraced
+    // steps rather than one surface -- "multiple kinds of different floor".
+    // Colour now ramps on the same curve as depth, which is what aerial
+    // perspective is, and more bands make the remaining steps finer.
+    const BANDS = 48;
     const nearColor = 0x7d7061;
-    const farColor = 0x1b2130;
+    // Matched to the colour drawSky reaches at the horizon (0x2f3444). It was
+    // 0x1b2130, so the furthest ground met the sky in a hard step -- the last
+    // horizontal edge on the floor once the haze strips came off.
+    const farColor = 0x2f3444;
 
     const layout = this.getLayout();
     const horizon = this.horizonScreenY();
@@ -2637,7 +2634,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       const t1 = Math.pow((index + 1) / BANDS, 2.1);
       const forward0 = NEAR + (FAR - NEAR) * t0;
       const forward1 = NEAR + (FAR - NEAR) * t1;
-      const shade = ContinuousMoonMinerScene.mixColor(nearColor, farColor, Math.pow(index / BANDS, 0.55));
+      const shade = ContinuousMoonMinerScene.mixColor(nearColor, farColor, t0);
       this.graphics.fillStyle(shade, 1);
       this.graphics.fillPoints(
         [
@@ -2681,21 +2678,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
           (world.x - gritCamera.x) * gritAxes.forward.x + (world.y - gritCamera.y) * gritAxes.forward.y;
         if (forward < NEAR) continue;
         const depth = (forward - NEAR) / (FAR - NEAR);
-        if (depth > 0.72) continue;
+        // Culled hard at 0.72, which left a seam across the middle distance
+        // where textured ground became flat ground. It fades out instead.
+        if (depth > 0.99) continue;
         const point = this.project(world);
         if (point.y < horizon) continue;
         const tone = hash % 4 === 0 ? 0x8a8072 : 0x4a4640;
-        this.graphics.fillStyle(tone, 0.5 * (1 - depth));
+        this.graphics.fillStyle(tone, 0.5 * Math.pow(1 - depth, 1.7));
         this.graphics.fillCircle(point.x, point.y, (1 + (hash % 3)) * (1 - depth * 0.6));
       }
     }
 
-    // Haze band where ground meets sky.
-    for (let index = 0; index < 7; index += 1) {
-      const spread = 4 + index * 7;
-      this.graphics.fillStyle(0x39414f, 0.16 - index * 0.02);
-      this.graphics.fillRect(0, horizon - spread * 0.35, this.getLayout().width, spread);
-    }
+    // Seven stacked haze strips used to sit here: seven more horizontal edges
+    // on a surface that already had too many.
   }
 
   private drawTacticalBackdrop(layout: SceneLayout, visualCalm: number): void {
@@ -2762,7 +2757,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.drawFertileTerrainBed(zone, visualCalm);
     }
 
-    this.drawPreparedFieldTerrainBeds(visualCalm);
   }
 
   private drawArenaNavigationGuides(): void {
@@ -2977,68 +2971,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.fillPoints(inner, true, true);
   }
 
-  private drawPreparedFieldTerrainBeds(visualCalm: number): void {
-    const preparedFields = [...this.state.fields]
-      .filter((field) => {
-        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds;
-      })
-      .sort((a, b) => a.id - b.id);
-    const sections = this.fieldSections(preparedFields);
 
-    for (const section of sections) {
-      if (section.length === 1) {
-        this.drawPreparedFieldTerrainCap(section[0], visualCalm);
-        continue;
-      }
 
-      for (let index = 0; index < section.length - 1; index += 1) {
-        this.drawPreparedFieldTerrainSegment(section[index], section[index + 1], visualCalm);
-      }
-      this.drawPreparedFieldTerrainCap(section[0], visualCalm);
-      this.drawPreparedFieldTerrainCap(section[section.length - 1], visualCalm);
-    }
-  }
-
-  private drawPreparedFieldTerrainSegment(
-    from: { x: number; y: number; radius: number },
-    to: { x: number; y: number; radius: number },
-    visualCalm: number
-  ): void {
-    const fromScreen = this.project(from);
-    const toScreen = this.project(to);
-    const dx = toScreen.x - fromScreen.x;
-    const dy = toScreen.y - fromScreen.y;
-    const length = Math.hypot(dx, dy);
-    if (length <= 0.01) return;
-
-    const normal = { x: -dy / length, y: dx / length };
-    const fromWidth = this.fieldRoadWidth(from);
-    const toWidth = this.fieldRoadWidth(to);
-    const points = [
-      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
-      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
-      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
-      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
-    ];
-
-    this.graphics.fillStyle(0x193334, 0.12 + visualCalm * 0.06);
-    this.graphics.fillPoints(points, true, true);
-    this.graphics.lineStyle(1, 0x3b5f5c, 0.18 + visualCalm * 0.1);
-    this.graphics.strokePoints(points, true, true);
-  }
-
-  private drawPreparedFieldTerrainCap(
-    field: { x: number; y: number; radius: number },
-    visualCalm: number
-  ): void {
-    const center = this.project(field);
-    const width = this.fieldRoadWidth(field);
-    const yScale = this.shapeYScale();
-    this.graphics.fillStyle(0x193334, 0.1 + visualCalm * 0.05);
-    this.graphics.fillEllipse(center.x, center.y, width * 2, width * 1.15 * yScale);
-    this.graphics.lineStyle(1, 0x3b5f5c, 0.14 + visualCalm * 0.1);
-    this.graphics.strokeEllipse(center.x, center.y, width * 2, width * 1.15 * yScale);
-  }
 
   private terrainFeaturePoint(index: number, salt: number): Vec2 {
     return {
@@ -3486,9 +3420,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       }
     }
 
-    this.drawFieldRibbon(ordinary.filter((field) => !targeted.has(field.id)), 0x6cf5dd, false);
-    this.drawFieldRibbon(ordinary.filter((field) => targeted.has(field.id)), 0xd8a24a, false);
-    this.drawFieldRibbon(reserved, 0xffa06c, true);
+    // ONE ROAD, ONE COLOUR. This used to draw three ribbons in three colours --
+    // cyan ordinary, sand for what the drone is looking at, orange for what it
+    // has claimed -- so the drone's attention repainted the road itself and the
+    // sandy tiles read as a different kind of track. Track is track; what the
+    // drone is doing to it is a state ON it, drawn as a mark over the top.
+    this.drawFieldRibbon([...ordinary, ...reserved], 0x6cf5dd, false);
+    this.drawDroneAttentionMarks(ordinary.filter((field) => targeted.has(field.id)), reserved);
     this.drawFieldBirthMarkers(ordinary);
   }
 
@@ -3567,101 +3505,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return sections;
   }
 
-  private drawFieldSegment(
-    from: { x: number; y: number; radius: number; age: number },
-    to: { x: number; y: number; radius: number; age: number },
-    color: number,
-    reserved: boolean
-  ): void {
-    const fromScreen = this.project(from);
-    const toScreen = this.project(to);
-    const dx = toScreen.x - fromScreen.x;
-    const dy = toScreen.y - fromScreen.y;
-    const length = Math.hypot(dx, dy);
-    if (length <= 0.01) return;
 
-    const normal = { x: -dy / length, y: dx / length };
-    const fromWidth = this.fieldRoadWidth(from);
-    const toWidth = this.fieldRoadWidth(to);
-    const points = [
-      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
-      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
-      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
-      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
-    ];
-    const alpha = Math.min(this.fieldAlpha(from), this.fieldAlpha(to));
-    const ordinaryAlpha = alpha * (0.34 + 0.24 * this.visualCalm());
 
-    const shadow = [
-      { x: fromScreen.x + normal.x * (fromWidth + 4), y: fromScreen.y + normal.y * (fromWidth + 4) },
-      { x: toScreen.x + normal.x * (toWidth + 4), y: toScreen.y + normal.y * (toWidth + 4) },
-      { x: toScreen.x - normal.x * (toWidth + 4), y: toScreen.y - normal.y * (toWidth + 4) },
-      { x: fromScreen.x - normal.x * (fromWidth + 4), y: fromScreen.y - normal.y * (fromWidth + 4) }
-    ];
-    this.graphics.fillStyle(0x14201f, alpha * 0.62);
-    this.graphics.fillPoints(shadow, true, true);
-    // The deck used to be filled with FIELD_DECK_COLOR unconditionally, so the
-    // `color` argument was thrown away for every road that is not reserved --
-    // which is nearly all of it. That is why the road read as a scuff in the
-    // regolith: 0x6d8f89 is very close to the ground it is drawn on. Tinting
-    // the deck toward the state colour is what makes the corridor rule visible
-    // at all, and it is the only reason this function takes a colour.
-    this.graphics.fillStyle(
-      reserved ? color : mixColor(FIELD_DECK_COLOR, color, 0.5),
-      reserved ? alpha * 0.5 : Math.min(0.94, ordinaryAlpha + 0.4)
-    );
-    this.graphics.fillPoints(points, true, true);
-    if (reserved) {
-      this.graphics.lineStyle(4, color, alpha * 0.88);
-      this.graphics.strokePoints(points, true, true);
-      const scanProgress = (this.time.now / 480) % 1;
-      const scan = {
-        x: Phaser.Math.Linear(fromScreen.x, toScreen.x, scanProgress),
-        y: Phaser.Math.Linear(fromScreen.y, toScreen.y, scanProgress)
-      };
-      this.graphics.fillStyle(0xffd2b7, alpha * 0.92);
-      this.graphics.fillCircle(scan.x, scan.y, 5);
-      this.graphics.lineStyle(1, 0xfff0df, alpha * 0.82);
-      this.graphics.strokeCircle(scan.x, scan.y, 10);
-    } else {
-      // The edge is where the two road states read most cheaply, so it carries
-      // the colour at full strength while the deck stays ambient.
-      this.graphics.lineStyle(3, color, Math.min(0.92, alpha * 0.95));
-      this.graphics.strokePoints(points, true, true);
-    }
-  }
-
-  private drawFieldJoint(
-    field: { x: number; y: number; radius: number; age: number },
-    reserved: boolean,
-    color: number
-  ): void {
-    if (reserved) return;
-    const center = this.project(field);
-    const width = this.fieldRoadWidth(field);
-    const yScale = this.shapeYScale();
-    const alpha = Math.min(0.94, this.fieldAlpha(field) * (0.24 + 0.18 * this.visualCalm()) + 0.4);
-    // Joints take the same tint as the segments they connect, or the ribbon
-    // reads as coloured plates strung on a grey thread.
-    this.graphics.fillStyle(mixColor(FIELD_DECK_COLOR, color, 0.5), alpha);
-    this.graphics.fillEllipse(center.x, center.y, width * 2, width * 2 * yScale);
-  }
-
-  private drawFieldCap(
-    field: { x: number; y: number; radius: number; age: number },
-    color: number,
-    reserved: boolean,
-    alpha: number
-  ): void {
-    const center = this.project(field);
-    const width = this.fieldRoadWidth(field);
-    const yScale = this.shapeYScale();
-    const ordinaryAlpha = alpha * (0.24 + 0.18 * this.visualCalm());
-    this.graphics.fillStyle(color, reserved ? alpha * 0.34 : ordinaryAlpha);
-    this.graphics.fillEllipse(center.x, center.y, width * 2.08, width * 1.2 * yScale);
-    this.graphics.lineStyle(reserved ? 4 : 2, color, reserved ? alpha * 0.9 : alpha * (0.34 + 0.24 * this.visualCalm()));
-    this.graphics.strokeEllipse(center.x, center.y, width * 2.08, width * 1.2 * yScale);
-  }
 
   private drawFieldCenterLine<T extends Vec2>(section: T[], color: number, reserved: boolean): void {
     if (section.length < 2) return;
@@ -3671,6 +3516,27 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       const from = this.project(section[index]);
       const to = this.project(section[index + 1]);
       this.graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+  }
+
+  // What the drone is looking at, and what it has committed to, drawn ON the
+  // road rather than instead of it.
+  private drawDroneAttentionMarks(
+    targeted: Array<{ x: number; y: number; age: number }>,
+    reserved: Array<{ x: number; y: number; age: number }>
+  ): void {
+    const pulse = 0.5 + Math.sin(this.time.now / 260) * 0.5;
+    for (const field of targeted) {
+      const screen = this.project(field);
+      const width = this.fieldRoadWidth(field);
+      this.graphics.lineStyle(1.5, 0xd8a24a, 0.3 + pulse * 0.22);
+      this.graphics.strokeCircle(screen.x, screen.y, width * 0.72);
+    }
+    for (const field of reserved) {
+      const screen = this.project(field);
+      const width = this.fieldRoadWidth(field);
+      this.graphics.lineStyle(2.5, 0xffa06c, 0.72 + pulse * 0.2);
+      this.graphics.strokeCircle(screen.x, screen.y, width * 0.82);
     }
   }
 
@@ -3821,9 +3687,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   //
   // What survives is the one distinction that is real and temporary: track that
   // has not set yet is faint, and reads as solid the moment it can carry you.
-  private fieldAlpha(field: { age: number }): number {
-    const setting = clamp(field.age / this.state.tuning.preparedFieldMinAgeSeconds, 0, 1);
-    return 0.55 + setting * 0.45;
+  // Road is road, and opacity says nothing about it. Age used to fade a tile
+  // from 0.55 to 1.0 over its first 1.25s, which -- stacked with the birth ring
+  // and the terrain bed that appeared at the same threshold -- put every tile
+  // through three visual recipes before it settled. The birth ring alone now
+  // says "still setting"; everything else is one road at one opacity.
+  private fieldAlpha(_field: { age: number }): number {
+    return 1;
   }
 
   private drawPointerTarget(): void {
