@@ -45,10 +45,19 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(world.arenaId).toBe('first-run-readable');
     expect(world.arena.label).toBe('Readable First Run');
-    expect(world.fields).toEqual([]);
-    expect(world.nextFieldId).toBe(1);
-    expect(world.speedState).toBe('fabricating');
-    expect(world.message).toBe('Raw field start. Drive to lay your first line, then reclaim it.');
+    // The opening runway is authored road now. Under conservation a map's
+    // material endowment IS its starter road, and an arena that begins with
+    // none holds nothing but the tank -- which spent this route crawling 61 of
+    // 96 seconds. What this line is for is that the rover starts on known
+    // ground, so it asserts the runway rather than emptiness.
+    expect(world.fields).toHaveLength(6);
+    expect(world.fields.every((field) => field.value === world.tuning.startingFieldValue)).toBe(true);
+    expect(world.nextFieldId).toBe(7);
+    // Starting on the authored runway means starting on prepared ground, which
+    // is the point of having a runway: the machine opens the run rolling
+    // rather than fabricating from the first metre.
+    expect(world.speedState).toBe('prepared');
+    expect(world.message).toBe('Prepared field online. Keep the machine supplied before sunset.');
     expect(world.nanobots).toBe(6);
     expect(world.arms.total).toBe(8);
     expect(world.arms.industrialTotal).toBe(7);
@@ -124,7 +133,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(tight.tuning.preparedSpeed).toBe(125);
     expect(readable.arenaId).toBe('first-run-readable');
     expect(tight.arenaId).toBe('first-run-tight');
-    expect(readable.fields).toEqual([]);
+    // Both first-run arenas now open on an authored runway; see the endowment
+    // note above. The point of these two lines is that the variants are
+    // distinct, which the seam assertions below carry.
+    expect(readable.fields).toHaveLength(6);
     expect(tight.fields).toEqual([]);
     expect(readable.fertileZones[1].x).toBeGreaterThan(tight.fertileZones[1].x);
     expect(readable.fertileZones[1].vein).not.toEqual(tight.fertileZones[1].vein);
@@ -138,12 +150,15 @@ describe('continuous Moon Miner spike rules', () => {
     expect(world.rover.x).toBeCloseTo(900);
     expect(world.rover.y).toBeCloseTo(535);
     expect(world.arena.extraction).toMatchObject({ x: 900, y: 535, radius: 52 });
+    // The safe road traces the cautious near-ring trip -- depot to the flats
+    // and back -- because that is what leftSafeCorridor measures. The lower
+    // path, authored as starter road to the southwest, is the second way HOME
+    // and a separate thing.
     expect(world.arena.safePath?.map((point) => [point.x, point.y])).toEqual([
       [900, 535],
-      [790, 512],
-      [712, 486],
-      [640, 500],
-      [568, 514]
+      [800, 518],
+      [700, 505],
+      [634, 494]
     ]);
     expect(world.solarWindowSeconds).toBe(36);
     expect(world.solarSeconds).toBe(36);
@@ -597,9 +612,11 @@ describe('continuous Moon Miner spike rules', () => {
     expect(preview).toBeDefined();
     expect(preview?.targetPatchId).toBe(launched.drone.targetPatchId);
     expect(preview?.fieldCount).toBe(2);
-    // Scaled by reclaimYieldMultiplier. What this assertion is actually for is
-    // that the preview and the launch read the same number, which still holds.
-    expect(preview?.payload).toBeCloseTo(27);
+    // Was 27, under a reclaimYieldMultiplier of 3. Conservation puts that at 1,
+    // so the payload is now the stock the road actually holds. What this
+    // assertion is actually for is that the preview and the launch read the
+    // same number, which still holds.
+    expect(preview?.payload).toBeCloseTo(9);
     expect(preview?.etaSeconds).toBeCloseTo(
       (distance(world.rover, launched.drone.target ?? world.rover) * 2) / world.tuning.droneSpeed + world.tuning.reclaimLockSeconds
     );
@@ -1037,10 +1054,24 @@ describe('continuous Moon Miner spike rules', () => {
     // And reach is paid for in daylight: the far route is on a knife edge
     // whether or not this seed lets it home.
     expect(greedy.solarRemaining).toBeLessThan(deep.solarRemaining);
-    // Both ends fail, reliably. Playing it safe is under quota every time; the
-    // overstayed route always has the biggest hold and never gets to spend it.
+    // Playing it safe is under quota every time. That end of the ladder is
+    // unchanged.
     expect(safe.result).not.toBe('won');
-    expect(sloppy.reachedExtraction).toBe(false);
+    // The other end used to be "the overstayed route never gets home". The
+    // lower path changed that, and on purpose: a route that overstays can now
+    // be rescued if it can reach the authored road, which is the whole moment
+    // this level was re-cut to produce -- "do I have enough rail or time to
+    // crawl in desperation down to the lower path then zoom directly to the
+    // exit portal". The sloppy route works deep-south, which sits past the
+    // path's western end, so it stumbles onto the rescue.
+    //
+    // Overstaying is still never SAFE, and that is the property worth holding.
+    // Asserted as a property rather than as a verdict because the verdict is a
+    // knife edge -- it comes home on about a second of light -- and pinning a
+    // coin flip is how these assertions rot.
+    expect(sloppy.reachedExtraction === false || sloppy.solarRemaining < 2).toBe(true);
+    // And it pays for the overstay in crawl either way.
+    expect(sloppy.crawlSeconds).toBeGreaterThan(2);
 
     expect(safe.leftSafeCorridor).toBe(false);
     // The safe road gets you home early and empty. It used to end the run with
@@ -1082,29 +1113,27 @@ describe('continuous Moon Miner spike rules', () => {
     // No longer comparable: shallow loses and runs the clock to zero, so it has
     // less light left than the deep route that wins. The margin slope that does
     // mean something is deep vs greedy, asserted above.
-    // KNOWN REGRESSION, asserted as it now behaves rather than as it should.
+    // CRAWL IS THE PRICE OF OVERREACH, restored.
     //
-    // "Crawl is the price of overreach" was the property this line protected,
-    // and stock-driven drone launches inverted it. Measured over twenty seeds:
-    // before, crawl ran 0.0 / 0.0 / 1.7 / 3.1 / 22.2 up the rungs -- the
-    // overstayed route limped home for twenty-two seconds. After, it runs
-    // 3.5 / 3.3 / 0.0 / 0.0 / 0.0: the cautious rungs crawl and the ambitious
-    // ones never do, because a route that launches ten times a day is never
-    // insolvent. Overextension now reads as "the sun set", not as "I limped",
-    // which is the flavourless failure the play reports complained about.
+    // This line spent several passes asserting the inverse of the canon
+    // property, marked KNOWN REGRESSION, because stock-driven launches had
+    // flipped it: the cautious rungs crawled and the ambitious ones never did,
+    // since a route that launches ten times a day is never insolvent.
+    // Overextension read as "the sun set" rather than "I limped".
     //
-    // Three independent knobs were swept against it and every one buys crawl
-    // back by flattening the reward gradient that is the level's whole offer:
-    // per-route launch thresholds (greedy 34 ore -> 14), reclaimYieldMultiplier
-    // (at 0.9 the overstayed route wins 17/20 and the mid ring wins 2/20), and
-    // the launch surcharge (at cost 5 the gradient collapses to 12/17/15).
-    // The drone's payload is both the reach and the solvency, so on this level
-    // you cannot have reached far, hauled big, AND crawled. Unwelding them
-    // means making relaid rail the reach mechanism and shrinking the payload,
-    // which needs a bigger pickup radius -- the exact change that makes the
-    // drone take road the player is using. That fork is a design call, not a
-    // bug fix. See DECISIONS.md.
-    expect(shallow.crawlSeconds).toBeGreaterThanOrEqual(deep.crawlSeconds);
+    // The comment recorded three knobs swept against it, all of which bought
+    // crawl back by flattening the reward gradient, and concluded that payload
+    // was both the reach and the solvency so the two could not be separated on
+    // this level. Conservation separates them: reclaim now returns exactly what
+    // laying cost, so the road is a battery rather than a mint, and reach
+    // becomes a property of the map -- how much authored road it starts with
+    // and where the seams sit relative to it -- rather than of the payload.
+    //
+    // Measured up the rungs now: 0.0 / 0.0 / 4.2 / 4.8 / 5.0. Crawl is on the
+    // ambitious routes and off the cautious ones, which is what canon asked
+    // for, so the assertion goes back the right way round.
+    expect(deep.crawlSeconds).toBeGreaterThanOrEqual(shallow.crawlSeconds);
+    expect(deep.crawlSeconds).toBeGreaterThan(1);
     // Route shape controlling reclaim latency is the canon property, and it is
     // now clearer than it was: safe 1.9s, greedy 4.4s, sloppy 5.4s. What no
     // longer holds is the adjacent shallow/deep pair, which inverted when the
@@ -1158,11 +1187,17 @@ describe('continuous Moon Miner spike rules', () => {
     // asserted where it survives rather than relaxed to fit.
     expect(deep.maxDroneEta).toBeGreaterThan(shallow.maxDroneEta);
 
-    expect(sloppy.result).toBe('lost');
-    // Sloppy dies in the field again. It limped home for a while when slow
-    // drone flights forced long crawls; at 260 the recoveries land in time to
-    // keep it driving, so it overreaches and does not get back at all.
-    expect(sloppy.reachedExtraction).toBe(false);
+    // Sloppy used to die in the field, full stop. Since the lower path was
+    // authored it can be rescued -- it works deep-south, which sits past the
+    // path's western end, so an overstayed run that reaches the road can ride
+    // it home on a sliver of light. That rescue is the moment this level was
+    // re-cut to produce, so it is not a regression to allow it.
+    //
+    // What must still hold is that overstaying is never SAFE. Asserted as a
+    // property rather than a verdict: the run either fails to get back, or
+    // gets back with almost nothing left and pays for it in crawl.
+    expect(sloppy.reachedExtraction === false || sloppy.solarRemaining < 2).toBe(true);
+    expect(sloppy.crawlSeconds).toBeGreaterThan(2);
     // Both far-ring routes mine well (18.9 and 16.8) and neither gets home on
     // bare ground, so neither ore nor crawl separates them reliably any more --
     // the ordering flips between them run to run. What the rung is for is that
@@ -1170,13 +1205,14 @@ describe('continuous Moon Miner spike rules', () => {
     // Only sloppy runs dry now. Greedy reaches the far shelf and gets home on
     // 3.1s of crawl because the apron carries the first stretch for free; the
     // route that overstays still pays 22s for it. That gap is the rung.
-    // Same known regression as the crawl gradient above: the overstayed route
-    // used to limp home for 22 seconds and now crawls not at all, because
-    // stock-driven launches keep it solvent right up to the moment the sun
-    // sets. What still separates it from every other rung is that it never
-    // gets home, so that is what this asserts now.
-    expect(sloppy.reachedExtraction).toBe(false);
-    expect(sloppy.solarRemaining).toBe(0);
+    // The regression noted here is fixed rather than worked around: under
+    // conservation the overstayed route pays in crawl again (5.0s) instead of
+    // staying solvent to the moment the sun sets. And since the lower path
+    // exists it may now scrape home on it, so what separates this rung from
+    // every other is not that it never gets back -- it is that it is never
+    // comfortable.
+    expect(sloppy.reachedExtraction === false || sloppy.solarRemaining < 2).toBe(true);
+    expect(sloppy.crawlSeconds).toBeGreaterThan(2);
     // Greedy is marginal by design: it gets home on 16 of 20 seeds with 0.6s of
     // daylight left on average, and pinning that verdict asserted a coin flip.
     // Its haul against the MID ring is now marginal too -- the rail lets the mid
@@ -1185,15 +1221,14 @@ describe('continuous Moon Miner spike rules', () => {
     // the bill comes due at sunset.
     expect(greedy.oreValue).toBeGreaterThan(shallow.oreValue);
     expect(greedy.solarRemaining).toBeLessThan(deep.solarRemaining);
-    expect(sloppy.reachedExtraction).toBe(false);
-    // Was sloppy crawling 5s more than greedy. On the graded rings both far
-    // routes overreach and the ordering between them flips run to run, so the
-    // rung asserts the shared fact instead: reaching the far shelf on bare
-    // ground means a long crawl home, whichever of the two you drive.
-    // Same known regression as above: the shared fact used to be a long crawl
-    // home, and stock-driven launches removed it. Both far routes still fail to
-    // get back, which is the rung that matters.
-    expect(sloppy.reachedExtraction).toBe(false);
+    // The shared fact about the two far routes is back to what it should be:
+    // reaching the far ring means a long crawl home, whichever you drive. That
+    // held before stock-driven launches removed it and holds again under
+    // conservation, so it is asserted directly rather than via a verdict.
+    for (const far of [greedy, sloppy]) {
+      expect(far.crawlSeconds).toBeGreaterThan(2);
+      expect(far.reachedExtraction === false || far.solarRemaining < 2).toBe(true);
+    }
     // Was: sloppy strays 40+ further than greedy. No longer true, and for a
     // real reason -- sloppy now crawls so much it cannot get as far off-route.
     // What matters is that it left the corridor and did not get home.
@@ -1531,9 +1566,13 @@ describe('continuous Moon Miner spike rules', () => {
     // so the table asserts that it out-mines the deep route rather than pinning
     // its verdict, which on this seed is a loss with 38.4 ore in the hold.
     expect(table).toContain('| deepLobe | won | yes |');
-    expect(table).toContain('| greedyLatePocketSloppy | lost |');
-    expect(table).toContain('| greedyLatePocketSloppy | lost | no |');
-    expect(table).toContain('late launches and bad route shape miss extraction');
+    // The sloppy row's verdict is no longer pinned. Since the lower path was
+    // authored, an overstayed route that reaches it can survive on a sliver of
+    // light -- the rescue this level exists to offer -- so the row is asserted
+    // by its presence and its note, and the "never safe" property lives in the
+    // gradient test above where it can be stated properly.
+    expect(table).toContain('| greedyLatePocketSloppy |');
+    expect(table).toContain('sloppy route survives but collapses into heavy crawl');
   });
 });
 

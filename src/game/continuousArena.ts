@@ -43,7 +43,23 @@ const FIRST_RUN_READABLE: ContinuousArenaDefinition = {
   description: 'Raw-field start with separated opening, upper, lower, and far-east seams for route-shape testing.',
   start: { x: 128, y: 520 },
   startHeading: -0.1,
-  starterFieldPoints: [],
+  // The opening runway, authored as road.
+  //
+  // This was empty, which under conservation means the map holds no material
+  // at all beyond what is in the tank -- and a machine that can only ever lay
+  // its own six units spends the run crawling (measured: 61 of 96 seconds, and
+  // the drone could not rebound stock far enough to count as a recovery). The
+  // multiply was hiding that: it let a bare map refill itself out of nothing.
+  //
+  // Reach is a property of the map now, so every map has to say what it starts
+  // with. Here it is the calibration runway the level's own three-beat shape
+  // already describes: enough road to teach the loop and to give the drone
+  // something worth fetching, stopping short of the first seam so the ground
+  // that pays is still ground you have to reach for.
+  starterFieldPoints: roadChain([
+    { x: 150, y: 516 },
+    { x: 268, y: 500 }
+  ]),
   fertileZones: [
     {
       id: 'runway-pocket',
@@ -243,12 +259,76 @@ const FIRST_RUN_TIGHT: ContinuousArenaDefinition = {
 // The safe road is the near ring: out to the flats and back, which is the trip
 // that always works and never pays. It used to run west to the map edge, which
 // was the old field's shape and left the near seams off-corridor entirely.
+// An authored road, as a chain of points about one lattice step apart so
+// consecutive points land in neighbouring cells and the result is a connected
+// piece of track rather than a dotted line. Spacing sits just under the
+// across-flats distance (sqrt(3) * tileSize) for the shipped grain; the cell
+// dedup in createArenaStarterFields absorbs the rest.
+function roadChain(corners: Vec2[], spacing = 26): Vec2[] {
+  const points: Vec2[] = [];
+  for (let index = 0; index < corners.length - 1; index += 1) {
+    const from = corners[index];
+    const to = corners[index + 1];
+    const steps = Math.max(1, Math.round(Math.hypot(to.x - from.x, to.y - from.y) / spacing));
+    for (let step = 0; step < steps; step += 1) {
+      points.push({
+        x: from.x + ((to.x - from.x) * step) / steps,
+        y: from.y + ((to.y - from.y) * step) / steps
+      });
+    }
+  }
+  points.push(corners[corners.length - 1]);
+  return points;
+}
+
+// THE LOWER PATH.
+//
+// Under conservation an authored road is not scenery and not a hint. Every
+// tile is stock parked on the ground, so this corridor is at once the map's
+// material endowment and a second way home -- and the drone can spend one to
+// get the other. That is the whole design of this level.
+//
+// Levi's target moment, verbatim: "should I turn back and go super fast down
+// the long route, or do I have enough rail or time to crawl in desperation
+// down to the lower path then zoom directly to the exit portal??" This is the
+// lower path. The long route is the road you laid getting to the seams.
+//
+// It runs from the depot southwest, and it is one connected chain anchored at
+// the depot, so its only loose end is the far western tip. The drone therefore
+// eats it inward from the far end, which means the lower path stops being
+// available from a long way out FIRST -- the reach you spend is the reach you
+// lose, and it degrades in the order that makes that legible.
+const LAST_LIGHT_LOWER_PATH: Vec2[] = roadChain([
+  { x: 876, y: 552 },
+  { x: 700, y: 604 },
+  { x: 520, y: 638 },
+  { x: 356, y: 626 }
+]);
+
+// A short stub out of the depot on the northern bearing, so the first day
+// starts on something in the direction the seams actually are.
+const LAST_LIGHT_DEPOT_APRON: Vec2[] = roadChain([
+  { x: 878, y: 526 },
+  { x: 792, y: 502 }
+]);
+
+// The safe road is the cautious near-ring trip: out of the depot to the flats
+// and back. That is what `leftSafeCorridor` is for -- did this route stray
+// from the trip that always works and never pays -- so it has to trace the
+// route the safeReturn rung actually drives.
+//
+// Briefly pointed at the lower path while that was being authored, which read
+// well and measured wrong: the near seams sit north, so the cautious route
+// showed up as leaving its own corridor. The lower path is the second way
+// HOME, which is a different job from the safe outbound trip.
+// Runs a little past the far end of the flats' vein, because the cautious trip
+// includes the turn: the rover sweeps to the end of the seam and swings round,
+// and that swing is part of the route rather than a departure from it.
 const LAST_LIGHT_SAFE_PATH: Vec2[] = [
   { x: 900, y: 535 },
-  { x: 790, y: 512 },
-  { x: 712, y: 486 },
-  { x: 640, y: 500 },
-  { x: 568, y: 514 }
+  { x: 800, y: 518 },
+  { x: 700, y: 505 },
+  { x: 634, y: 494 }
 ];
 
 const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
@@ -279,15 +359,7 @@ const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
   // A depot that has been operating has road around it. This lays a short arm
   // out toward the near flats, which is the direction the safe road already
   // goes, so the first day starts the way every later day does: on something.
-  starterFieldPoints: [
-    { x: 872, y: 531 },
-    { x: 846, y: 526 },
-    { x: 820, y: 521 },
-    { x: 794, y: 516 },
-    { x: 768, y: 512 },
-    { x: 742, y: 507 },
-    { x: 716, y: 502 }
-  ],
+  starterFieldPoints: [...LAST_LIGHT_DEPOT_APRON, ...LAST_LIGHT_LOWER_PATH],
   // Redesigned once ore began carrying its depletion overnight. The old field
   // put every seam west-northwest, so every good day drove the same way and
   // route shape was not really a choice; and it held about 47 ore in total,
@@ -299,68 +371,106 @@ const LAST_LIGHT_RETURN: ContinuousArenaDefinition = {
   // per unit of distance, so reach is rewarded -- but only if you can afford
   // to get there, which is what the road is for. Total ore roughly doubled to
   // 95 so the cycle of strip, move on, and come back has room to run.
+  // The seams sit NORTH of the lower path, deliberately.
+  //
+  // A route decision needs the two ways home to be different ground, and that
+  // only happens if the ground you work is not the ground you would drive home
+  // along. Working the field lays road across the north; the lower path stays
+  // where it was authored. So the trip home is a real question -- back along
+  // your own northern track, or south across raw regolith onto the lower path
+  // and run it home fast.
+  //
+  // Value climbs with distance from the depot on the northern bearing, so the
+  // deeper you go for ore the further you are from both ways home, and the
+  // sharper the question gets. `deep-south` is the exception on purpose: rich,
+  // far, and sitting ON the lower path's western end, so it is the seam that
+  // tempts you into spending the very road you would come home on.
   fertileZones: [
     {
+      // Sits almost due west of the depot, so the cautious trip is a straight
+      // out-and-back. Offset north of that line, the same route acquired a
+      // diagonal and a wide turn at prepared speed, and swung 134 units off
+      // its own corridor -- the rung that is supposed to never leave it.
       id: 'depot-flats',
-      x: 640,
-      y: 500,
+      x: 700,
+      y: 505,
       radius: 54,
-      vein: { from: { x: 712, y: 486 }, to: { x: 568, y: 514 }, width: 40 },
+      vein: { from: { x: 766, y: 516 }, to: { x: 634, y: 494 }, width: 40 },
       richness: 0.85,
       remaining: 7
     },
     {
       id: 'north-shelf',
-      x: 830,
-      y: 250,
+      x: 812,
+      y: 268,
       radius: 52,
-      vein: { from: { x: 878, y: 312 }, to: { x: 782, y: 190 }, width: 38 },
-      richness: 0.9,
+      vein: { from: { x: 860, y: 330 }, to: { x: 764, y: 208 }, width: 38 },
+      richness: 0.95,
       remaining: 7
     },
     {
+      // Held clear of the lower path on purpose. Sat on it in the first cut of
+      // this layout, and that let the cautious route work a seam while driving
+      // free authored road the whole way -- so it won with no drone at all,
+      // which is DEV-14's property breaking. A route home must not double as a
+      // seam highway: the lower path carries no ore, so reaching it is travel
+      // and never profit.
       id: 'south-bench',
-      x: 660,
-      y: 660,
+      x: 552,
+      y: 512,
       radius: 52,
-      vein: { from: { x: 736, y: 646 }, to: { x: 584, y: 672 }, width: 38 },
-      richness: 0.85,
+      vein: { from: { x: 620, y: 494 }, to: { x: 484, y: 528 }, width: 38 },
+      // Sits further from the depot than north-shelf, so it pays at least as
+      // well -- the level's rule is that richness rises with distance, and a
+      // seam that breaks it is a longer errand for the same money.
+      richness: 1,
       remaining: 7
     },
     {
       id: 'west-cut',
-      x: 450,
-      y: 470,
+      x: 452,
+      y: 396,
       radius: 72,
-      vein: { from: { x: 512, y: 404 }, to: { x: 388, y: 536 }, width: 50 },
+      vein: { from: { x: 516, y: 340 }, to: { x: 388, y: 452 }, width: 50 },
       richness: 1.7,
       remaining: 14
     },
     {
       id: 'north-lobe',
-      x: 600,
-      y: 280,
+      x: 606,
+      y: 282,
       radius: 70,
-      vein: { from: { x: 676, y: 300 }, to: { x: 524, y: 260 }, width: 48 },
+      vein: { from: { x: 682, y: 302 }, to: { x: 530, y: 262 }, width: 48 },
       richness: 1.5,
       remaining: 13
     },
     {
+      // Pulled in from (252, 254). Under conservation the northwest bearing
+      // carries no authored material -- the lower path runs south -- so a seam
+      // 706 units out on it was not a tempting reach, it was unreachable, and
+      // the route built around it came home poorer than the shallower one.
+      // Still the furthest and richest seam on the map, which is the rule.
       id: 'far-shelf',
-      x: 250,
-      y: 250,
+      x: 330,
+      y: 290,
       radius: 86,
-      vein: { from: { x: 318, y: 190 }, to: { x: 182, y: 310 }, width: 58 },
+      vein: { from: { x: 398, y: 232 }, to: { x: 262, y: 350 }, width: 58 },
       richness: 3.1,
       remaining: 24
     },
     {
+      // Sits PAST the western end of the lower path, not on it. On it, working
+      // this seam handed the route a fast road home and the sloppiest rung
+      // came home rich -- which is the one rung that must not. Past the end it
+      // does the job it is for: it is the richest thing on the map and getting
+      // it means leaving the road, so it tempts you into spending the very
+      // track you would have come home on.
       id: 'deep-south',
-      x: 230,
+      x: 250,
       y: 640,
       radius: 84,
-      vein: { from: { x: 300, y: 588 }, to: { x: 160, y: 692 }, width: 56 },
-      richness: 2.9,
+      vein: { from: { x: 320, y: 600 }, to: { x: 182, y: 688 }, width: 56 },
+      richness: 3.2,
       remaining: 23
     }
   ],

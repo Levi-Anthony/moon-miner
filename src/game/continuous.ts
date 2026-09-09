@@ -351,6 +351,22 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   dronePickupRadius: 170,
   mineRate: 0.32,
   preparedFieldMinAgeSeconds: 1.25,
+  // The map's material endowment, per tile of authored road.
+  //
+  // Denser than a tile you lay, which costs fabricateCostPerSecond *
+  // emitDistance / fabricatingSpeed = 1 * 26 / 74 = 0.351. That looked at
+  // first like the mint wearing terrain's clothes, and it is not: conservation
+  // is a property of the lay -> reclaim LOOP, which returns exactly what it
+  // took. An endowment is an initial condition. Total material in a run stays
+  // bounded either way; this only sets where the bound is.
+  //
+  // Dropping it to 0.351 was tried and starved the level -- crawl 8 to 16
+  // seconds on every rung, ore flat at 7/7/16/15/16 -- because material lying
+  // on the ground is worth less than material in the tank: you have to drive
+  // to it and fly it back, and that retrieval friction is real time. Swept
+  // 0.351 to 0.85 against both guards; 0.85 is the only value where the drone
+  // decides three of the five routes AND crawl lands on the ambitious rungs
+  // rather than the cautious ones.
   startingFieldValue: 0.85,
   fieldRadius: 44,
   tileSize: 16,
@@ -358,7 +374,10 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   crawlFieldEmitDistance: 12,
   normalFieldPatchMinValue: 0.12,
   crawlFieldPatchMinValue: 0.025,
-  fieldValueMultiplierFromSpentStock: 1.05,
+  // Conservation, second half: a tile stores exactly the stock that built it.
+  // The 5% was a small mint on every patch laid, compounding for the same
+  // reason the yield multiplier did.
+  fieldValueMultiplierFromSpentStock: 1,
   reclaimMinFieldAgeSeconds: 2.2,
   reclaimMinFieldValue: 0.08,
   reclaimMinClusterPayload: 1.8,
@@ -369,11 +388,23 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   reclaimLookaheadSeconds: 3,
   reclaimClaimBreakRadius: 120,
   reclaimPathClearance: 70,
-  // Gating the cluster cut a landing from ~15 patches to ~3, which is the point
-  // -- but it cut the payload with it. Doubling the recovery restores the same
-  // economy from a third of the road: the ladder is unchanged and crawl is back
-  // where it was. Swept 1 to 4; above 2 the tank caps and the extra is wasted.
-  reclaimYieldMultiplier: 3,
+  // Conservation. Reclaiming road returns the stock that built it, and not a
+  // unit more. Levi's ruling, 2026-09-09: "conserve. multiply sounds like a
+  // powerup." A reclaim that hands back more than it took is a pickup, not
+  // logistics, and the fiction is that these are the same nanobots coming home.
+  //
+  // This was 3, defended by a comment arguing for a doubling and by a sweep
+  // whose own conclusion was "above 2 the tank caps and the extra is wasted".
+  // Measured over full runs the loop returned 1.37x to 2.43x what laying cost,
+  // so road was a battery paying interest: stock trended UP across a run, the
+  // tank could not empty while any road was out there, and crawl had nothing
+  // to trigger on. That is why launching early was always right.
+  //
+  // At 1 the road is what it always claimed to be -- stock parked on the
+  // ground -- and the total material in a run is fixed. Reach stops being a
+  // number here and becomes a property of the map: see the lower path in
+  // continuousArena.ts, which is this level's material endowment.
+  reclaimYieldMultiplier: 1,
   // Load-bearing, and the window is narrow. Swept 0.20 to 0.55 across six
   // chained shifts: at 0.20 nothing survives the night and it is the old game;
   // at 0.55 the inherited network is rich enough that a run with no drone at
@@ -429,7 +460,10 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   fieldEmitDistance: 26,
   fieldRadius: 46,
   tileSize: 16,
-  fieldValueMultiplierFromSpentStock: 1.05,
+  // Conservation, second half: a tile stores exactly the stock that built it.
+  // The 5% was a small mint on every patch laid, compounding for the same
+  // reason the yield multiplier did.
+  fieldValueMultiplierFromSpentStock: 1,
   // Raised from 1.35s. Geometry alone is not enough: on a tight loop the road
   // laid under two seconds ago is already clear of the line home, so it was
   // legal to lift and still felt exactly like "it takes the road behind me".
