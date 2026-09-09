@@ -1,3 +1,4 @@
+import { hexKey, hexToWorld, worldToHex } from './hex';
 import type { FieldPatch, FertileZone, Vec2 } from './continuous';
 
 export type ContinuousArenaId = 'first-run-readable' | 'first-run-tight' | 'last-light-return';
@@ -398,20 +399,33 @@ export function getContinuousArena(arenaId: ContinuousArenaId = DEFAULT_CONTINUO
 export function createArenaStarterFields(
   arena: ContinuousArenaDefinition,
   startingFieldValue: number,
+  tileSize: number,
   fieldRadius: number
 ): FieldPatch[] {
-  // The apron is one continuous piece of track, so it is chained like any other
-  // pass the tractor lays. Without the links it is a row of unrelated circles
-  // and the rail cannot follow it out of the depot.
-  return arena.starterFieldPoints.map((point, index) => ({
-    id: index + 1,
-    prevId: index > 0 ? index : undefined,
-    x: point.x,
-    y: point.y,
-    radius: fieldRadius,
-    value: startingFieldValue,
-    age: 5.4 - index * 0.18
-  }));
+  // The apron is track like any other, so it goes on the same lattice the
+  // tractor lays onto. That is what lets the rail follow the apron out of the
+  // depot and straight onto the first tile the machine puts down: they are
+  // neighbours on one grid, not two sets of pieces that happen to be near each
+  // other. Authored points falling in one cell collapse to one tile, which is
+  // the invariant -- a cell is occupied or it is not.
+  const fields: FieldPatch[] = [];
+  const taken = new Set<string>();
+  for (const point of arena.starterFieldPoints) {
+    const cell = worldToHex(point.x, point.y, tileSize);
+    const key = hexKey(cell.q, cell.r);
+    if (taken.has(key)) continue;
+    taken.add(key);
+    const centre = hexToWorld(cell.q, cell.r, tileSize);
+    fields.push({
+      id: fields.length + 1,
+      x: centre.x,
+      y: centre.y,
+      radius: fieldRadius,
+      value: startingFieldValue,
+      age: 5.4 - fields.length * 0.18
+    });
+  }
+  return fields;
 }
 
 export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: string): FertileZone[] {

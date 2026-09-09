@@ -287,9 +287,7 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
       { key: 'crawlFieldPatchMinValue', label: 'Crawl min value', min: 0.005, max: 0.16, step: 0.005, precision: 3 },
       { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 0.2, max: 5, step: 0.05, precision: 2 },
       { key: 'fieldValueMultiplierFromSpentStock', label: 'Spent stock value', min: 0.2, max: 2.4, step: 0.05, precision: 2 },
-      { key: 'startingFieldValue', label: 'Starting field value', min: 0.1, max: 2, step: 0.05, precision: 2 },
-      { key: 'maxFieldPatches', label: 'Max patches', min: 120, max: 1800, step: 20 },
-      { key: 'trimmableCrawlFieldValue', label: 'Trim crawl value', min: 0.005, max: 0.25, step: 0.005, precision: 3 }
+      { key: 'startingFieldValue', label: 'Starting field value', min: 0.1, max: 2, step: 0.05, precision: 2 }
     ]
   },
   {
@@ -3501,42 +3499,40 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawFieldBirthMarkers(ordinary);
   }
 
+  // Track is drawn as the tiles it is: one flat-top hex per occupied cell, at
+  // the lattice's own size. The old ribbon walked prevId chains and filled
+  // ellipses of the patch's INFLUENCE radius, which is why the road looked like
+  // overlapping blobs -- it was drawing the reach, not the piece. Corners are
+  // projected individually so a tile sits on the ground plane rather than being
+  // a flat polygon pasted over it.
   private drawFieldRibbon(
-    fields: Array<{ id: number; prevId?: number; x: number; y: number; radius: number; value: number; age: number }>,
+    fields: Array<{ id: number; x: number; y: number; radius: number; value: number; age: number }>,
     color: number,
     reserved: boolean
   ): void {
-    const sections = this.fieldSections(fields);
+    const size = this.state.tuning.tileSize;
+    const calm = this.visualCalm();
 
-    for (const section of sections) {
-      if (section.length === 1) {
-        this.drawFieldCap(section[0], color, reserved, this.fieldAlpha(section[0]));
-        continue;
+    for (const field of fields) {
+      const alpha = this.fieldAlpha(field);
+      const corners: Array<{ x: number; y: number }> = [];
+      for (let corner = 0; corner < 6; corner += 1) {
+        const angle = (Math.PI / 3) * corner;
+        corners.push(
+          this.project({
+            x: field.x + size * Math.cos(angle),
+            y: field.y + size * Math.sin(angle)
+          })
+        );
       }
 
-      for (let index = 0; index < section.length - 1; index += 1) {
-        const from = section[index];
-        const to = section[index + 1];
-        this.drawFieldSegment(from, to, color, reserved);
-        this.drawFieldJoint(to, reserved, color);
-      }
-
-      this.drawFieldJoint(section[0], reserved, color);
-      this.drawFieldCap(section[0], color, reserved, this.fieldAlpha(section[0]));
-      this.drawFieldCap(section[section.length - 1], color, reserved, this.fieldAlpha(section[section.length - 1]));
-      this.drawFieldCenterLine(section, color, reserved);
+      this.graphics.fillStyle(color, reserved ? alpha * 0.4 : alpha * (0.26 + 0.2 * calm));
+      this.graphics.fillPoints(corners, true);
+      this.graphics.lineStyle(reserved ? 3 : 1.5, color, reserved ? alpha * 0.95 : alpha * (0.4 + 0.26 * calm));
+      this.graphics.strokePoints(corners, true);
     }
   }
 
-  // Draw the road along the links the road actually has, so what you see is the
-  // same object the rail follows.
-  //
-  // This used to group by array order and a flat 92 unit proximity gate, which
-  // is the same heuristic the movement code used to use for its tangent and it
-  // fails the same way: two unrelated passes through one area were drawn as a
-  // single ribbon, and a stretch the drone had bitten a hole in was drawn
-  // continuous across the hole. The picture said "one road" where the machine
-  // would fall off, which is most of why the road read as inscrutable.
   private fieldSections<T extends Vec2 & { id: number; prevId?: number }>(fields: T[]): T[][] {
     const byId = new Map<number, T>();
     for (const field of fields) byId.set(field.id, field);

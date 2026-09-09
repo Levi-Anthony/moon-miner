@@ -5,6 +5,7 @@ import {
   type ContinuousArenaDefinition,
   type ContinuousArenaId
 } from './continuousArena';
+import { hexKey, hexNeighbours, hexToWorld, worldToHex } from './hex';
 
 export type ContinuousPhase = 'playing' | 'won' | 'lost';
 export type SpeedState = 'prepared' | 'fabricating' | 'crawl';
@@ -33,6 +34,9 @@ export interface RoverMotionState extends Vec2 {
   speed: number;
   ore: number;
 }
+
+// A hex cell has six neighbours, so this is the ceiling a degree can take.
+const MAX_TRACK_DEGREE = 6;
 
 export interface FieldPatch extends Vec2 {
   id: number;
@@ -176,13 +180,22 @@ export interface ContinuousTuning {
   preparedFieldMinAgeSeconds: number;
   startingFieldValue: number;
   fieldRadius: number;
+  // Lattice grain: the circumradius of one track tile as a PIECE -- what gets
+  // placed and drawn. Deliberately distinct from fieldRadius, which is the
+  // tile's influence: how far it reaches for prepared coverage, the magnet and
+  // rail capture. Those two were the same number only because the road was
+  // drawn as its own influence circle, which is exactly why pieces overlapped.
+  //
+  // Chosen so across-flats spacing (sqrt(3) * tileSize) sits at the emit step:
+  // below it and consecutive emits skip a cell and the track comes out dotted,
+  // far above it and a whole pass collapses into one tile. Exposed as tuning
+  // because the right grain is a playtest question.
+  tileSize: number;
   fieldEmitDistance: number;
   crawlFieldEmitDistance: number;
   normalFieldPatchMinValue: number;
   crawlFieldPatchMinValue: number;
   fieldValueMultiplierFromSpentStock: number;
-  maxFieldPatches: number;
-  trimmableCrawlFieldValue: number;
   reclaimMinFieldAgeSeconds: number;
   reclaimMinFieldValue: number;
   reclaimMinClusterPayload: number;
@@ -240,6 +253,13 @@ export interface ContinuousTuning {
   railRunwayForFullSpeed: number;
   lowStockWarningRatio: number;
   droneUrgencyRatio: number;
+  // Refill rate (stock per second) while moving on prepared track when drone is
+  // not flying. Zero makes prepared state a pure cost-free waiting state (no
+  // fabrication, no refill). Positive values create the consequence that long
+  // drone flights are costly -- they're time you don't spend refilling.
+  // Set low (~0.05-0.1) so a deployed drone creates real pressure but doesn't
+  // make prepared movement feel like active refill.
+  preparedRefillPerSecond: number;
 }
 
 export type DynamicsPresetId = 'stable-first-run' | 'current-classic' | 'drone-playground' | 'strict-logistics';
@@ -333,13 +353,12 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   preparedFieldMinAgeSeconds: 1.25,
   startingFieldValue: 0.85,
   fieldRadius: 44,
+  tileSize: 16,
   fieldEmitDistance: 28,
   crawlFieldEmitDistance: 12,
   normalFieldPatchMinValue: 0.12,
   crawlFieldPatchMinValue: 0.025,
   fieldValueMultiplierFromSpentStock: 1.05,
-  maxFieldPatches: 1200,
-  trimmableCrawlFieldValue: 0.045,
   reclaimMinFieldAgeSeconds: 2.2,
   reclaimMinFieldValue: 0.08,
   reclaimMinClusterPayload: 1.8,
@@ -394,7 +413,12 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   railCenterSnap: 4.2,
   railRunwayForFullSpeed: 210,
   lowStockWarningRatio: 0.18,
-  droneUrgencyRatio: 0.32
+  droneUrgencyRatio: 0.32,
+  // Refill while on prepared ground. Zero means no passive refill on track —
+  // stock only refills during crawl. This makes time cost; the drone creates
+  // friction through flight distance (weighted in compareReclaimCandidates),
+  // not through a baseline cost. Tune up if crawl pressure becomes insufficient.
+  preparedRefillPerSecond: 0
 };
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -404,6 +428,7 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   fabricateCostPerSecond: 1,
   fieldEmitDistance: 26,
   fieldRadius: 46,
+  tileSize: 16,
   fieldValueMultiplierFromSpentStock: 1.05,
   // Raised from 1.35s. Geometry alone is not enough: on a tight loop the road
   // laid under two seconds ago is already clear of the line home, so it was
@@ -469,7 +494,10 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // the other way by making the distances uncoverable. So +30% is the most the
   // measurement rig can currently evaluate, not the most the road should pay.
   // The magnet below is doing the larger part of the felt reward.
-  preparedSpeed: 96
+  preparedSpeed: 96,
+  // Refill while on prepared ground. Zero means consequence comes from distance
+  // weighting in drone selection, not from a baseline stock mechanic.
+  preparedRefillPerSecond: 0
 };
 
 export const DEFAULT_DYNAMICS_PRESET_ID: DynamicsPresetId = 'stable-first-run';
@@ -531,7 +559,7 @@ export function createContinuousWorld(
   const resolvedTuning = resolveContinuousTuning(tuning);
   const arena = getContinuousArena(arenaId);
   const solarWindowSeconds = arena.solarWindowSeconds ?? resolvedTuning.startingSolarSeconds;
-  const starter = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, resolvedTuning.fieldRadius);
+  const starter = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, resolvedTuning.tileSize, resolvedTuning.fieldRadius);
   const fields = [...starter, ...carriedFields.map((field, index) => ({ ...field, id: starter.length + 1 + index }))];
   const nextFieldId = fields.length + 1;
 
@@ -703,7 +731,7 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
     }
     return getReclaimPreview(state)
       ? { objective: 'Out of road', nudge: 'Crawling. Space sends the drone.' }
-      : { objective: 'Out of road', nudge: 'Nothing to reclaim. Cut away from your line home.' };
+      : { objective: 'Out of road', nudge: 'Nothing loose to lift. Branch off and leave an end.' };
   }
 
   const solarRatio = state.solarWindowSeconds > 0 ? state.solarSeconds / state.solarWindowSeconds : 1;
@@ -724,10 +752,10 @@ export function getContinuousGuidance(state: ContinuousWorldState): ContinuousGu
 
   const preview = getReclaimPreview(state);
   if (state.nanobots / state.maxNanobots < state.tuning.droneUrgencyRatio) {
-    // The corridor rule only teaches if the game says it at the moment it
-    // bites -- when you want nanobots and the drone has nothing it may take.
+    // The rule only teaches if the game says it at the moment it bites -- when
+    // you want nanobots and the drone has no loose end it may take.
     if (!preview) {
-      return { objective: 'Nanobots low', nudge: 'Every seam is on your line home. Swing wide to make some spare.' };
+      return { objective: 'Nanobots low', nudge: 'Every tile is mid-route. Branch off to leave a loose end.' };
     }
     return {
       objective: 'Nanobots low',
@@ -882,6 +910,25 @@ export function cloneContinuousWorld(state: ContinuousWorldState): ContinuousWor
   };
 }
 
+function advanceNanobotStock(state: ContinuousWorldState, deltaSeconds: number): void {
+  // Stock management: refill at different rates based on speed state. This
+  // creates the consequence mechanism for drone timing -- asking when the drone
+  // is out costs you refill time.
+  if (state.speedState === 'prepared') {
+    // Prepared state: on track, slowly refilling. No fabrication cost, so this
+    // is when stock recovery happens. The rate is tuned low (0.15/sec) so bad
+    // timing (long drone flights) is felt as lost refill opportunity.
+    state.nanobots = Math.min(state.maxNanobots, state.nanobots + state.tuning.preparedRefillPerSecond * deltaSeconds);
+  } else if (state.speedState === 'crawl') {
+    // Crawl state: emergency scraping. Refill at the crawl rate, capped by ceiling.
+    state.nanobots = Math.min(
+      state.tuning.crawlRecoveryCeiling,
+      state.nanobots + state.tuning.crawlRecoveryPerSecond * deltaSeconds
+    );
+  }
+  // Fabricating: no refill (stock is only depleted by fabrication in runFieldSystem)
+}
+
 function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInput, deltaSeconds: number): void {
   if (state.phase !== 'playing') return;
 
@@ -893,20 +940,27 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
   }
 
   state.speedState = resolveSpeedState(state);
+  // Stock refill happens independently of field fabrication. This creates the
+  // consequence that long drone flights cost time you would otherwise spend
+  // refilling -- the drone is out, you're not fabricating or refilling as fast.
+  advanceNanobotStock(state, deltaSeconds);
   const driveIntent = Boolean(input.driveIntent);
   const movedDistance = steerAndMoveRover(state, input, deltaSeconds);
-  runFieldSystem(state, driveIntent, Boolean(input.pivotIntent), Boolean(input.reverseIntent), movedDistance, deltaSeconds);
+  // Derived from the same condition the movement step uses, so the field system
+  // cannot describe the machine as idle while it is visibly pivoting.
+  const pivoting = !driveIntent && Math.abs(input.steer) > 0.001;
+  runFieldSystem(state, driveIntent, pivoting, Boolean(input.reverseIntent), movedDistance, deltaSeconds);
   const fertileZone = findFertileZoneAt(state, state.rover);
   state.arms = allocateArms(state.speedState, Boolean(fertileZone), driveIntent, state.drone.status);
   runMiningSystem(state, fertileZone, driveIntent, deltaSeconds);
   advanceDrone(state, deltaSeconds);
-  preserveFieldPatches(state);
   applyContinuousWinLoss(state);
 }
 
 function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, deltaSeconds: number): number {
   if (!input.driveIntent) {
     const pivotRate = state.speedState === 'prepared' ? 1.0 : state.speedState === 'crawl' ? 0.54 : 0.82;
+    const isSteering = Math.abs(input.steer) > 0.001;
 
     // S on its own backs straight up. Add A or D and the machine stops and
     // swings on the spot instead.
@@ -919,15 +973,30 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     // Bare S doing nothing at all was the other candidate and is worse: a key
     // that waits silently for a second key reads as broken, which is the
     // complaint rather than the fix.
-    if (input.reverseIntent) {
-      if (Math.abs(input.steer) > 0.001) {
-        state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * pivotRate * deltaSeconds);
-        state.rover.turnRate = input.steer * TURN_RATE * pivotRate;
-        state.rover.speed = 0;
-        state.message = 'Swinging on the spot.';
-        return 0;
-      }
+    //
+    // Rotating on the spot is ONE behaviour with one implementation, whether it
+    // was asked for with S plus A/D or with A/D alone from a standstill. It used
+    // to be two paths that only looked alike: the reverse one assigned turnRate
+    // and the bare one did not, so pivoting from a standstill left the previous
+    // turn rate in place. That value is read as live elsewhere -- the forward
+    // path projection asks heading plus turn rate where the machine is about to
+    // be, so a stale one describes an arc the rover is not on, and the drone
+    // protects road accordingly.
+    //
+    // Steering with no drive intent is the whole condition, so rotate-only is
+    // always available from a standstill rather than waiting on a separate
+    // pivot flag to be derived somewhere else.
+    if (isSteering) {
+      state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * pivotRate * deltaSeconds);
+      state.rover.turnRate = input.steer * TURN_RATE * pivotRate;
+      state.rover.speed = 0;
+      state.message = input.reverseIntent
+        ? 'Swinging on the spot.'
+        : 'Chassis pivoting in place. Field fabrication is idle.';
+      return 0;
+    }
 
+    if (input.reverseIntent) {
       const reverseSpeed = state.tuning.fabricatingSpeed * REVERSE_SPEED_RATIO;
       state.rover.x = clamp(state.rover.x - Math.cos(state.rover.heading) * reverseSpeed * deltaSeconds, 34, state.width - 34);
       state.rover.y = clamp(state.rover.y - Math.sin(state.rover.heading) * reverseSpeed * deltaSeconds, 76, state.height - 34);
@@ -937,11 +1006,10 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
       return 0;
     }
 
-    if (input.pivotIntent && Math.abs(input.steer) > 0.001) {
-      state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * pivotRate * deltaSeconds);
-      state.message = 'Chassis pivoting in place. Field fabrication is idle.';
-    }
+    // Standing still and not steering: the machine is not turning, and saying so
+    // matters for the same reason the pivot branch above assigns it.
     state.rover.speed = 0;
+    state.rover.turnRate = 0;
     return 0;
   }
 
@@ -1086,26 +1154,8 @@ function runFieldSystem(
     state.nanobots = Math.max(0, state.nanobots - spent);
     state.pendingFieldValue += spent * state.tuning.fieldValueMultiplierFromSpentStock;
     state.message = 'Arms are fabricating field just in time. Mining capacity is constrained.';
-  } else {
-    // The ceiling used to be a hardcoded 1.2 while the threshold for leaving
-    // crawl is 2.0, so the scraping legs could never lift the machine past the
-    // line that would let it drive again. Crawl was not a half-fail hinge, it
-    // was an absorbing state with no unaided exit: once in, the only way out
-    // was the drone, for the rest of the run. Traced runs sat at exactly 1.2
-    // for twenty-five straight seconds.
-    //
-    // The ceiling is lifted past the line so the exit exists. The RATE is left
-    // at 0.1/s, which means twenty seconds of scraping to use it -- most of a
-    // day. That is not yet the hinge Levi described, and the reason is honest:
-    // every rate that makes self-rescue practical (0.18 and up) flips the mid
-    // ring from a comfortable win to a loss, and the self-play routes cannot
-    // tell me whether that is the game getting worse or the fixture. Removing
-    // the impossibility costs nothing measurable; making the hinge usable is a
-    // rebalance that needs an instrument I do not have yet.
-    state.nanobots = Math.min(
-      state.tuning.crawlRecoveryCeiling,
-      state.nanobots + state.tuning.crawlRecoveryPerSecond * deltaSeconds
-    );
+  } else if (state.speedState === 'crawl') {
+    // Emergency crawl: scraping residue. Stock refill happens in advanceNanobotStock.
     state.pendingFieldValue += state.tuning.crawlFieldPatchMinValue * deltaSeconds;
     state.message = 'Emergency crawl: local reclaim legs are scraping enough residue to keep moving.';
   }
@@ -1356,41 +1406,121 @@ function layReturnedRail(state: ContinuousWorldState, patches: number): number {
   let y = state.rover.y;
   let heading = state.rover.heading;
   const stepSeconds = state.rover.speed > 0 ? spacing / state.rover.speed : 0;
+  const occupied = buildTileIndex(state.fields, state.tuning.tileSize);
+  let placed = 0;
   for (let index = 0; index < laid; index += 1) {
     heading += state.rover.turnRate * stepSeconds;
     x += Math.cos(heading) * spacing;
     y += Math.sin(heading) * spacing;
-    state.fields.push({
+
+    // Returned rail lands on the lattice like everything else, so what the drone
+    // hands back is track the machine can run on rather than a second set of
+    // pieces laid over the first. A cell already held is simply skipped.
+    const cell = worldToHex(x, y, state.tuning.tileSize);
+    const key = hexKey(cell.q, cell.r);
+    if (occupied.has(key)) continue;
+
+    const centre = hexToWorld(cell.q, cell.r, state.tuning.tileSize);
+    const tile: FieldPatch = {
       id: state.nextFieldId,
-      prevId: index > 0 ? state.nextFieldId - 1 : undefined,
-      x,
-      y,
+      x: centre.x,
+      y: centre.y,
       radius: state.tuning.fieldRadius,
       value: state.tuning.preparedFieldMinValue * 2,
       // Old enough to count as prepared on arrival. A gift you have to wait
       // for is not a gift.
       age: state.tuning.preparedFieldMinAgeSeconds
-    });
+    };
+    state.fields.push(tile);
+    occupied.set(key, tile);
     state.nextFieldId += 1;
+    placed += 1;
   }
-  return laid;
+  return placed;
 }
 
+// One tile per cell, every tile the same size, snapped to the lattice.
+//
+// Three things that used to be tuning problems are now structural. Tiles cannot
+// overlap, because a cell is either occupied or it is not. Tiles cannot land
+// haphazardly, because the emit point chooses a CELL and the cell decides where
+// the tile sits. And crawl-laid track is no longer a different size from driven
+// track -- it was born at 0.59x radius, which is most of what made the road read
+// as debris rather than as road.
+//
+// Laying onto a cell you already own tops the tile's value back up rather than
+// doing nothing: driving your own track should not degrade it.
 function addFieldPatch(state: ContinuousWorldState, value: number): void {
   const offset = state.speedState === 'crawl' ? 6 : 14;
   const x = state.rover.x - Math.cos(state.rover.heading) * offset;
   const y = state.rover.y - Math.sin(state.rover.heading) * offset;
+  const cell = worldToHex(x, y, state.tuning.tileSize);
+
+  const index = buildTileIndex(state.fields, state.tuning.tileSize);
+  const existing = index.get(hexKey(cell.q, cell.r));
+  if (existing) {
+    existing.value = Math.max(existing.value, value);
+    state.layingChainId = existing.id;
+    return;
+  }
+
+  const centre = hexToWorld(cell.q, cell.r, state.tuning.tileSize);
   state.fields.push({
     id: state.nextFieldId,
-    prevId: findJoinablePatchId(state, { x, y }),
-    x,
-    y,
-    radius: state.speedState === 'crawl' ? Math.max(12, state.tuning.fieldRadius * 0.59) : state.tuning.fieldRadius,
+    x: centre.x,
+    y: centre.y,
+    radius: state.tuning.fieldRadius,
     value,
     age: 0
   });
   state.layingChainId = state.nextFieldId;
   state.nextFieldId += 1;
+}
+
+// The cell a tile occupies. Laid tiles sit exactly on cell centres so this
+// round-trips exactly; deriving it rather than storing it also means a tile
+// placed by an arena or a test at an arbitrary point still has a defined cell.
+export function fieldCell(at: Vec2, tileSize: number): { q: number; r: number } {
+  return worldToHex(at.x, at.y, tileSize);
+}
+
+// Cached per fields array, because the reclaim pass asks "how connected is this
+// tile" once per tile and rebuilding the index each time is quadratic -- it took
+// one simulation test from 0.15s to 15s. Tiles never move once placed, so the
+// array's length is a sufficient invalidation signal: every add and every lift
+// changes it, and nothing else can change which cell a tile is in.
+interface TileIndexCache {
+  length: number;
+  tileSize: number;
+  index: Map<string, FieldPatch>;
+}
+const tileIndexCache = new WeakMap<FieldPatch[], TileIndexCache>();
+
+export function buildTileIndex(fields: FieldPatch[], tileSize: number): Map<string, FieldPatch> {
+  const cached = tileIndexCache.get(fields);
+  if (cached && cached.length === fields.length && cached.tileSize === tileSize) return cached.index;
+
+  const index = new Map<string, FieldPatch>();
+  for (const field of fields) {
+    const cell = fieldCell(field, tileSize);
+    index.set(hexKey(cell.q, cell.r), field);
+  }
+  tileIndexCache.set(fields, { length: fields.length, tileSize, index });
+  return index;
+}
+
+// Which occupied cells touch this one. Adjacency is read off the coordinates,
+// so it cannot be severed the way a prevId chain could: lifting a tile changes
+// what its neighbours are adjacent TO, and nothing has to be repaired.
+export function fieldNeighbours(
+  field: FieldPatch,
+  index: Map<string, FieldPatch>,
+  tileSize: number
+): FieldPatch[] {
+  const cell = fieldCell(field, tileSize);
+  return hexNeighbours(cell.q, cell.r)
+    .map((neighbour) => index.get(hexKey(neighbour.q, neighbour.r)))
+    .filter((neighbour): neighbour is FieldPatch => neighbour !== undefined && neighbour.id !== field.id);
 }
 
 // What this patch continues from. Prefer the patch laid immediately before it,
@@ -1423,17 +1553,6 @@ function findJoinablePatchId(state: ContinuousWorldState, at: Vec2): number | un
   return best;
 }
 
-function preserveFieldPatches(state: ContinuousWorldState): void {
-  if (state.fields.length <= state.tuning.maxFieldPatches) return;
-
-  const removable = state.fields
-    .filter((field) => !field.reservedByDrone && field.value <= state.tuning.trimmableCrawlFieldValue && field.radius < state.tuning.fieldRadius)
-    .sort((a, b) => b.age - a.age)
-    .slice(0, state.fields.length - state.tuning.maxFieldPatches)
-    .map((field) => field.id);
-  const removableIds = new Set(removable);
-  state.fields = state.fields.filter((field) => !removableIds.has(field.id));
-}
 
 function resolveSpeedState(state: ContinuousWorldState): SpeedState {
   if (getPreparedCoverage(state, state.rover) >= state.tuning.preparedCoverageThreshold) return 'prepared';
@@ -1541,35 +1660,54 @@ export function getRailLock(state: ContinuousWorldState, held = false): RailLock
   // machine IS that often is most of what "not smooth" means from the seat.
   const captureDistance = state.tuning.railCaptureDistance * (held ? 1.7 : 1);
   const captureAlignment = state.tuning.railCaptureAlignment * (held ? 0.45 : 1);
-  const byId = new Map<number, FieldPatch>();
-  const nextOf = new Map<number, FieldPatch>();
-  for (const field of state.fields) {
-    if (!isRailworthy(state, field)) continue;
-    byId.set(field.id, field);
-  }
-  for (const field of byId.values()) {
-    if (field.prevId !== undefined && byId.has(field.prevId)) nextOf.set(field.prevId, field);
-  }
 
-  // The nearest piece of track, not the nearest patch: a patch whose chain
-  // neighbours are gone is a stub, and locking onto a stub is what made the old
-  // magnet swing the machine at nothing.
+  const railworthy = state.fields.filter((field) => isRailworthy(state, field));
+  const index = buildTileIndex(railworthy, state.tuning.tileSize);
+
+  // The nearest piece of track, not the nearest tile: a tile with no occupied
+  // neighbours is a stub, and locking onto a stub is what made the old magnet
+  // swing the machine at nothing.
   let best: FieldPatch | undefined;
   let bestDistance = captureDistance;
-  for (const field of byId.values()) {
+  let bestNeighbours: FieldPatch[] = [];
+  for (const field of railworthy) {
     const fieldDistance = distance(state.rover, field);
     if (fieldDistance > bestDistance) continue;
-    const previous = field.prevId !== undefined ? byId.get(field.prevId) : undefined;
-    if (!previous && !nextOf.get(field.id)) continue;
+    const neighbours = fieldNeighbours(field, index, state.tuning.tileSize);
+    if (neighbours.length === 0) continue;
     best = field;
     bestDistance = fieldDistance;
+    bestNeighbours = neighbours;
   }
   if (!best) return undefined;
 
-  const previous = best.prevId !== undefined ? byId.get(best.prevId) : undefined;
-  const next = nextOf.get(best.id);
-  const from = previous ?? best;
-  const to = next ?? best;
+  // Which way this piece of track runs, taken from the neighbours that best
+  // continue it in each direction. On a plain stretch this reproduces exactly
+  // what prev -> next used to give. At a junction it picks the through route
+  // the machine is pointing down -- which the linked list could not represent
+  // at all, because a patch could only ever have one successor.
+  const facing = { x: Math.cos(state.rover.heading), y: Math.sin(state.rover.heading) };
+  let ahead: FieldPatch | undefined;
+  let behind: FieldPatch | undefined;
+  let aheadScore = -Infinity;
+  let behindScore = Infinity;
+  for (const neighbour of bestNeighbours) {
+    const dot = (neighbour.x - best.x) * facing.x + (neighbour.y - best.y) * facing.y;
+    if (dot > aheadScore) {
+      aheadScore = dot;
+      ahead = neighbour;
+    }
+    if (dot < behindScore) {
+      behindScore = dot;
+      behind = neighbour;
+    }
+  }
+
+  // With a single neighbour, ahead and behind are the same tile, so the tile
+  // under the machine supplies the other end rather than collapsing the tangent
+  // to zero length.
+  const from = behind && behind.id !== ahead?.id ? behind : best;
+  const to = ahead ?? best;
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const length = Math.hypot(dx, dy);
@@ -1578,14 +1716,14 @@ export function getRailLock(state: ContinuousWorldState, held = false): RailLock
   // Oriented to the way the tractor is pointing, so the same physical track
   // works in both directions -- which is the entire point of turning round and
   // running home on it.
-  const forward = Math.cos(state.rover.heading) * dx + Math.sin(state.rover.heading) * dy >= 0 ? 1 : -1;
+  const forward = facing.x * dx + facing.y * dy >= 0 ? 1 : -1;
   const tangent = { x: (dx / length) * forward, y: (dy / length) * forward };
-  if (Math.cos(state.rover.heading) * tangent.x + Math.sin(state.rover.heading) * tangent.y < captureAlignment) {
+  if (facing.x * tangent.x + facing.y * tangent.y < captureAlignment) {
     return undefined;
   }
 
-  // Project onto the centreline through the nearest patch rather than onto the
-  // patch itself, so the pull is sideways onto the track and never backwards
+  // Project onto the centreline through the nearest tile rather than onto the
+  // tile itself, so the pull is sideways onto the track and never backwards
   // along it.
   const alongX = state.rover.x - best.x;
   const alongY = state.rover.y - best.y;
@@ -1597,7 +1735,7 @@ export function getRailLock(state: ContinuousWorldState, held = false): RailLock
     tangent,
     center,
     offset,
-    runwayAhead: measureRunway(byId, nextOf, best, tangent)
+    runwayAhead: measureRunway(index, state.tuning.tileSize, best, tangent)
   };
 }
 
@@ -1625,13 +1763,13 @@ function isRailworthy(state: ContinuousWorldState, field: FieldPatch): boolean {
 // bite out of the middle: the walk stops at the hole, because that is exactly
 // where the tractor will drop off the rail.
 function measureRunway(
-  byId: Map<number, FieldPatch>,
-  nextOf: Map<number, FieldPatch>,
+  index: Map<string, FieldPatch>,
+  tileSize: number,
   from: FieldPatch,
   tangent: Vec2
 ): number {
   const seen = new Set<number>([from.id]);
-  // The direction carried along the walk, updated at every patch. Holding the
+  // The direction carried along the walk, updated at every tile. Holding the
   // starting tangent for the whole run was wrong on exactly the roads that
   // matter: a track that curves bends away from where it started, so the walk
   // either stopped at the bend or jumped to a different branch, and the runway
@@ -1642,42 +1780,32 @@ function measureRunway(
   let current = from;
   let total = 0;
 
-  const step = (): FieldPatch | undefined => {
-    const next = nextOf.get(current.id);
-    const previous = current.prevId !== undefined ? byId.get(current.prevId) : undefined;
-    for (const candidate of [next, previous]) {
-      if (!candidate || seen.has(candidate.id)) continue;
-      if ((candidate.x - current.x) * heading.x + (candidate.y - current.y) * heading.y > 0) return candidate;
-    }
-
-    // The chain ended, but the road may not have. A pass laid to bridge a gap
-    // is its own chain, and where it meets the old track the tractor carries
-    // straight on, so the runway has to as well -- otherwise the readout would
-    // call a route home short at exactly the junction you built to make it
-    // long. Only scanned when a chain runs out, never per step.
-    let hop: FieldPatch | undefined;
-    let hopDistance = current.radius;
-    for (const candidate of byId.values()) {
+  // Bounded so track that loops back on itself cannot spin here forever.
+  for (let step = 0; step < 400; step += 1) {
+    // Follow the straightest continuation. At a junction that is the branch the
+    // machine would carry on down, which is what the runway is asked to answer.
+    // The old walk needed a separate proximity scan here to hop between chains
+    // laid on different passes; adjacency makes a junction an ordinary
+    // neighbour, so that special case is gone rather than ported.
+    let next: FieldPatch | undefined;
+    let bestDot = 0;
+    for (const candidate of fieldNeighbours(current, index, tileSize)) {
       if (seen.has(candidate.id)) continue;
-      if ((candidate.x - current.x) * heading.x + (candidate.y - current.y) * heading.y <= 0) continue;
-      const gap = distance(current, candidate);
-      if (gap > hopDistance) continue;
-      hop = candidate;
-      hopDistance = gap;
+      const dx = candidate.x - current.x;
+      const dy = candidate.y - current.y;
+      const gap = Math.hypot(dx, dy);
+      if (gap <= 0.001) continue;
+      const dot = (dx / gap) * heading.x + (dy / gap) * heading.y;
+      if (dot <= bestDot) continue;
+      bestDot = dot;
+      next = candidate;
     }
-    return hop;
-  };
-
-  // Bounded so a chain that loops back on itself cannot spin here forever.
-  for (let index = 0; index < 400; index += 1) {
-    const next = step();
     if (!next) break;
+
     const gap = distance(current, next);
-    if (gap > 0.001) {
-      // Turn with the road rather than through it. A track can bend as sharply
-      // as the tractor laid it, and the walk has to bend with it.
-      heading = { x: (next.x - current.x) / gap, y: (next.y - current.y) / gap };
-    }
+    // Turn with the road rather than through it. A track can bend as sharply
+    // as the tractor laid it, and the walk has to bend with it.
+    heading = { x: (next.x - current.x) / gap, y: (next.y - current.y) / gap };
     total += gap;
     seen.add(next.id);
     current = next;
@@ -1880,14 +2008,6 @@ function getDroneBlockedReason(
     return `Oldest field age ${oldestFieldAge.toFixed(1)}s / need ${state.tuning.reclaimMinFieldAgeSeconds.toFixed(1)}s`;
   }
   if (!state.fields.some((field) => !field.reservedByDrone)) return 'No unreserved reclaim target';
-  // Say the rule rather than a threshold. This is the one blocked state the
-  // player can act on directly -- by driving somewhere off the line home.
-  if (
-    state.arena.extraction &&
-    !state.fields.some((field) => getRouteHomeClearance(state, field) >= state.tuning.reclaimRouteHomeCorridor)
-  ) {
-    return 'All your road is on the way home';
-  }
   if (!state.fields.some((field) => !field.reservedByDrone && field.value >= state.tuning.reclaimMinFieldValue)) {
     return `Best cluster payload ${bestClusterPayload.toFixed(2)} / need ${state.tuning.minReclaimClusterPayload.toFixed(2)}`;
   }
@@ -1936,18 +2056,20 @@ function createReclaimCandidateDiagnostics(
   // that one choice, and I answered each with another geometric exclusion --
   // minimum distance, minimum age, a corridor home, a forward wedge.
   //
-  // Age is better than nearest and it does NOT dissolve them, which this
-  // comment used to claim. Measured over eight seeds: with age scoring, 14% of
-  // launches take road the tractor drives back over within ten seconds;
-  // picking a legal patch at random would be 32%. Scoring by distance instead
-  // -- always send the drone to the farthest legal rail -- moves thefts by a
-  // few points and destabilises the route ladder, so it is not in here. The
-  // reason no score can do better is that a third of all road on the map is
-  // road the tractor is about to reach: at 96 units a second, ten seconds is
-  // the whole arena. The rule that actually fixes it does not try to guess the
-  // driver's next move at all -- see breakDroneClaimIfRoverArrives.
+  // Ranked by IRRELEVANCE, not by age and not by distance.
+  //
+  // Age asked "what did you lay longest ago", which is a question about the
+  // player's history rather than about whether the track is still doing a job.
+  // Distance asked "what is furthest away", which sends the drone to the end of
+  // the map for a piece that was holding a route together.
+  //
+  // Connection is the question. An isolated tile is doing nothing for anyone and
+  // goes first, however close it is; the end of a branch is nearly free; and the
+  // middle of a route scores worst because taking it cuts the network. Distance
+  // still breaks ties -- see compareReclaimCandidates -- which is the "somewhat
+  // by distance, but more so by connection" the design asks for.
   const distanceFromRover = distance(field, state.rover);
-  const score = weightedAge;
+  const score = MAX_TRACK_DEGREE - getTrackDegree(state, field);
   return {
     targetPatchId: field.id,
     target: { x: field.x, y: field.y },
@@ -1981,12 +2103,17 @@ function compareReclaimCandidates(a: ReclaimCandidateDiagnostics, b: ReclaimCand
 // road, protected road, everything. One predicate now decides what may be
 // lifted at all, and selection only adds the rules that are about the target
 // specifically rather than about the road.
+// Space is a command, not a request: "I need more track now."
+//
+// So topology RANKS candidates, it does not gate them. The drone always has an
+// answer, and if the only track left is holding a route together it takes that
+// and you feel it. The cost of asking at a bad moment lands on the driver for
+// asking, never on the machine for refusing -- which is what keeps the drone
+// competent equipment rather than a tool made of eligibility rules.
+//
+// Age is not a factor at any point, in ranking or here.
 function isLiftableRoad(state: ContinuousWorldState, field: FieldPatch): boolean {
-  return (
-    field.value >= state.tuning.reclaimMinFieldValue &&
-    field.age >= state.tuning.reclaimMinFieldAgeSeconds &&
-    isRoadSpendable(state, field)
-  );
+  return field.value >= state.tuning.reclaimMinFieldValue;
 }
 
 function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatch): boolean {
@@ -1997,89 +2124,46 @@ function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatc
   );
 }
 
-// The drone will not eat the road you are coming home along. Reclaim deletes
-// the field it lifts, so on a round trip the nearest cluster -- the road just
-// behind you -- was always the worst possible pick: it paid for reach by
-// removing the route back. Protecting the corridor between the rover and
-// extraction turns that into the game's one real balance. Your laid road is
-// two things at once, stored reach and a fast way home, and only road that is
-// off the line home can be spent. So the shape you drive decides how much you
-// have to spend: an out-and-back on a single line feeds the drone nothing, and
-// a loop feeds it well but costs the distance to make the loop.
-// Single source of truth for the corridor, so what the road is drawn as cannot
-// drift from what the drone is allowed to take.
+// The drone takes loose ends, never the middle of a path.
+//
+// This one rule replaces six. There was a corridor to extraction, a minimum
+// distance from the rover, a minimum age, a straight forward ray, a forward
+// wedge, and an arc projection of where the machine was about to be. The file's
+// own comments record why they kept accumulating: "each answered one play
+// report while missing the next." They were all proxies for the same thing, and
+// none of them could name it, because a bag of overlapping circles has no
+// middle and no end to point at.
+//
+// On a lattice it can be named. A tile with at most one occupied neighbour is a
+// loose end, and removing a vertex of degree one or zero cannot disconnect a
+// graph. So the route home is protected as a PROPERTY of the rule rather than
+// by geometry aimed at protecting it: the interior of your trail is degree two
+// and is never eligible, whatever shape you drove or where extraction happens
+// to be.
+//
+// What the player has to state to predict it: the drone eats loose ends, never
+// the middle. That is the whole rule.
 export function isRoadSpendable(state: ContinuousWorldState, point: Vec2): boolean {
-  return (
-    getRouteHomeClearance(state, point) >= state.tuning.reclaimRouteHomeCorridor &&
-    !isOnForwardPath(state, point)
-  );
+  const index = buildTileIndex(state.fields, state.tuning.tileSize);
+  const cell = fieldCell(point, state.tuning.tileSize);
+  const field = index.get(hexKey(cell.q, cell.r));
+  if (!field) return false;
+  return getTrackDegree(state, field, index) <= 1;
 }
 
-// The road you are about to drive onto. Distance from the rover, age, and the
-// corridor home are all protections I added before this, and not one of them
-// knows where the tractor is going -- they are measured from where it is, how
-// old the road is, and a fixed point on the map. So the drone could take the
-// stretch two seconds in front of you and satisfy every rule.
-//
-// That attacks the core mechanic directly: prepared field ahead is exactly
-// what lets the machine sprint instead of fabricate. Lifting it is worse than
-// lifting road anywhere else on the map.
-//
-// A fixed reach, not one scaled by current speed. Scaling it by speed was
-// backwards and measurably so: crawling drops the rover to 16 units/s, which
-// shrank the protected wedge to 40 units at exactly the moment the drone is
-// most likely to fire and the road ahead matters most. You are going to drive
-// over that road whether you reach it fast or slowly.
-//
-// Walk the arc the rover is actually on and protect what it is about to cross.
-//
-// Five geometric rules were tried before this one -- minimum distance, minimum
-// age, a corridor to extraction, a straight forward ray, a forward wedge --
-// and each answered one play report while missing the next, because none of
-// them knows the machine's trajectory. A straight ray misses a turn. A wedge
-// misses a hard turn, whose arc leaves it almost immediately. And raising the
-// exclusion radius is not even monotonic: at 120 the wide-lobe case got worse
-// than at 90, because pushing the target further out simply landed it on road
-// the rover was curving toward instead of road behind it.
-//
-// So project properly. Heading plus turn rate is a circular arc, and sampling
-// it forward answers the actual question -- will the tractor drive over this
-// in the next couple of seconds -- rather than a proxy for it. On a tight loop
-// the arc closes on itself and nearly everything nearby is protected, which is
-// correct: circling means the road you are done with and the road you are
-// about to reuse are the same road, and the honest answer is that there is
-// nothing to salvage, not a guess.
-function isOnForwardPath(state: ContinuousWorldState, point: Vec2): boolean {
-  // A zero lookahead means the protection is off, not a disc of clearance
-  // centred on the machine -- which is what collapsing the samples onto the
-  // rover would otherwise produce.
-  if (state.tuning.reclaimLookaheadSeconds <= 0) return false;
-
-  const samples = 10;
-  // Floor at fabricating speed, not crawl speed. A stopped or crawling rover is
-  // about to accelerate, and floors that low bunch every sample on top of the
-  // machine, which protects a disc around it instead of a path in front of it.
-  const speed = Math.max(state.rover.speed, state.tuning.fabricatingSpeed);
-  const stepSeconds = state.tuning.reclaimLookaheadSeconds / samples;
-  let x = state.rover.x;
-  let y = state.rover.y;
-  let heading = state.rover.heading;
-
-  for (let index = 0; index < samples; index += 1) {
-    heading += state.rover.turnRate * stepSeconds;
-    x += Math.cos(heading) * speed * stepSeconds;
-    y += Math.sin(heading) * speed * stepSeconds;
-    if (Math.hypot(point.x - x, point.y - y) <= state.tuning.reclaimPathClearance) return true;
-  }
-
-  return false;
+// How connected a tile is. Zero is an isolated fragment, one is the end of a
+// branch, two or more is somewhere in the middle of a route.
+export function getTrackDegree(
+  state: ContinuousWorldState,
+  field: FieldPatch,
+  index?: Map<string, FieldPatch>
+): number {
+  const tiles = index ?? buildTileIndex(state.fields, state.tuning.tileSize);
+  return fieldNeighbours(field, tiles, state.tuning.tileSize).length;
 }
 
-function getRouteHomeClearance(state: ContinuousWorldState, point: Vec2): number {
-  const extraction = state.arena.extraction;
-  if (!extraction) return Number.POSITIVE_INFINITY;
-  return distanceToSegment(point, state.rover, extraction);
-}
+
+
 
 function getReclaimCluster(state: ContinuousWorldState, target: Vec2): FieldPatch[] {
   return state.fields.filter((field) => isInReclaimCluster(state, field, target));
