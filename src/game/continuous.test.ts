@@ -120,7 +120,6 @@ describe('continuous Moon Miner spike rules', () => {
     expect(classic?.tuning.reclaimMinFieldAgeSeconds).toBe(2.2);
     expect(classic?.tuning.reclaimMinDistanceFromRover).toBe(26);
     expect(playground?.tuning.allowCloseReclaim).toBe(true);
-    expect(playground?.tuning.dronePickupRadius).toBeGreaterThan(stable?.tuning.dronePickupRadius ?? 0);
     expect(strict?.tuning.allowCloseReclaim).toBe(false);
     expect(strict?.tuning.reclaimMinFieldAgeSeconds).toBeGreaterThan(stable?.tuning.reclaimMinFieldAgeSeconds ?? 0);
     expect(createContinuousWorld().tuning).toEqual(stable?.tuning);

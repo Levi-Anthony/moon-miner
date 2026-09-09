@@ -43,6 +43,17 @@ const MAX_TRACK_DEGREE = 6;
 // several steps average that out into the road's real bearing.
 const RAIL_TANGENT_TILES = 4;
 
+// How far the drone reaches around its target, measured in CELLS rather than
+// world units. As a fixed distance it made hex grain change the economy: the
+// number of tiles inside a fixed radius falls with the square of the grain, so
+// coarser tiles meant a smaller payload per trip and a slower loop, and grain
+// stopped being the aesthetic dial it is supposed to be.
+const DRONE_PICKUP_CELLS = 2.9;
+
+export function getDronePickupRadius(tuning: { tileSize: number }): number {
+  return DRONE_PICKUP_CELLS * Math.sqrt(3) * tuning.tileSize;
+}
+
 // Road is road. A tile has no value of its own -- there is one kind of track,
 // it costs tuning.tileCost to lay and hands the same back when the drone lifts
 // it. The per-tile `value` this used to carry produced three grades of road
@@ -187,7 +198,6 @@ export interface ContinuousTuning {
   crawlRecoveryPerSecond: number;
   crawlRecoveryCeiling: number;
   droneSpeed: number;
-  dronePickupRadius: number;
   mineRate: number;
   preparedFieldMinAgeSeconds: number;
   fieldRadius: number;
@@ -202,8 +212,6 @@ export interface ContinuousTuning {
   // far above it and a whole pass collapses into one tile. Exposed as tuning
   // because the right grain is a playtest question.
   tileSize: number;
-  fieldEmitDistance: number;
-  crawlFieldEmitDistance: number;
   // What one tile of road costs to lay, and exactly what the drone hands back
   // when it lifts one. The whole road economy is this number times a count.
   tileCost: number;
@@ -302,6 +310,7 @@ export interface ContinuousWorldState {
   nextFieldId: number;
   // The patch the arms laid last, or undefined when they are not laying. New
   // patches chain onto it, so one pass is one piece of track.
+  fieldEmitDistance: number;
   layingChainId?: number;
   // Recomputed every tick from the track under the tractor. Undefined means
   // there is nothing connected to run on.
@@ -311,7 +320,6 @@ export interface ContinuousWorldState {
   railReleaseRemaining: number;
   // The last piece of road the tractor was standing on.
   lastRoadPatchId?: number;
-  fieldEmitDistance: number;
 }
 
 export interface ContinuousCommandResult {
@@ -352,13 +360,10 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   crawlRecoveryPerSecond: 0.1,
   crawlRecoveryCeiling: 2.6,
   droneSpeed: 430,
-  dronePickupRadius: 170,
   mineRate: 0.32,
   preparedFieldMinAgeSeconds: 1.25,
   fieldRadius: 44,
-  tileSize: 16,
-  fieldEmitDistance: 28,
-  crawlFieldEmitDistance: 12,
+  tileSize: 24,
   tileCost: 0.35,
   reclaimMinFieldAgeSeconds: 2.2,
   reclaimMinClusterPayload: 1.8,
@@ -418,9 +423,8 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   startingNanobots: 6,
   maxNanobots: 24,
   fabricateCostPerSecond: 1,
-  fieldEmitDistance: 26,
   fieldRadius: 46,
-  tileSize: 16,
+  tileSize: 24,
   // Raised from 1.35s. Geometry alone is not enough: on a tight loop the road
   // laid under two seconds ago is already clear of the line home, so it was
   // legal to lift and still felt exactly like "it takes the road behind me".
@@ -449,7 +453,6 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   droneSpeed: 260,
   // 185 was four field-radii -- a swathe rather than a stretch. 70 lifts a
   // short run of road you can see disappear as a piece.
-  dronePickupRadius: 70,
   reclaimLockSeconds: 0.35,
   lowStockWarningRatio: 0.14,
   droneUrgencyRatio: 0.24,
@@ -511,7 +514,6 @@ export const DYNAMICS_PRESETS: DynamicsPresetDefinition[] = [
       reclaimMinDistanceFromRover: 24,
       allowCloseReclaim: true,
       droneSpeed: 520,
-      dronePickupRadius: 230
     }
   },
   {
@@ -523,7 +525,6 @@ export const DYNAMICS_PRESETS: DynamicsPresetDefinition[] = [
       // it demands older road than the default does.
       reclaimMinFieldAgeSeconds: 6,
       reclaimMinDistanceFromRover: 34,
-      dronePickupRadius: 140,
       allowCloseReclaim: false
     }
   }
@@ -1148,22 +1149,29 @@ function runFieldSystem(
   // road driven out and back was never one road: walking it stopped dead at the
   // depot apron, which is exactly where a run home most needs it not to.
   if (state.layingChainId === undefined) {
-    state.fieldEmitDistance = state.tuning.fieldEmitDistance;
+    state.fieldEmitDistance = Math.sqrt(3) * state.tuning.tileSize;
   }
 
   state.fieldEmitDistance += movedDistance;
   // Crawl lays nothing, so it never reaches an emit.
   if (state.speedState !== 'fabricating') return;
 
-  if (state.fieldEmitDistance >= state.tuning.fieldEmitDistance) {
+  // One emit, one cell. The step is the lattice's across-flats distance, so a
+  // pass lays a line of touching tiles and never hammers a cell it already
+  // holds. As a hand-set number it silently coupled to grain: at a step shorter
+  // than a cell every other emit placed nothing, road grew at half the rate the
+  // machine moved, and the near routes lost most of their prepared running.
+  if (state.fieldEmitDistance >= Math.sqrt(3) * state.tuning.tileSize) {
     // A tile is paid for whole or not laid at all. That is what makes the road
     // countable: every tile on the map is one unit of stock parked on the
     // ground, and the tank tells you exactly how much track you have left in
     // you. Running out mid-pass drops you to crawl rather than dribbling out
     // road too thin to drive on.
     if (state.nanobots < state.tuning.tileCost) return;
-    state.nanobots = Math.max(0, state.nanobots - state.tuning.tileCost);
-    addFieldPatch(state);
+    // Charge only for track actually placed. An emit landing on a cell that is
+    // already held used to bill for a tile it never laid, which quietly drained
+    // the tank at every grain where the emit step is shorter than a cell.
+    if (addFieldPatch(state)) state.nanobots = Math.max(0, state.nanobots - state.tuning.tileCost);
     state.fieldEmitDistance = 0;
   }
 }
@@ -1370,7 +1378,7 @@ function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): { paylo
 function layReturnedRail(state: ContinuousWorldState, patches: number): number {
   if (patches <= 0) return 0;
 
-  const spacing = state.tuning.fieldEmitDistance;
+  const spacing = Math.sqrt(3) * state.tuning.tileSize;
   const laid = Math.min(patches, state.tuning.droneRailRelayMaxPatches);
   // Lay it along the arc the tractor is actually on, not down a straight spur
   // from its nose. Road count is already conserved -- three seeds of self-play
@@ -1430,7 +1438,7 @@ function layReturnedRail(state: ContinuousWorldState, patches: number): number {
 //
 // Laying onto a cell you already own tops the tile's value back up rather than
 // doing nothing: driving your own track should not degrade it.
-function addFieldPatch(state: ContinuousWorldState): void {
+function addFieldPatch(state: ContinuousWorldState): boolean {
   const offset = state.speedState === 'crawl' ? 6 : 14;
   const x = state.rover.x - Math.cos(state.rover.heading) * offset;
   const y = state.rover.y - Math.sin(state.rover.heading) * offset;
@@ -1441,7 +1449,7 @@ function addFieldPatch(state: ContinuousWorldState): void {
   if (existing) {
     // Cell already held. Nothing to upgrade any more -- a tile is a tile.
     state.layingChainId = existing.id;
-    return;
+    return false;
   }
 
   const centre = hexToWorld(cell.q, cell.r, state.tuning.tileSize);
@@ -1454,6 +1462,7 @@ function addFieldPatch(state: ContinuousWorldState): void {
   });
   state.layingChainId = state.nextFieldId;
   state.nextFieldId += 1;
+  return true;
 }
 
 // The cell a tile occupies. Laid tiles sit exactly on cell centres so this
@@ -1515,7 +1524,7 @@ export function fieldNeighbours(
 // one continuous piece of road whatever pass laid them, and the tractor can
 // drive from one onto the other without leaving the track.
 function findJoinablePatchId(state: ContinuousWorldState, at: Vec2): number | undefined {
-  const reach = state.tuning.fieldEmitDistance * 1.5;
+  const reach = Math.sqrt(3) * state.tuning.tileSize * 1.5;
   const previous = state.layingChainId !== undefined
     ? state.fields.find((field) => field.id === state.layingChainId)
     : undefined;
@@ -2184,7 +2193,7 @@ function getReclaimCluster(state: ContinuousWorldState, target: Vec2): FieldPatc
 }
 
 function isInReclaimCluster(state: ContinuousWorldState, field: FieldPatch, target: Vec2): boolean {
-  return isLiftableRoad(state, field) && distance(field, target) <= state.tuning.dronePickupRadius;
+  return isLiftableRoad(state, field) && distance(field, target) <= getDronePickupRadius(state.tuning);
 }
 
 // Conservation, structurally rather than by a multiplier set to 1: what comes

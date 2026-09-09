@@ -27,7 +27,8 @@ import {
   type FertileZone,
   type ReclaimPreview,
   type SpeedState,
-  type Vec2
+  type Vec2,
+  getDronePickupRadius
 } from '../game/continuous';
 import {
   CONTINUOUS_ARENAS,
@@ -250,7 +251,6 @@ const TUNING_CONTROLS: TuningControlDefinition[] = [
   { key: 'crawlSpeed', label: 'Crawl speed', min: 8, max: 32, step: 1 },
   { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 1, max: 4.2, step: 0.1, precision: 1 },
   { key: 'droneSpeed', label: 'Drone speed', min: 260, max: 620, step: 10 },
-  { key: 'dronePickupRadius', label: 'Drone pickup', min: 70, max: 260, step: 2 },
   { key: 'crawlRecoveryPerSecond', label: 'Crawl recovery', min: 0.02, max: 0.3, step: 0.01, precision: 2 },
   { key: 'mineRate', label: 'Mining yield', min: 0.18, max: 0.55, step: 0.01, precision: 2 },
   { key: 'startingNanobots', label: 'Start stock', min: 3, max: 16, step: 1 },
@@ -264,7 +264,6 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
     controls: [
       { key: 'reclaimMinFieldAgeSeconds', label: 'Reclaim min age', min: 0, max: 8, step: 0.05, precision: 2 },
       { key: 'reclaimMinDistanceFromRover', label: 'Min distance', min: 0, max: 220, step: 1 },
-      { key: 'dronePickupRadius', label: 'Pickup radius', min: 40, max: 260, step: 2 },
       { key: 'droneSpeed', label: 'Drone speed', min: 180, max: 760, step: 10 },
       { key: 'reclaimLockSeconds', label: 'Reclaim lock', min: 0.05, max: 2.5, step: 0.01, precision: 2 },
       { key: 'minReclaimClusterPayload', label: 'Min payload', min: 0, max: 1.2, step: 0.01, precision: 2 },
@@ -280,8 +279,7 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
     label: 'Rail / Field',
     controls: [
       { key: 'fieldRadius', label: 'Field radius', min: 18, max: 82, step: 1 },
-      { key: 'fieldEmitDistance', label: 'Normal emit dist', min: 8, max: 80, step: 1 },
-      { key: 'crawlFieldEmitDistance', label: 'Crawl emit dist', min: 4, max: 48, step: 1 },
+      { key: 'tileSize', label: 'Hex grain', min: 8, max: 48, step: 1 },
       { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 0.2, max: 5, step: 0.05, precision: 2 },
       { key: 'tileCost', label: 'Cost per tile', min: 0.05, max: 1.2, step: 0.01, precision: 2 }
     ]
@@ -3014,8 +3012,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (length <= 0.01) return;
 
     const normal = { x: -dy / length, y: dx / length };
-    const fromWidth = this.fieldRoadWidth(from) * 1.42;
-    const toWidth = this.fieldRoadWidth(to) * 1.42;
+    const fromWidth = this.fieldRoadWidth(from);
+    const toWidth = this.fieldRoadWidth(to);
     const points = [
       { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
       { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
@@ -3034,12 +3032,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     visualCalm: number
   ): void {
     const center = this.project(field);
-    const width = this.fieldRoadWidth(field) * 1.42;
+    const width = this.fieldRoadWidth(field);
     const yScale = this.shapeYScale();
     this.graphics.fillStyle(0x193334, 0.1 + visualCalm * 0.05);
-    this.graphics.fillEllipse(center.x, center.y, width * 2.12, width * 1.22 * yScale);
+    this.graphics.fillEllipse(center.x, center.y, width * 2, width * 1.15 * yScale);
     this.graphics.lineStyle(1, 0x3b5f5c, 0.14 + visualCalm * 0.1);
-    this.graphics.strokeEllipse(center.x, center.y, width * 2.12, width * 1.22 * yScale);
+    this.graphics.strokeEllipse(center.x, center.y, width * 2, width * 1.15 * yScale);
   }
 
   private terrainFeaturePoint(index: number, salt: number): Vec2 {
@@ -3482,7 +3480,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const targeted = new Set<number>();
     if (preview) {
       for (const field of ordinary) {
-        if (Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius) {
+        if (Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= getDronePickupRadius(this.state.tuning)) {
           targeted.add(field.id);
         }
       }
@@ -3704,7 +3702,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const targetScreen = this.project(preview.target);
     const previewFields = this.state.fields.filter((field) => {
-      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius;
+      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= getDronePickupRadius(this.state.tuning);
     });
     const pulse = 0.5 + Math.sin(this.time.now / 260) * 0.5;
     const radius = this.droneReservationRadius(targetScreen, previewFields);
@@ -3800,11 +3798,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return clamp(radius, 34, 78);
   }
 
-  private fieldRoadWidth(field: { x: number; y: number; radius: number }): number {
-    // One width for all road, because there is one kind of road. This used to
-    // widen with tile value, which drew the authored path fatter than the track
-    // you laid and made a single trail look like two.
-    return field.radius * this.projectedScale(field) * 0.6;
+  // Half the width of a piece of track, in screen units.
+  //
+  // Keyed to the LATTICE, not to fieldRadius. It used to return radius * 0.6 --
+  // 26.4 from an influence radius of 44 -- and the terrain layers then widened
+  // that by 1.42, painting 75-unit blobs on a 27.7-unit lattice. That is road
+  // overlap surviving in the renderer long after the simulation stopped
+  // overlapping: the tiles were one per cell, and three of the four draw paths
+  // were still drawing the reach instead of the piece.
+  //
+  // The inradius (across-flats / 2) is the honest half-width: tiles drawn at it
+  // touch their neighbours and never stack.
+  private fieldRoadWidth(field: { x: number; y: number }): number {
+    return this.state.tuning.tileSize * 0.866 * this.projectedScale(field);
   }
 
   // Road is road, so opacity no longer grades it. It used to divide a tile's
@@ -5394,7 +5400,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private getDronePreviewTargetSnapshot(preview: ReclaimPreview): ContinuousUiRect {
     const screen = this.project(preview.target);
     const previewFields = this.state.fields.filter((field) => {
-      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius;
+      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= getDronePickupRadius(this.state.tuning);
     });
     const radius = this.droneReservationRadius(screen, previewFields) + 18;
     return {
