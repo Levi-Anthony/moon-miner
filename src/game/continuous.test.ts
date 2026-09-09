@@ -51,7 +51,10 @@ describe('continuous Moon Miner spike rules', () => {
     // 96 seconds. What this line is for is that the rover starts on known
     // ground, so it asserts the runway rather than emptiness.
     expect(world.fields).toHaveLength(6);
-    expect(world.fields.every((field) => field.value === world.tuning.startingFieldValue)).toBe(true);
+    // Authored road is ordinary road. It used to carry its own richer value,
+    // which is what made the map's own track render solid while everything the
+    // player laid sat on the opacity floor.
+    expect(world.fields.every((field) => field.radius === world.tuning.fieldRadius)).toBe(true);
     expect(world.nextFieldId).toBe(7);
     // Starting on the authored runway means starting on prepared ground, which
     // is the point of having a runway: the machine opens the run rolling
@@ -109,7 +112,6 @@ describe('continuous Moon Miner spike rules', () => {
     expect(stable?.tuning.maxNanobots).toBe(24);
     expect(stable?.tuning.reclaimMinFieldAgeSeconds).toBe(4);
     expect(stable?.tuning.reclaimMinDistanceFromRover).toBe(90);
-    expect(stable?.tuning.reclaimMinFieldValue).toBe(0.06);
     expect(stable?.tuning.minReclaimClusterPayload).toBe(0.12);
     expect(stable?.tuning.droneUrgencyRatio).toBe(0.24);
 
@@ -478,7 +480,6 @@ describe('continuous Moon Miner spike rules', () => {
         x: world.rover.x,
         y: world.rover.y,
         radius: 600,
-        value: 1,
         age: 4
       }
     ];
@@ -526,7 +527,6 @@ describe('continuous Moon Miner spike rules', () => {
         x: world.rover.x,
         y: world.rover.y,
         radius: 600,
-        value: 1,
         age: 4
       }
     ];
@@ -547,7 +547,7 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(next.nanobots).toBeLessThan(6);
     expect(next.fields.length).toBeGreaterThan(0);
-    expect(next.fields.some((field) => field.value > 0)).toBe(true);
+    expect(next.fields.length).toBeGreaterThan(0);
   });
 
   it('falls into emergency crawl instead of a hard stop when field-starved', () => {
@@ -567,8 +567,8 @@ describe('continuous Moon Miner spike rules', () => {
     const world = createContinuousWorld();
     world.nanobots = 8;
     world.fields = [
-      { id: 1, x: world.rover.x - 160, y: world.rover.y, radius: 44, value: 5, age: 6 },
-      { id: 2, x: world.rover.x - 184, y: world.rover.y + 8, radius: 44, value: 3, age: 5 }
+      { id: 1, x: world.rover.x - 160, y: world.rover.y, radius: 44, age: 6 },
+      { id: 2, x: world.rover.x - 184, y: world.rover.y + 8, radius: 44, age: 5 }
     ];
     world.nextFieldId = 3;
 
@@ -591,7 +591,6 @@ describe('continuous Moon Miner spike rules', () => {
       x: 80 + (index % 80) * 10,
       y: 160 + Math.floor(index / 80) * 12,
       radius: 44,
-      value: 0.9,
       age: 30 + index * 0.01
     }));
     world.nextFieldId = 1221;
@@ -630,8 +629,8 @@ describe('continuous Moon Miner spike rules', () => {
     // anything worth carrying home.
     const world = createContinuousWorld();
     world.fields = [
-      { id: 2, x: world.rover.x - 12, y: world.rover.y, radius: 44, value: 1, age: 8 },
-      { id: 3, x: world.rover.x - 180, y: world.rover.y, radius: 26, value: 0.025, age: 8 }
+      { id: 2, x: world.rover.x - 12, y: world.rover.y, radius: 44, age: 8 },
+      { id: 3, x: world.rover.x - 180, y: world.rover.y, radius: 26, age: 8 }
     ];
     world.nextFieldId = 4;
 
@@ -643,13 +642,13 @@ describe('continuous Moon Miner spike rules', () => {
     // tractor's elbow was the point. In play it reads as the drone eating the
     // ground under you, so the rule is inverted: age does not buy proximity.
     const world = createContinuousWorld();
-    world.fields = [{ id: 1, x: world.rover.x - 40, y: world.rover.y, radius: 44, value: 1, age: 8 }];
+    world.fields = [{ id: 1, x: world.rover.x - 40, y: world.rover.y, radius: 44, age: 8 }];
     world.nextFieldId = 2;
 
     expect(getReclaimPreview(world)).toBeUndefined();
 
     const further = createContinuousWorld();
-    further.fields = [{ id: 1, x: further.rover.x - 200, y: further.rover.y, radius: 44, value: 1, age: 8 }];
+    further.fields = [{ id: 1, x: further.rover.x - 200, y: further.rover.y, radius: 44, age: 8 }];
     further.nextFieldId = 2;
 
     expect(getReclaimPreview(further)?.targetPatchId).toBe(1);
@@ -676,7 +675,7 @@ describe('continuous Moon Miner spike rules', () => {
       // projection is switched off to keep it a test of one thing.
       reclaimLookaheadSeconds: 0
     });
-    world.fields = [{ id: 1, x: world.rover.x - 52, y: world.rover.y, radius: 44, value: 2.6, age: 1.4 }];
+    world.fields = [{ id: 1, x: world.rover.x - 52, y: world.rover.y, radius: 44, age: 1.4 }];
     world.nextFieldId = 2;
 
     expect(getDroneReclaimDiagnostics(world).blockedReason).toBe('Oldest field age 1.4s / need 2.2s');
@@ -823,8 +822,8 @@ describe('continuous Moon Miner spike rules', () => {
   it('prefers a nearer equally valuable old reclaim target over a distant one', () => {
     const world = createContinuousWorld();
     world.fields = [
-      { id: 1, x: world.rover.x - 150, y: world.rover.y, radius: 44, value: 3, age: 6 },
-      { id: 2, x: world.rover.x + 420, y: world.rover.y, radius: 44, value: 3, age: 6 }
+      { id: 1, x: world.rover.x - 150, y: world.rover.y, radius: 44, age: 6 },
+      { id: 2, x: world.rover.x + 420, y: world.rover.y, radius: 44, age: 6 }
     ];
     world.nextFieldId = 3;
 
@@ -841,9 +840,9 @@ describe('continuous Moon Miner spike rules', () => {
     const world = createContinuousWorld();
     world.nanobots = 8;
     world.fields = [
-      { id: 1, x: world.rover.x - 170, y: world.rover.y, radius: 44, value: 5, age: 6 },
-      { id: 2, x: world.rover.x - 195, y: world.rover.y, radius: 44, value: 4, age: 6 },
-      { id: 3, x: world.rover.x + 260, y: world.rover.y, radius: 44, value: 3, age: 6 }
+      { id: 1, x: world.rover.x - 170, y: world.rover.y, radius: 44, age: 6 },
+      { id: 2, x: world.rover.x - 195, y: world.rover.y, radius: 44, age: 6 },
+      { id: 3, x: world.rover.x + 260, y: world.rover.y, radius: 44, age: 6 }
     ];
     world.nextFieldId = 4;
 
@@ -883,7 +882,6 @@ describe('continuous Moon Miner spike rules', () => {
         x: prepared.rover.x,
         y: prepared.rover.y,
         radius: 500,
-        value: 1,
         age: 4
       }
     ];
@@ -1353,7 +1351,6 @@ describe('continuous Moon Miner spike rules', () => {
           (field) =>
             !field.reservedByDrone &&
             getTrackDegree(world, field) <= 1 &&
-            field.value >= world.tuning.reclaimMinFieldValue &&
             (world.tuning.allowCloseReclaim ||
               Math.hypot(field.x - world.rover.x, field.y - world.rover.y) >= world.tuning.reclaimMinDistanceFromRover)
         );
@@ -1536,7 +1533,7 @@ describe('continuous Moon Miner spike rules', () => {
       ...world,
       elapsedSeconds: 20,
       speedState: 'crawl' as const,
-      fields: [{ id: 1, x: 300, y: 200, radius: 46, value: 3, age: 10 }]
+      fields: [{ id: 1, x: 300, y: 200, radius: 46, age: 10 }]
     };
     expect(getContinuousGuidance(supplied).nudge).toContain('Space');
 
@@ -1605,7 +1602,6 @@ function placeRoverAtVeinStart(world: ContinuousWorldState, zoneIndex: number): 
       x: world.rover.x,
       y: world.rover.y,
       radius: 520,
-      value: 1,
       age: 4
     }
   ];
@@ -1624,7 +1620,6 @@ function createPreparedLaneWorld(offsetY: number): ContinuousWorldState {
     x: 140 + index * 42,
     y: laneY,
     radius: 44,
-    value: 1,
     age: 4
   }));
   world.nextFieldId = 9;
@@ -1656,8 +1651,8 @@ function createDroneRouteWorld(): ContinuousWorldState {
   const world = createContinuousWorld();
   world.nanobots = 8;
   world.fields = [
-    { id: 1, x: world.rover.x - 170, y: world.rover.y, radius: 44, value: 5, age: 6 },
-    { id: 2, x: world.rover.x - 206, y: world.rover.y + 10, radius: 44, value: 4, age: 6 }
+    { id: 1, x: world.rover.x - 170, y: world.rover.y, radius: 44, age: 6 },
+    { id: 2, x: world.rover.x - 206, y: world.rover.y + 10, radius: 44, age: 6 }
   ];
   world.nextFieldId = 3;
   return world;

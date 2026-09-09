@@ -38,10 +38,22 @@ export interface RoverMotionState extends Vec2 {
 // A hex cell has six neighbours, so this is the ceiling a degree can take.
 const MAX_TRACK_DEGREE = 6;
 
+// How far along the track the rail looks to decide which way the road runs.
+// One step is a single lattice direction and quantises the lane to 60 degrees;
+// several steps average that out into the road's real bearing.
+const RAIL_TANGENT_TILES = 4;
+
+// Road is road. A tile has no value of its own -- there is one kind of track,
+// it costs tuning.tileCost to lay and hands the same back when the drone lifts
+// it. The per-tile `value` this used to carry produced three grades of road
+// that looked alike and behaved differently: authored road at 0.85 rendered
+// solid and pulled hard, road you laid at ~0.35 sat on the opacity floor, and
+// road laid while crawling at 0.025 fell under every threshold -- it was drawn
+// like track, occupied a cell like track, and was not track. A third of a
+// run's tiles were that. None of it earned the complexity.
 export interface FieldPatch extends Vec2 {
   id: number;
   radius: number;
-  value: number;
   age: number;
   reservedByDrone?: boolean;
   // The patch this one was laid immediately after, which is what makes the road
@@ -178,7 +190,6 @@ export interface ContinuousTuning {
   dronePickupRadius: number;
   mineRate: number;
   preparedFieldMinAgeSeconds: number;
-  startingFieldValue: number;
   fieldRadius: number;
   // Lattice grain: the circumradius of one track tile as a PIECE -- what gets
   // placed and drawn. Deliberately distinct from fieldRadius, which is the
@@ -193,11 +204,10 @@ export interface ContinuousTuning {
   tileSize: number;
   fieldEmitDistance: number;
   crawlFieldEmitDistance: number;
-  normalFieldPatchMinValue: number;
-  crawlFieldPatchMinValue: number;
-  fieldValueMultiplierFromSpentStock: number;
+  // What one tile of road costs to lay, and exactly what the drone hands back
+  // when it lifts one. The whole road economy is this number times a count.
+  tileCost: number;
   reclaimMinFieldAgeSeconds: number;
-  reclaimMinFieldValue: number;
   reclaimMinClusterPayload: number;
   droneLaunchCost: number;
   droneLaunchCooldownSeconds: number;
@@ -208,11 +218,8 @@ export interface ContinuousTuning {
   // the target is dropped and re-picked, every tick, for the whole flight.
   reclaimClaimBreakRadius: number;
   reclaimPathClearance: number;
-  reclaimYieldMultiplier: number;
-  overnightFieldDecay: number;
   overnightOreRegrowth: number;
   miningFlowSpeedCap: number;
-  overnightFieldSurvivalValue: number;
   droneRailRelayMaxPatches: number;
   reclaimLockSeconds: number;
   allowCloseReclaim: boolean;
@@ -220,7 +227,6 @@ export interface ContinuousTuning {
   minReclaimClusterPayload: number;
   minReclaimCandidateCount: number;
   preparedCoverageThreshold: number;
-  preparedFieldMinValue: number;
   preparedMagnetInfluenceMultiplier: number;
   preparedMagnetCenterPull: number;
   preparedMagnetPassiveTurnRate: number;
@@ -288,7 +294,6 @@ export interface ContinuousWorldState {
   solarWindowSeconds: number;
   elapsedSeconds: number;
   lastDroneLaunchAtSeconds: number;
-  dronePendingLaunchCost: number;
   phase: ContinuousPhase;
   speedState: SpeedState;
   arms: ArmAllocation;
@@ -307,7 +312,6 @@ export interface ContinuousWorldState {
   // The last piece of road the tractor was standing on.
   lastRoadPatchId?: number;
   fieldEmitDistance: number;
-  pendingFieldValue: number;
 }
 
 export interface ContinuousCommandResult {
@@ -351,35 +355,12 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   dronePickupRadius: 170,
   mineRate: 0.32,
   preparedFieldMinAgeSeconds: 1.25,
-  // The map's material endowment, per tile of authored road.
-  //
-  // Denser than a tile you lay, which costs fabricateCostPerSecond *
-  // emitDistance / fabricatingSpeed = 1 * 26 / 74 = 0.351. That looked at
-  // first like the mint wearing terrain's clothes, and it is not: conservation
-  // is a property of the lay -> reclaim LOOP, which returns exactly what it
-  // took. An endowment is an initial condition. Total material in a run stays
-  // bounded either way; this only sets where the bound is.
-  //
-  // Dropping it to 0.351 was tried and starved the level -- crawl 8 to 16
-  // seconds on every rung, ore flat at 7/7/16/15/16 -- because material lying
-  // on the ground is worth less than material in the tank: you have to drive
-  // to it and fly it back, and that retrieval friction is real time. Swept
-  // 0.351 to 0.85 against both guards; 0.85 is the only value where the drone
-  // decides three of the five routes AND crawl lands on the ambitious rungs
-  // rather than the cautious ones.
-  startingFieldValue: 0.85,
   fieldRadius: 44,
   tileSize: 16,
   fieldEmitDistance: 28,
   crawlFieldEmitDistance: 12,
-  normalFieldPatchMinValue: 0.12,
-  crawlFieldPatchMinValue: 0.025,
-  // Conservation, second half: a tile stores exactly the stock that built it.
-  // The 5% was a small mint on every patch laid, compounding for the same
-  // reason the yield multiplier did.
-  fieldValueMultiplierFromSpentStock: 1,
+  tileCost: 0.35,
   reclaimMinFieldAgeSeconds: 2.2,
-  reclaimMinFieldValue: 0.08,
   reclaimMinClusterPayload: 1.8,
   droneLaunchCost: 2.2,
   droneLaunchCooldownSeconds: 9,
@@ -388,23 +369,6 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   reclaimLookaheadSeconds: 3,
   reclaimClaimBreakRadius: 120,
   reclaimPathClearance: 70,
-  // Conservation. Reclaiming road returns the stock that built it, and not a
-  // unit more. Levi's ruling, 2026-09-09: "conserve. multiply sounds like a
-  // powerup." A reclaim that hands back more than it took is a pickup, not
-  // logistics, and the fiction is that these are the same nanobots coming home.
-  //
-  // This was 3, defended by a comment arguing for a doubling and by a sweep
-  // whose own conclusion was "above 2 the tank caps and the extra is wasted".
-  // Measured over full runs the loop returned 1.37x to 2.43x what laying cost,
-  // so road was a battery paying interest: stock trended UP across a run, the
-  // tank could not empty while any road was out there, and crawl had nothing
-  // to trigger on. That is why launching early was always right.
-  //
-  // At 1 the road is what it always claimed to be -- stock parked on the
-  // ground -- and the total material in a run is fixed. Reach stops being a
-  // number here and becomes a property of the map: see the lower path in
-  // continuousArena.ts, which is this level's material endowment.
-  reclaimYieldMultiplier: 1,
   // Load-bearing, and the window is narrow. Swept 0.20 to 0.55 across six
   // chained shifts: at 0.20 nothing survives the night and it is the old game;
   // at 0.55 the inherited network is rich enough that a run with no drone at
@@ -420,8 +384,6 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // between road you built and road you scraped out while dying, survives.
   overnightOreRegrowth: 0.35,
   miningFlowSpeedCap: 1.45,
-  overnightFieldDecay: 0.94,
-  overnightFieldSurvivalValue: 0.1,
   droneRailRelayMaxPatches: 6,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
   allowCloseReclaim: false,
@@ -429,7 +391,6 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   minReclaimClusterPayload: 0.08,
   minReclaimCandidateCount: 1,
   preparedCoverageThreshold: 0.24,
-  preparedFieldMinValue: 0.08,
   preparedMagnetInfluenceMultiplier: 1.35,
   preparedMagnetCenterPull: 0.92,
   preparedMagnetPassiveTurnRate: 2.25,
@@ -460,10 +421,6 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   fieldEmitDistance: 26,
   fieldRadius: 46,
   tileSize: 16,
-  // Conservation, second half: a tile stores exactly the stock that built it.
-  // The 5% was a small mint on every patch laid, compounding for the same
-  // reason the yield multiplier did.
-  fieldValueMultiplierFromSpentStock: 1,
   // Raised from 1.35s. Geometry alone is not enough: on a tight loop the road
   // laid under two seconds ago is already clear of the line home, so it was
   // legal to lift and still felt exactly like "it takes the road behind me".
@@ -479,7 +436,6 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // every route shape keeps its supply. At 150 a tight loop can never reclaim
   // at all, which would kill the best answer the corridor has.
   reclaimMinDistanceFromRover: 90,
-  reclaimMinFieldValue: 0.06,
   reclaimMinClusterPayload: 1.8,
   minReclaimClusterPayload: 0.12,
   allowCloseReclaim: false,
@@ -499,7 +455,6 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   droneUrgencyRatio: 0.24,
   preparedCoverageThreshold: 0.22,
   preparedFieldMinAgeSeconds: 1.0,
-  preparedFieldMinValue: 0.06,
   // The shipped preset overrode the magnet down to almost nothing -- an active
   // rate of 0.35 against a passive 1.65 -- and the road advantage to 19%. So
   // the groove barely existed and using it barely paid, which together are the
@@ -593,7 +548,7 @@ export function createContinuousWorld(
   const resolvedTuning = resolveContinuousTuning(tuning);
   const arena = getContinuousArena(arenaId);
   const solarWindowSeconds = arena.solarWindowSeconds ?? resolvedTuning.startingSolarSeconds;
-  const starter = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, resolvedTuning.tileSize, resolvedTuning.fieldRadius);
+  const starter = createArenaStarterFields(arena, resolvedTuning.tileSize, resolvedTuning.fieldRadius);
   const fields = [...starter, ...carriedFields.map((field, index) => ({ ...field, id: starter.length + 1 + index }))];
   const nextFieldId = fields.length + 1;
 
@@ -630,7 +585,6 @@ export function createContinuousWorld(
     solarWindowSeconds,
     elapsedSeconds: 0,
     lastDroneLaunchAtSeconds: -1000,
-    dronePendingLaunchCost: 0,
     phase: 'playing',
     speedState: 'fabricating',
     arms: allocateArms('fabricating', false, false, 'ready'),
@@ -642,7 +596,6 @@ export function createContinuousWorld(
         : 'Raw field start. Drive to lay your first line, then reclaim it.',
     nextFieldId,
     fieldEmitDistance: 0,
-    pendingFieldValue: 0,
     railReleaseRemaining: 0
   };
 
@@ -677,14 +630,9 @@ export function launchReclaimDrone(state: ContinuousWorldState): ContinuousComma
   const preview = getReclaimPreview(state);
   if (!preview) return fail(state, diagnostics.blockedReason ?? 'No reclaimable field yet.');
 
-  // The drone burns stock to fly. Without this the button is free, and every
-  // measurement said the same thing: launching more was monotonically better,
-  // so there was never a reason not to press it the instant it lit.
-  const surcharge = getDroneLaunchSurcharge(state);
 
   const next = cloneContinuousWorld(state);
   next.lastDroneLaunchAtSeconds = state.elapsedSeconds;
-  next.dronePendingLaunchCost = surcharge;
   const patch = next.fields.find((field) => field.id === preview.targetPatchId);
   if (!patch) return fail(state, 'No old field is far enough to reclaim.');
 
@@ -704,10 +652,12 @@ export function launchReclaimDrone(state: ContinuousWorldState): ContinuousComma
   return ok(next, next.message);
 }
 
-export function getDroneLaunchSurcharge(state: ContinuousWorldState): number {
-  const sinceLast = state.elapsedSeconds - state.lastDroneLaunchAtSeconds;
-  const window = Math.max(0.001, state.tuning.droneLaunchCooldownSeconds);
-  return state.tuning.droneLaunchCost * clamp(1 - sinceLast / window, 0, 1);
+// Asking costs no stock. It never should have: a launch fee is a cooldown
+// button wearing a price tag, and canon rules that out. What a bad ask costs
+// you is the flight time you spend without the road, and the track the drone
+// takes to answer it.
+export function getDroneLaunchSurcharge(_state: ContinuousWorldState): number {
+  return 0;
 }
 
 export function getReclaimPreview(state: ContinuousWorldState): ReclaimPreview | undefined {
@@ -869,20 +819,19 @@ export function carryFieldsOvernight(fields: FieldPatch[], tuning: ContinuousTun
   return fields
     .map((field) => ({
       ...field,
-      value: field.value * tuning.overnightFieldDecay,
+
       // Morning road is mature road: it is drivable from the first second,
       // which is the entire point of having laid it yesterday.
       age: Math.max(field.age, tuning.preparedFieldMinAgeSeconds),
       reservedByDrone: undefined
     }))
-    .filter((field) => field.value >= tuning.overnightFieldSurvivalValue);
+    ;
 }
 
 export function getPreparedCoverage(state: ContinuousWorldState, point: Vec2): number {
   let coverage = 0;
   for (const field of state.fields) {
     if (field.age < state.tuning.preparedFieldMinAgeSeconds) continue;
-    if (field.value < state.tuning.preparedFieldMinValue) continue;
     const fieldDistance = distance(point, field);
     if (fieldDistance >= field.radius) continue;
     coverage = Math.max(coverage, 1 - fieldDistance / field.radius);
@@ -1156,7 +1105,6 @@ function runFieldSystem(
 ): void {
   if (state.speedState === 'prepared') {
     state.fieldEmitDistance = 0;
-    state.pendingFieldValue = 0;
     // Running on prepared road lays nothing, so the piece being laid ends here.
     // The next pass is welded to the road under the tractor instead of starting
     // an unrelated chain -- see the emit below.
@@ -1166,7 +1114,6 @@ function runFieldSystem(
 
   if (!driveIntent) {
     state.fieldEmitDistance = 0;
-    state.pendingFieldValue = 0;
     state.layingChainId = undefined;
     // The movement step has already said what reversing or swinging is doing,
     // and this ran after it and overwrote both with the pivot line -- so S read
@@ -1183,15 +1130,11 @@ function runFieldSystem(
   }
 
   if (state.speedState === 'fabricating') {
-    const cost = (state.tuning.fabricateCostPerSecond * movedDistance) / state.tuning.fabricatingSpeed;
-    const spent = Math.min(state.nanobots, cost);
-    state.nanobots = Math.max(0, state.nanobots - spent);
-    state.pendingFieldValue += spent * state.tuning.fieldValueMultiplierFromSpentStock;
     state.message = 'Arms are fabricating field just in time. Mining capacity is constrained.';
   } else if (state.speedState === 'crawl') {
-    // Emergency crawl: scraping residue. Stock refill happens in advanceNanobotStock.
-    state.pendingFieldValue += state.tuning.crawlFieldPatchMinValue * deltaSeconds;
-    state.message = 'Emergency crawl: local reclaim legs are scraping enough residue to keep moving.';
+    // Crawl scrapes to keep moving. It does not build. It used to emit tiles at
+    // a twentieth of a tile's worth, which is where the ghost road came from.
+    state.message = 'Emergency crawl: local reclaim legs are scraping enough to keep moving.';
   }
 
   // Starting a new pass: weld it to the road just left, and lay the first patch
@@ -1209,15 +1152,19 @@ function runFieldSystem(
   }
 
   state.fieldEmitDistance += movedDistance;
-  const emitDistance = state.speedState === 'crawl' ? state.tuning.crawlFieldEmitDistance : state.tuning.fieldEmitDistance;
-  if (state.fieldEmitDistance >= emitDistance) {
-    const value = Math.max(
-      state.speedState === 'crawl' ? state.tuning.crawlFieldPatchMinValue : state.tuning.normalFieldPatchMinValue,
-      state.pendingFieldValue
-    );
-    addFieldPatch(state, value);
+  // Crawl lays nothing, so it never reaches an emit.
+  if (state.speedState !== 'fabricating') return;
+
+  if (state.fieldEmitDistance >= state.tuning.fieldEmitDistance) {
+    // A tile is paid for whole or not laid at all. That is what makes the road
+    // countable: every tile on the map is one unit of stock parked on the
+    // ground, and the tank tells you exactly how much track you have left in
+    // you. Running out mid-pass drops you to crawl rather than dribbling out
+    // road too thin to drive on.
+    if (state.nanobots < state.tuning.tileCost) return;
+    state.nanobots = Math.max(0, state.nanobots - state.tuning.tileCost);
+    addFieldPatch(state);
     state.fieldEmitDistance = 0;
-    state.pendingFieldValue = 0;
   }
 }
 
@@ -1364,7 +1311,7 @@ function advanceDrone(state: ContinuousWorldState, deltaSeconds: number): void {
     moveDroneToward(state, state.rover, deltaSeconds);
     state.drone.etaSeconds = distance(state.drone, state.rover) / state.tuning.droneSpeed;
     if (distance(state.drone, state.rover) <= 16) {
-      const delivered = state.drone.payload - state.dronePendingLaunchCost;
+      const delivered = state.drone.payload;
       state.nanobots = clamp(state.nanobots + delivered, 0, state.maxNanobots);
       const relaid = layReturnedRail(state, state.drone.liftedPatches);
       state.drone = {
@@ -1411,7 +1358,7 @@ function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): { paylo
   }
 
   state.fields = remainingFields;
-  return { payload: getClusterPayload(lifted, state.tuning.reclaimYieldMultiplier), count: lifted.length };
+  return { payload: getClusterPayload(lifted, state.tuning.tileCost), count: lifted.length };
 }
 
 // The drone brings the rail back and lays it down in front of you, mature
@@ -1460,7 +1407,6 @@ function layReturnedRail(state: ContinuousWorldState, patches: number): number {
       x: centre.x,
       y: centre.y,
       radius: state.tuning.fieldRadius,
-      value: state.tuning.preparedFieldMinValue * 2,
       // Old enough to count as prepared on arrival. A gift you have to wait
       // for is not a gift.
       age: state.tuning.preparedFieldMinAgeSeconds
@@ -1484,7 +1430,7 @@ function layReturnedRail(state: ContinuousWorldState, patches: number): number {
 //
 // Laying onto a cell you already own tops the tile's value back up rather than
 // doing nothing: driving your own track should not degrade it.
-function addFieldPatch(state: ContinuousWorldState, value: number): void {
+function addFieldPatch(state: ContinuousWorldState): void {
   const offset = state.speedState === 'crawl' ? 6 : 14;
   const x = state.rover.x - Math.cos(state.rover.heading) * offset;
   const y = state.rover.y - Math.sin(state.rover.heading) * offset;
@@ -1493,7 +1439,7 @@ function addFieldPatch(state: ContinuousWorldState, value: number): void {
   const index = buildTileIndex(state.fields, state.tuning.tileSize);
   const existing = index.get(hexKey(cell.q, cell.r));
   if (existing) {
-    existing.value = Math.max(existing.value, value);
+    // Cell already held. Nothing to upgrade any more -- a tile is a tile.
     state.layingChainId = existing.id;
     return;
   }
@@ -1504,7 +1450,6 @@ function addFieldPatch(state: ContinuousWorldState, value: number): void {
     x: centre.x,
     y: centre.y,
     radius: state.tuning.fieldRadius,
-    value,
     age: 0
   });
   state.layingChainId = state.nextFieldId;
@@ -1595,8 +1540,16 @@ function resolveSpeedState(state: ContinuousWorldState): SpeedState {
   // the most basic readout in the game -- strobed between crawl and fabricating
   // several times a second. Climbing out now costs more than falling in did, so
   // crawl is a state you are rescued from rather than a flicker.
-  const exitThreshold = state.speedState === 'crawl' ? 2 : 0.85;
-  if (state.nanobots >= exitThreshold) return 'fabricating';
+  // Crawl is not a stock level, it is a fact about road: you crawl when you
+  // cannot pay for the next tile. Stating it in tiles keeps it true whatever a
+  // tile costs -- these used to be 0.85 and 2, absolute numbers left over from
+  // when stock drained continuously, so "can I afford road" and "am I crawling"
+  // were unrelated questions and no tile price could reconcile them.
+  //
+  // Climbing out costs more than falling in, so crawl is a state you are
+  // rescued from rather than a flicker at the boundary.
+  const tiles = state.nanobots / state.tuning.tileCost;
+  if (tiles >= (state.speedState === 'crawl' ? 3 : 1)) return 'fabricating';
   return 'crawl';
 }
 
@@ -1621,7 +1574,7 @@ function getPreparedMagnetTurn(state: ContinuousWorldState, input: ContinuousInp
 
 function getPreparedFieldMagnet(state: ContinuousWorldState): { correction: number; strength: number } | undefined {
   const preparedFields = state.fields
-    .filter((field) => field.age >= state.tuning.preparedFieldMinAgeSeconds && field.value >= state.tuning.preparedFieldMinValue)
+    .filter((field) => field.age >= state.tuning.preparedFieldMinAgeSeconds)
     .sort((a, b) => a.id - b.id);
   if (preparedFields.length === 0) return undefined;
 
@@ -1641,7 +1594,7 @@ function getPreparedFieldMagnet(state: ContinuousWorldState): { correction: numb
     const influence = field.radius * state.tuning.preparedMagnetInfluenceMultiplier;
     if (fieldDistance >= influence) continue;
 
-    const weight = (1 - fieldDistance / influence) * clamp(field.value / state.tuning.startingFieldValue, 0.4, 1.4);
+    const weight = 1 - fieldDistance / influence;
     const tangent = getPreparedFieldTangent(preparedFields, index);
     if (tangent) {
       const orientation = heading.x * tangent.x + heading.y * tangent.y >= 0 ? 1 : -1;
@@ -1721,27 +1674,52 @@ export function getRailLock(state: ContinuousWorldState, held = false): RailLock
   // the machine is pointing down -- which the linked list could not represent
   // at all, because a patch could only ever have one successor.
   const facing = { x: Math.cos(state.rover.heading), y: Math.sin(state.rover.heading) };
-  let ahead: FieldPatch | undefined;
-  let behind: FieldPatch | undefined;
-  let aheadScore = -Infinity;
-  let behindScore = Infinity;
-  for (const neighbour of bestNeighbours) {
-    const dot = (neighbour.x - best.x) * facing.x + (neighbour.y - best.y) * facing.y;
-    if (dot > aheadScore) {
-      aheadScore = dot;
-      ahead = neighbour;
-    }
-    if (dot < behindScore) {
-      behindScore = dot;
-      behind = neighbour;
-    }
-  }
 
-  // With a single neighbour, ahead and behind are the same tile, so the tile
-  // under the machine supplies the other end rather than collapsing the tangent
-  // to zero length.
-  const from = behind && behind.id !== ahead?.id ? behind : best;
-  const to = ahead ?? best;
+  // Which way the ROAD runs, measured over a run of track rather than off one
+  // adjacency step.
+  //
+  // This used to take the tangent from the nearest tile's immediate
+  // neighbours. On a hex lattice a neighbour lies in one of six directions, so
+  // the lane could only ever point one of six ways -- and as the machine moved,
+  // the pick flipped to the next 60 degree increment and railHeadingSnap
+  // yanked the heading onto it. Measured holding W with no steering input at
+  // all: eleven turn-rate reversals in eight seconds, peaking at 5.5 against a
+  // steering ramp of 4.6, swinging 405 degrees of heading to achieve 41. That
+  // is the world whipping back and forth, and it is the grid steering the
+  // driver -- the tile-navigation feel this design rules out.
+  //
+  // Walking several tiles each way averages the lattice quantisation out: a
+  // straight trail reads straight, a curve reads as its actual curve, and the
+  // direction moves continuously as the machine travels instead of clicking
+  // between six options. Finer grain now genuinely helps rather than being
+  // cosmetic, because more tiles per unit of road means a smoother estimate.
+  const walk = (seed: FieldPatch, direction: Vec2): FieldPatch => {
+    let current = seed;
+    let heading = direction;
+    for (let step = 0; step < RAIL_TANGENT_TILES; step += 1) {
+      let next: FieldPatch | undefined;
+      let bestDot = 0.35;
+      for (const neighbour of fieldNeighbours(current, index, state.tuning.tileSize)) {
+        const dx = neighbour.x - current.x;
+        const dy = neighbour.y - current.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const dot = (dx / len) * heading.x + (dy / len) * heading.y;
+        if (dot > bestDot) {
+          bestDot = dot;
+          next = neighbour;
+        }
+      }
+      if (!next) break;
+      heading = { x: next.x - current.x, y: next.y - current.y };
+      const len = Math.hypot(heading.x, heading.y) || 1;
+      heading = { x: heading.x / len, y: heading.y / len };
+      current = next;
+    }
+    return current;
+  };
+
+  const to = walk(best, facing);
+  const from = walk(best, { x: -facing.x, y: -facing.y });
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const length = Math.hypot(dx, dy);
@@ -1789,7 +1767,7 @@ function findRoadPatchUnderRover(state: ContinuousWorldState): FieldPatch | unde
 }
 
 function isRailworthy(state: ContinuousWorldState, field: FieldPatch): boolean {
-  return field.age >= state.tuning.preparedFieldMinAgeSeconds && field.value >= state.tuning.preparedFieldMinValue;
+  return field.age >= state.tuning.preparedFieldMinAgeSeconds;
 }
 
 // How much connected track is left in front of you. Walking the chain the way
@@ -2001,7 +1979,7 @@ export function getDroneReclaimDiagnostics(state: ContinuousWorldState): DroneRe
   const bestTarget = topCandidates[0];
   const oldestFieldAge = state.fields.reduce((oldest, field) => Math.max(oldest, field.age), 0);
   const nearEligibleFields = state.fields.filter((field) => {
-    return !field.reservedByDrone && field.age >= state.tuning.reclaimMinFieldAgeSeconds && field.value >= state.tuning.reclaimMinFieldValue;
+    return !field.reservedByDrone && field.age >= state.tuning.reclaimMinFieldAgeSeconds;
   });
   const nearestNearEligibleFieldDistance =
     nearEligibleFields.length > 0 ? Math.min(...nearEligibleFields.map((field) => distance(field, state.rover))) : undefined;
@@ -2042,7 +2020,7 @@ function getDroneBlockedReason(
     return `Oldest field age ${oldestFieldAge.toFixed(1)}s / need ${state.tuning.reclaimMinFieldAgeSeconds.toFixed(1)}s`;
   }
   if (!state.fields.some((field) => !field.reservedByDrone)) return 'No unreserved reclaim target';
-  if (!state.fields.some((field) => !field.reservedByDrone && field.value >= state.tuning.reclaimMinFieldValue)) {
+  if (!state.fields.some((field) => !field.reservedByDrone)) {
     return `Best cluster payload ${bestClusterPayload.toFixed(2)} / need ${state.tuning.minReclaimClusterPayload.toFixed(2)}`;
   }
   if (!state.tuning.allowCloseReclaim && nearestNearEligibleFieldDistance !== undefined && nearestNearEligibleFieldDistance < state.tuning.reclaimMinDistanceFromRover) {
@@ -2064,7 +2042,7 @@ function getReclaimCandidateDiagnostics(state: ContinuousWorldState): ReclaimCan
     if (!isSelectableReclaimTarget(state, field)) continue;
 
     const cluster = getReclaimCluster(state, field);
-    const payload = getClusterPayload(cluster, state.tuning.reclaimYieldMultiplier);
+    const payload = getClusterPayload(cluster, state.tuning.tileCost);
     if (!state.tuning.allowLowPayloadLaunch && payload < state.tuning.minReclaimClusterPayload) continue;
 
     candidates.push(createReclaimCandidateDiagnostics(state, field, cluster, payload));
@@ -2079,8 +2057,8 @@ function createReclaimCandidateDiagnostics(
   cluster: FieldPatch[],
   payload: number
 ): ReclaimCandidateDiagnostics {
-  const weightedAge = getClusterWeightedAge(cluster, payload);
-  const spread = getClusterAverageDistanceFromTarget(cluster, field, payload);
+  const weightedAge = getClusterWeightedAge(cluster);
+  const spread = getClusterAverageDistanceFromTarget(cluster, field);
   const eta = estimateReclaimRefillEtaBreakdown(state, field);
   // The drone goes for your OLDEST road. This replaces "nearest", which was
   // chosen for learnability and turned out to be the worst possible rule for
@@ -2146,8 +2124,10 @@ function compareReclaimCandidates(a: ReclaimCandidateDiagnostics, b: ReclaimCand
 // competent equipment rather than a tool made of eligibility rules.
 //
 // Age is not a factor at any point, in ranking or here.
-function isLiftableRoad(state: ContinuousWorldState, field: FieldPatch): boolean {
-  return field.value >= state.tuning.reclaimMinFieldValue;
+function isLiftableRoad(_state: ContinuousWorldState, _field: FieldPatch): boolean {
+  // Every tile is liftable. There is no grade of road too poor to be worth
+  // carrying home, because there are no grades.
+  return true;
 }
 
 function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatch): boolean {
@@ -2207,18 +2187,20 @@ function isInReclaimCluster(state: ContinuousWorldState, field: FieldPatch, targ
   return isLiftableRoad(state, field) && distance(field, target) <= state.tuning.dronePickupRadius;
 }
 
-function getClusterPayload(cluster: FieldPatch[], yieldMultiplier = 1): number {
-  return cluster.reduce((total, field) => total + field.value, 0) * yieldMultiplier;
+// Conservation, structurally rather than by a multiplier set to 1: what comes
+// back is exactly what the tiles cost to lay.
+function getClusterPayload(cluster: FieldPatch[], tileCost: number): number {
+  return cluster.length * tileCost;
 }
 
-function getClusterWeightedAge(cluster: FieldPatch[], payload: number): number {
-  if (payload <= 0) return 0;
-  return cluster.reduce((total, field) => total + field.age * field.value, 0) / payload;
+function getClusterWeightedAge(cluster: FieldPatch[]): number {
+  if (!cluster.length) return 0;
+  return cluster.reduce((total, field) => total + field.age, 0) / cluster.length;
 }
 
-function getClusterAverageDistanceFromTarget(cluster: FieldPatch[], target: Vec2, payload: number): number {
-  if (payload <= 0) return 0;
-  return cluster.reduce((total, field) => total + distance(field, target) * field.value, 0) / payload;
+function getClusterAverageDistanceFromTarget(cluster: FieldPatch[], target: Vec2): number {
+  if (!cluster.length) return 0;
+  return cluster.reduce((total, field) => total + distance(field, target), 0) / cluster.length;
 }
 
 function estimateReclaimRefillEta(state: ContinuousWorldState, target: Vec2): number {

@@ -263,7 +263,6 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
     label: 'Launch Gating',
     controls: [
       { key: 'reclaimMinFieldAgeSeconds', label: 'Reclaim min age', min: 0, max: 8, step: 0.05, precision: 2 },
-      { key: 'reclaimMinFieldValue', label: 'Reclaim min value', min: 0, max: 0.4, step: 0.005, precision: 3 },
       { key: 'reclaimMinDistanceFromRover', label: 'Min distance', min: 0, max: 220, step: 1 },
       { key: 'dronePickupRadius', label: 'Pickup radius', min: 40, max: 260, step: 2 },
       { key: 'droneSpeed', label: 'Drone speed', min: 180, max: 760, step: 10 },
@@ -283,11 +282,8 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
       { key: 'fieldRadius', label: 'Field radius', min: 18, max: 82, step: 1 },
       { key: 'fieldEmitDistance', label: 'Normal emit dist', min: 8, max: 80, step: 1 },
       { key: 'crawlFieldEmitDistance', label: 'Crawl emit dist', min: 4, max: 48, step: 1 },
-      { key: 'normalFieldPatchMinValue', label: 'Normal min value', min: 0.01, max: 0.5, step: 0.005, precision: 3 },
-      { key: 'crawlFieldPatchMinValue', label: 'Crawl min value', min: 0.005, max: 0.16, step: 0.005, precision: 3 },
       { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 0.2, max: 5, step: 0.05, precision: 2 },
-      { key: 'fieldValueMultiplierFromSpentStock', label: 'Spent stock value', min: 0.2, max: 2.4, step: 0.05, precision: 2 },
-      { key: 'startingFieldValue', label: 'Starting field value', min: 0.1, max: 2, step: 0.05, precision: 2 }
+      { key: 'tileCost', label: 'Cost per tile', min: 0.05, max: 1.2, step: 0.01, precision: 2 }
     ]
   },
   {
@@ -295,7 +291,6 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
     controls: [
       { key: 'preparedFieldMinAgeSeconds', label: 'Prepared min age', min: 0.1, max: 4, step: 0.05, precision: 2 },
       { key: 'preparedCoverageThreshold', label: 'Coverage threshold', min: 0.02, max: 0.8, step: 0.01, precision: 2 },
-      { key: 'preparedFieldMinValue', label: 'Prepared min value', min: 0, max: 0.5, step: 0.005, precision: 3 },
       { key: 'preparedMagnetInfluenceMultiplier', label: 'Magnet influence', min: 0, max: 3.5, step: 0.05, precision: 2 },
       { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 2, step: 0.05, precision: 2 },
       { key: 'preparedMagnetPassiveTurnRate', label: 'Passive turn', min: 0, max: 5, step: 0.05, precision: 2 },
@@ -2987,7 +2982,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private drawPreparedFieldTerrainBeds(visualCalm: number): void {
     const preparedFields = [...this.state.fields]
       .filter((field) => {
-        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds && field.value >= this.state.tuning.preparedFieldMinValue;
+        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds;
       })
       .sort((a, b) => a.id - b.id);
     const sections = this.fieldSections(preparedFields);
@@ -3007,8 +3002,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private drawPreparedFieldTerrainSegment(
-    from: { x: number; y: number; radius: number; value: number },
-    to: { x: number; y: number; radius: number; value: number },
+    from: { x: number; y: number; radius: number },
+    to: { x: number; y: number; radius: number },
     visualCalm: number
   ): void {
     const fromScreen = this.project(from);
@@ -3035,7 +3030,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private drawPreparedFieldTerrainCap(
-    field: { x: number; y: number; radius: number; value: number },
+    field: { x: number; y: number; radius: number },
     visualCalm: number
   ): void {
     const center = this.project(field);
@@ -3506,7 +3501,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // projected individually so a tile sits on the ground plane rather than being
   // a flat polygon pasted over it.
   private drawFieldRibbon(
-    fields: Array<{ id: number; x: number; y: number; radius: number; value: number; age: number }>,
+    fields: Array<{ id: number; x: number; y: number; radius: number; age: number }>,
     color: number,
     reserved: boolean
   ): void {
@@ -3575,8 +3570,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private drawFieldSegment(
-    from: { x: number; y: number; radius: number; value: number; age: number },
-    to: { x: number; y: number; radius: number; value: number; age: number },
+    from: { x: number; y: number; radius: number; age: number },
+    to: { x: number; y: number; radius: number; age: number },
     color: number,
     reserved: boolean
   ): void {
@@ -3639,7 +3634,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private drawFieldJoint(
-    field: { x: number; y: number; radius: number; value: number; age: number },
+    field: { x: number; y: number; radius: number; age: number },
     reserved: boolean,
     color: number
   ): void {
@@ -3655,7 +3650,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private drawFieldCap(
-    field: { x: number; y: number; radius: number; value: number; age: number },
+    field: { x: number; y: number; radius: number; age: number },
     color: number,
     reserved: boolean,
     alpha: number
@@ -3681,7 +3676,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  private drawFieldBirthMarkers(fields: Array<{ x: number; y: number; radius: number; value: number; age: number }>): void {
+  private drawFieldBirthMarkers(fields: Array<{ x: number; y: number; radius: number; age: number }>): void {
     for (const field of fields) {
       const readyAge = this.state.tuning.preparedFieldMinAgeSeconds;
       if (field.age > readyAge) continue;
@@ -3796,7 +3791,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStaticText('drone-target-detail', 0, 0, '', 1, '#ffffff');
   }
 
-  private droneReservationRadius(targetScreen: Vec2, reservedFields: Array<{ x: number; y: number; radius: number; value: number }>): number {
+  private droneReservationRadius(targetScreen: Vec2, reservedFields: Array<{ x: number; y: number; radius: number }>): number {
     let radius = 34;
     for (const field of reservedFields) {
       const fieldScreen = this.project(field);
@@ -3805,18 +3800,24 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return clamp(radius, 34, 78);
   }
 
-  private fieldRoadWidth(field: { x: number; y: number; radius: number; value: number }): number {
-    return field.radius * this.projectedScale(field) * clamp(0.52 + field.value * 0.12, 0.48, 0.7);
+  private fieldRoadWidth(field: { x: number; y: number; radius: number }): number {
+    // One width for all road, because there is one kind of road. This used to
+    // widen with tile value, which drew the authored path fatter than the track
+    // you laid and made a single trail look like two.
+    return field.radius * this.projectedScale(field) * 0.6;
   }
 
-  private fieldAlpha(field: { value: number; age: number }): number {
-    const maturityAlpha =
-      field.age < this.state.tuning.preparedFieldMinAgeSeconds
-        ? clamp(0.44 + (field.age / this.state.tuning.preparedFieldMinAgeSeconds) * 0.36, 0.44, 0.8)
-        : 1;
-    const ageAlpha = clamp(1 - field.age / 140, 0.44, 0.92);
-    const valueAlpha = clamp(field.value / 0.85, 0.42, 1);
-    return maturityAlpha * ageAlpha * valueAlpha;
+  // Road is road, so opacity no longer grades it. It used to divide a tile's
+  // value by 0.85 -- the value of AUTHORED road -- which meant every metre you
+  // laid yourself rendered at the 0.42 floor while the map's own road rendered
+  // solid. That is where "some road is transparent and some is a permanent main
+  // road" came from, and there was never a second kind of road behind it.
+  //
+  // What survives is the one distinction that is real and temporary: track that
+  // has not set yet is faint, and reads as solid the moment it can carry you.
+  private fieldAlpha(field: { age: number }): number {
+    const setting = clamp(field.age / this.state.tuning.preparedFieldMinAgeSeconds, 0, 1);
+    return 0.55 + setting * 0.45;
   }
 
   private drawPointerTarget(): void {
@@ -4789,9 +4790,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       const screen = this.project(field);
       const distanceFromRover = Math.hypot(field.x - this.state.rover.x, field.y - this.state.rover.y);
       const oldEnough = field.age >= this.state.tuning.reclaimMinFieldAgeSeconds;
-      const valuableEnough = field.value >= this.state.tuning.reclaimMinFieldValue;
       const farEnough = this.state.tuning.allowCloseReclaim || distanceFromRover >= this.state.tuning.reclaimMinDistanceFromRover;
-      const eligible = !field.reservedByDrone && oldEnough && valuableEnough && farEnough;
+      const eligible = !field.reservedByDrone && oldEnough && farEnough;
       const radius = Math.max(7, this.fieldRoadWidth(field) * 0.7);
 
       if (this.droneRailLab.overlayReclaimEligibility) {
@@ -4814,8 +4814,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       }
 
       if (this.droneRailLab.overlayFieldValue) {
-        this.graphics.fillStyle(0xffd35a, clamp(field.value / Math.max(0.1, this.state.tuning.startingFieldValue), 0.12, 0.72));
-        this.graphics.fillCircle(screen.x, screen.y, clamp(3 + field.value * 8, 3, 15));
+        // Was a value readout. Tiles are uniform now, so what is worth seeing
+        // is how far a tile is from having set enough to carry you.
+        const setting = clamp(field.age / this.state.tuning.preparedFieldMinAgeSeconds, 0, 1);
+        this.graphics.fillStyle(0xffd35a, 0.12 + setting * 0.6);
+        this.graphics.fillCircle(screen.x, screen.y, 4 + setting * 6);
       }
 
       if (this.droneRailLab.overlaySelectedDroneTarget && bestId === field.id) {
@@ -4850,7 +4853,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     if (this.droneRailLab.overlayPreparedMagnetInfluence) {
       for (const field of this.state.fields) {
-        if (field.age < this.state.tuning.preparedFieldMinAgeSeconds || field.value < this.state.tuning.preparedFieldMinValue) continue;
+        if (field.age < this.state.tuning.preparedFieldMinAgeSeconds) continue;
         const screen = this.project(field);
         this.graphics.lineStyle(1, 0x78f7df, 0.24);
         this.graphics.strokeCircle(screen.x, screen.y, field.radius * this.projectedScale(field) * this.state.tuning.preparedMagnetInfluenceMultiplier);
@@ -4987,9 +4990,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         if (index % 3 !== 0 && field.age < this.state.tuning.preparedFieldMinAgeSeconds * 2) return;
         const screen = this.project(field);
         const alpha = clamp(field.age / 120, 0.22, 0.9);
-        const color = field.value > 0.75 ? 0xffd35a : field.age > 75 ? 0x8dffea : 0x6f8094;
+        const color = field.age > 75 ? 0x8dffea : 0x6f8094;
         this.graphics.lineStyle(1, color, alpha);
-        this.graphics.strokeCircle(screen.x, screen.y, 7 + field.value * 8);
+        this.graphics.strokeCircle(screen.x, screen.y, 9);
       });
     }
 
@@ -5343,7 +5346,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private getPreparedFieldTerrainSectionCount(): number {
     const preparedFields = [...this.state.fields]
       .filter((field) => {
-        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds && field.value >= this.state.tuning.preparedFieldMinValue;
+        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds;
       })
       .sort((a, b) => a.id - b.id);
     return this.fieldSections(preparedFields).length;

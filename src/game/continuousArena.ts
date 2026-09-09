@@ -508,7 +508,6 @@ export function getContinuousArena(arenaId: ContinuousArenaId = DEFAULT_CONTINUO
 
 export function createArenaStarterFields(
   arena: ContinuousArenaDefinition,
-  startingFieldValue: number,
   tileSize: number,
   fieldRadius: number
 ): FieldPatch[] {
@@ -531,7 +530,6 @@ export function createArenaStarterFields(
       x: centre.x,
       y: centre.y,
       radius: fieldRadius,
-      value: startingFieldValue,
       age: 5.4 - fields.length * 0.18
     });
   }
