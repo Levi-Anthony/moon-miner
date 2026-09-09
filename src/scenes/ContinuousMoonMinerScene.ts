@@ -1,5 +1,4 @@
 import Phaser from 'phaser';
-import { hexKey, worldToHex } from '../game/hex';
 import {
   createContinuousWorld,
   DEFAULT_DYNAMICS_PRESET_ID,
@@ -3424,46 +3423,41 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawFieldBirthMarkers(ordinary);
   }
 
-  // Track is drawn as the tiles it is: one flat-top hex per occupied cell, at
-  // the lattice's own size. The old ribbon walked prevId chains and filled
-  // ellipses of the patch's INFLUENCE radius, which is why the road looked like
-  // overlapping blobs -- it was drawing the reach, not the piece. Corners are
-  // projected individually so a tile sits on the ground plane rather than being
-  // a flat polygon pasted over it.
-  // The road, drawn as a road.
+  // The road, drawn as the track sections it is.
   //
-  // Every tile used to be stroked on all six edges, including the edges it
-  // shares with its neighbours -- so interior boundaries were drawn twice and,
-  // with stroke alpha (up to 0.66) above fill alpha (up to 0.46), the strongest
-  // lines in the road were exactly the ones that should not exist. A honeycomb
-  // of cells, not a surface. The geometry was never at fault: hexes are drawn
-  // at the lattice's own size and adjacent tiles share exact projected corners,
-  // so they already tessellate with no gap and no overlap.
+  // A section is a hex with its FLATS FACING ALONG THE PATH, rotated to the
+  // heading the machine was on when it laid it. Sections are laid one
+  // across-flats apart, so consecutive sections abut on their leading and
+  // trailing flats on a straight run and fan slightly through a curve --
+  // exactly like real track.
   //
-  // Now the fill carries the road and only BOUNDARY edges are stroked, which
-  // gives a continuous silhouette around a connected run for free -- no polygon
-  // union, just skipping the shared edges.
+  // That makes the boundary test free. The leading and trailing flats (edges 0
+  // and 3 once the hex is rotated so edge 0 faces the heading) are the ones a
+  // section shares with the sections before and after it, so they are never
+  // stroked; the four side edges always are. No adjacency query, no cell
+  // lookup, and the result is one continuous silhouette down the run rather
+  // than a honeycomb of doubled interior lines.
+  //
+  // Fill leads and the stroke stays quiet. It used to be the other way round --
+  // stroke alpha up to 0.66 over fill up to 0.46 -- so the strongest lines in
+  // the road were the ones that should not have been drawn at all.
   private drawFieldRibbon(
-    fields: Array<{ id: number; x: number; y: number; radius: number; age: number }>,
+    fields: Array<{ id: number; x: number; y: number; radius: number; heading: number; age: number }>,
     color: number
   ): void {
     const size = this.state.tuning.tileSize;
     const calm = this.visualCalm();
-    const step = Math.sqrt(3) * size;
-
-    // Which cells are occupied, so an edge can ask whether anything is on the
-    // other side of it. Keyed the same way the simulation keys them.
-    const occupied = new Set<string>();
-    for (const field of fields) {
-      const cell = worldToHex(field.x, field.y, size);
-      occupied.add(hexKey(cell.q, cell.r));
-    }
 
     for (const field of fields) {
       const alpha = this.fieldAlpha(field);
+      // Rotate so edge 0's outward normal points along the heading. Edge i runs
+      // between corner i and corner i+1 and its normal sits at 30 degrees off
+      // the corner angle, so this offset puts the leading flat square across
+      // the path.
+      const rotation = field.heading - Math.PI / 6;
       const corners: Array<{ x: number; y: number }> = [];
       for (let corner = 0; corner < 6; corner += 1) {
-        const angle = (Math.PI / 3) * corner;
+        const angle = (Math.PI / 3) * corner + rotation;
         corners.push(
           this.project({
             x: field.x + size * Math.cos(angle),
@@ -3472,27 +3466,14 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         );
       }
 
-      // Fill leads now. It was 0.26-0.46 under a heavier stroke; a road should
-      // read as a surface with an edge, not as a mesh.
       this.graphics.fillStyle(color, alpha * (0.5 + 0.16 * calm));
       this.graphics.fillPoints(corners, true);
 
-      // Edge i runs between corner i and corner i+1, so its outward normal
-      // points at 30 + 60i degrees. Stepping one across-flats along that normal
-      // lands on the neighbouring cell centre -- derived rather than tabulated,
-      // so it cannot fall out of step with the lattice.
       // Width scales with distance: a constant 1.5px turned far road into wire
       // while near road stayed a filled band, which read as two kinds of road.
       const width = Math.max(0.6, 1.6 * this.projectedScale(field));
       this.graphics.lineStyle(width, color, alpha * (0.34 + 0.2 * calm));
-      for (let edge = 0; edge < 6; edge += 1) {
-        const normal = Math.PI / 6 + (Math.PI / 3) * edge;
-        const neighbour = worldToHex(
-          field.x + step * Math.cos(normal),
-          field.y + step * Math.sin(normal),
-          size
-        );
-        if (occupied.has(hexKey(neighbour.q, neighbour.r))) continue;
+      for (const edge of [1, 2, 4, 5]) {
         const from = corners[edge];
         const to = corners[(edge + 1) % 6];
         this.graphics.lineBetween(from.x, from.y, to.x, to.y);

@@ -5,7 +5,7 @@ import {
   type ContinuousArenaDefinition,
   type ContinuousArenaId
 } from './continuousArena';
-import { hexDistance, hexKey, hexLine, hexNeighbours, hexToWorld, worldToHex } from './hex';
+import { hexNeighbours } from './hex';
 
 export type ContinuousPhase = 'playing' | 'won' | 'lost';
 export type SpeedState = 'prepared' | 'fabricating' | 'crawl';
@@ -38,10 +38,133 @@ export interface RoverMotionState extends Vec2 {
 // A hex cell has six neighbours, so this is the ceiling a degree can take.
 const MAX_TRACK_DEGREE = 6;
 
-// How far along the track the rail looks to decide which way the road runs.
-// One step is a single lattice direction and quantises the lane to 60 degrees;
-// several steps average that out into the road's real bearing.
-const RAIL_TANGENT_TILES = 4;
+// Distance between the centres of consecutive track sections. A section is a
+// hex whose flats face along the path, so laying them one across-flats apart
+// makes them abut exactly on a straight run and fan slightly on a curve --
+// like real track sections, which is what they are.
+export function sectionSpacing(tuning: { tileSize: number }): number {
+  return Math.sqrt(3) * tuning.tileSize;
+}
+
+// Two sections are connected when they are close enough to drive from one onto
+// the other. This replaces lattice adjacency: the grid gave adjacency for free
+// but cost a staircase, because snapping POSITIONS to cells makes any off-axis
+// line wiggle -- measured at up to 56.9 units of lateral wander on a drive with
+// zero steering input. Proximity gives the same graph without the grid, and it
+// still expresses junctions where two passes cross.
+const CONNECTED_WITHIN = 1.35;
+
+interface RoadIndex {
+  bucketSize: number;
+  buckets: Map<string, FieldPatch[]>;
+}
+
+const roadIndexCache = new WeakMap<FieldPatch[], { length: number; bucketSize: number; index: RoadIndex }>();
+
+export function buildRoadIndex(fields: FieldPatch[], tuning: { tileSize: number }): RoadIndex {
+  const bucketSize = sectionSpacing(tuning) * CONNECTED_WITHIN;
+  const cached = roadIndexCache.get(fields);
+  if (cached && cached.length === fields.length && cached.bucketSize === bucketSize) return cached.index;
+
+  const buckets = new Map<string, FieldPatch[]>();
+  for (const field of fields) {
+    const key = `${Math.floor(field.x / bucketSize)},${Math.floor(field.y / bucketSize)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(field);
+    else buckets.set(key, [field]);
+  }
+  const index: RoadIndex = { bucketSize, buckets };
+  roadIndexCache.set(fields, { length: fields.length, bucketSize, index });
+  return index;
+}
+
+export function fieldNeighbours(field: FieldPatch, index: RoadIndex, tuning: { tileSize: number }): FieldPatch[] {
+  const reach = sectionSpacing(tuning) * CONNECTED_WITHIN;
+  const bx = Math.floor(field.x / index.bucketSize);
+  const by = Math.floor(field.y / index.bucketSize);
+  const found: FieldPatch[] = [];
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dy = -1; dy <= 1; dy += 1) {
+      const bucket = index.buckets.get(`${bx + dx},${by + dy}`);
+      if (!bucket) continue;
+      for (const other of bucket) {
+        if (other.id === field.id) continue;
+        if (distance(field, other) <= reach) found.push(other);
+      }
+    }
+  }
+  return found;
+}
+
+// Place a section and keep the spatial index live in the same breath. The
+// lattice version could get away with `index.set(key, tile)` because the index
+// WAS a map; a bucketed index has to be told, and the cached copy has to agree
+// about how many sections it holds or the next query silently rebuilds.
+function insertSection(fields: FieldPatch[], index: RoadIndex, tile: FieldPatch): void {
+  fields.push(tile);
+  const key = `${Math.floor(tile.x / index.bucketSize)},${Math.floor(tile.y / index.bucketSize)}`;
+  const bucket = index.buckets.get(key);
+  if (bucket) bucket.push(tile);
+  else index.buckets.set(key, [tile]);
+  const cached = roadIndexCache.get(fields);
+  if (cached && cached.index === index) cached.length = fields.length;
+}
+
+// Which section is under a point, if any. This replaces the lattice cell
+// lookup: without a grid there is no cell to key on, so "am I on the road" is
+// a nearest-section query. Half a spacing is exactly the section's own
+// footprint, so this answers true on the track and false beside it.
+export function findSectionAt(
+  point: Vec2,
+  index: RoadIndex,
+  tuning: { tileSize: number }
+): FieldPatch | undefined {
+  const reach = sectionSpacing(tuning) * 0.5;
+  const bx = Math.floor(point.x / index.bucketSize);
+  const by = Math.floor(point.y / index.bucketSize);
+  let best: FieldPatch | undefined;
+  let bestGap = reach;
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dy = -1; dy <= 1; dy += 1) {
+      const bucket = index.buckets.get(`${bx + dx},${by + dy}`);
+      if (!bucket) continue;
+      for (const other of bucket) {
+        const gap = distance(point, other);
+        if (gap > bestGap) continue;
+        bestGap = gap;
+        best = other;
+      }
+    }
+  }
+  return best;
+}
+
+// Sections may not be laid on top of one another. On the lattice this was
+// structural -- a cell was occupied or it was not -- and off it, it is this
+// test. Below a full spacing the two hexes would overlap rather than abut, so
+// anything closer than this is not a new section, it is the one already there.
+const MIN_SEPARATION = 0.85;
+
+export function sectionWithin(
+  point: Vec2,
+  index: RoadIndex,
+  tuning: { tileSize: number }
+): FieldPatch | undefined {
+  const reach = sectionSpacing(tuning) * MIN_SEPARATION;
+  const bx = Math.floor(point.x / index.bucketSize);
+  const by = Math.floor(point.y / index.bucketSize);
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dy = -1; dy <= 1; dy += 1) {
+      const bucket = index.buckets.get(`${bx + dx},${by + dy}`);
+      if (!bucket) continue;
+      for (const other of bucket) {
+        if (distance(point, other) <= reach) return other;
+      }
+    }
+  }
+  return undefined;
+}
+
 
 // How far the drone reaches around its target, measured in CELLS rather than
 // world units. As a fixed distance it made hex grain change the economy: the
@@ -65,6 +188,10 @@ export function getDronePickupRadius(tuning: { tileSize: number }): number {
 export interface FieldPatch extends Vec2 {
   id: number;
   radius: number;
+  // Which way the machine was pointing when this section went down. Track is
+  // laid ALONG the path now rather than snapped to a grid, so a section has an
+  // orientation and the road follows whatever line you actually drove.
+  heading: number;
   age: number;
   reservedByDrone?: boolean;
   // The patch this one was laid immediately after, which is what makes the road
@@ -292,7 +419,9 @@ export interface ContinuousWorldState {
   fieldEmitDistance: number;
   // The cell the last tile went into, so the next emit can fill the line
   // between them instead of leaving whatever the gap happened to be.
-  lastLaidCell?: { q: number; r: number };
+  // Where the last section went down, in world space. The lattice cell it
+  // replaced is what made the road staircase.
+  lastLaidPoint?: Vec2;
   layingChainId?: number;
   // Recomputed every tick from the track under the tractor. Undefined means
   // there is nothing connected to run on.
@@ -809,20 +938,18 @@ export function carryFieldsOvernight(fields: FieldPatch[], tuning: ContinuousTun
 // ordinary driving -- which is what lets a player look at the road behind them
 // and decide whether they can make it back before the sun.
 export function getRoadAhead(state: ContinuousWorldState): number {
-  const size = state.tuning.tileSize;
-  const index = buildTileIndex(state.fields, size);
-  const cell = fieldCell(state.rover, size);
-  const under = index.get(hexKey(cell.q, cell.r));
+  const index = buildRoadIndex(state.fields, state.tuning);
+  const under = findSectionAt(state.rover, index, state.tuning);
   if (!under) return 0;
-  return measureRunway(index, size, under, {
+  return measureRunway(index, state.tuning, under, {
     x: Math.cos(state.rover.heading),
     y: Math.sin(state.rover.heading)
   });
 }
 
 function measureRunway(
-  index: Map<string, FieldPatch>,
-  tileSize: number,
+  index: RoadIndex,
+  tuning: { tileSize: number },
   from: FieldPatch,
   tangent: Vec2
 ): number {
@@ -847,7 +974,7 @@ function measureRunway(
     // neighbour, so that special case is gone rather than ported.
     let next: FieldPatch | undefined;
     let bestDot = 0;
-    for (const candidate of fieldNeighbours(current, index, tileSize)) {
+    for (const candidate of fieldNeighbours(current, index, tuning)) {
       if (seen.has(candidate.id)) continue;
       const dx = candidate.x - current.x;
       const dy = candidate.y - current.y;
@@ -1140,6 +1267,13 @@ function runFieldSystem(
 ): void {
   if (state.speedState === 'prepared') {
     state.fieldEmitDistance = 0;
+    // Keep the laying anchor with the machine while it runs on road it already
+    // owns. Leaving it parked where the last section went down meant that
+    // falling off the far end of a long run started the next pass from
+    // hundreds of units away. The anchor tracks the EMIT point, not the
+    // machine, so the first section of the next pass lands one spacing from
+    // the road it just left rather than one spacing plus the trailing offset.
+    state.lastLaidPoint = layPoint(state);
     // Running on prepared road lays nothing, so the piece being laid ends here.
     // The next pass is welded to the road under the tractor instead of starting
     // an unrelated chain -- see the emit below.
@@ -1150,6 +1284,7 @@ function runFieldSystem(
   if (!driveIntent) {
     state.fieldEmitDistance = 0;
     state.layingChainId = undefined;
+    state.lastLaidPoint = layPoint(state);
     // The movement step has already said what reversing or swinging is doing,
     // and this ran after it and overwrote both with the pivot line -- so S read
     // as "pivoting in place" while the machine was plainly backing up. Only
@@ -1422,197 +1557,170 @@ function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): { paylo
 // disconnected spur stopped the machine's own laying and turned one gap into
 // two. Measured: a launch reliably split the road into two components.
 //
-// It now walks the lattice from a cell the road already occupies toward the
-// ground ahead of the machine. Starting on the network is what guarantees the
-// spur is attached; walking the lattice is what stops it skipping cells.
+// It now steps along the ground ahead of the machine from a point the road
+// already occupies. Starting ON the network is what guarantees the spur is
+// attached; stepping by one section spacing is what stops it skipping.
 function layReturnedRail(state: ContinuousWorldState, patches: number): number {
   if (patches <= 0) return 0;
 
-  const size = state.tuning.tileSize;
-  const spacing = Math.sqrt(3) * size;
+  const spacing = sectionSpacing(state.tuning);
   const laid = Math.min(patches, state.tuning.droneRailRelayMaxPatches);
-  const occupied = buildTileIndex(state.fields, size);
+  const index = buildRoadIndex(state.fields, state.tuning);
 
-  // Anchor on road the machine is standing on, falling back to the last cell it
-  // laid into, and only then to the cell under it.
-  const under = worldToHex(state.rover.x, state.rover.y, size);
-  const anchor = occupied.has(hexKey(under.q, under.r))
-    ? under
-    : state.lastLaidCell ?? under;
-
-  // Aim at the ground the machine is heading for, far enough out that the walk
-  // has room to place the whole delivery.
-  const target = worldToHex(
-    state.rover.x + Math.cos(state.rover.heading) * spacing * (laid + 1),
-    state.rover.y + Math.sin(state.rover.heading) * spacing * (laid + 1),
-    size
-  );
+  // Anchor on a SECTION, so the spur is attached by construction. Anchoring on
+  // a bare point put the first relayed section a spacing from that point and
+  // therefore up to 99 units from the nearest real road -- the spur landed as
+  // its own connected component, which is the exact failure this rewrite is
+  // meant to end.
+  const under =
+    sectionWithin(state.rover, index, state.tuning) ??
+    (state.lastLaidPoint ? sectionWithin(state.lastLaidPoint, index, state.tuning) : undefined);
+  // When there is no road to anchor on -- which happens exactly when the lift
+  // that produced this delivery took the ground the machine was standing on --
+  // the spur starts at the machine's own laying point instead, so the trail it
+  // is laying right now runs straight into it.
+  const anchor: Vec2 = under ? { x: under.x, y: under.y } : layPoint(state);
+  const heading = state.rover.heading;
 
   let placed = 0;
-  for (const cell of hexLine(anchor, target)) {
-    if (placed >= laid) break;
-    const key = hexKey(cell.q, cell.r);
-    if (occupied.has(key)) continue;
+  for (let step = under ? 1 : 0; step <= laid * 2 && placed < laid; step += 1) {
+    const at: Vec2 = {
+      x: anchor.x + Math.cos(heading) * spacing * step,
+      y: anchor.y + Math.sin(heading) * spacing * step
+    };
+    if (sectionWithin(at, index, state.tuning)) continue;
 
-    const centre = hexToWorld(cell.q, cell.r, size);
     const tile: FieldPatch = {
       id: state.nextFieldId,
-      x: centre.x,
-      y: centre.y,
+      x: at.x,
+      y: at.y,
       radius: state.tuning.fieldRadius,
+      heading,
       // Old enough to count as prepared on arrival. A gift you have to wait
       // for is not a gift.
       age: state.tuning.preparedFieldMinAgeSeconds
     };
-    state.fields.push(tile);
-    occupied.set(key, tile);
+    insertSection(state.fields, index, tile);
     state.nextFieldId += 1;
     placed += 1;
   }
   return placed;
 }
 
-// One tile per cell, every tile the same size, snapped to the lattice.
-//
-// Three things that used to be tuning problems are now structural. Tiles cannot
-// overlap, because a cell is either occupied or it is not. Tiles cannot land
-// haphazardly, because the emit point chooses a CELL and the cell decides where
-// the tile sits. And crawl-laid track is no longer a different size from driven
-// track -- it was born at 0.59x radius, which is most of what made the road read
-// as debris rather than as road.
-//
-// Laying onto a cell you already own tops the tile's value back up rather than
-// doing nothing: driving your own track should not degrade it.
-// Lay track from wherever the last tile went to wherever this emit landed,
-// filling every cell the line crosses.
-//
-// This used to place exactly one tile per emit, which left holes: the emit step
-// is the distance between cell CENTRES, but emits are measured between points
-// that can sit anywhere in their cell, so consecutive emits land two cells
-// apart 11.5% of the time on dead-straight driving. Walking the line is what
-// makes the trail a connected road rather than a dotted one, and it is also
-// what lets the machine keep laying through a turn without the trailing offset
-// swinging a hole into the inside of the corner.
-//
-// Returns how many tiles were actually placed, so the caller charges for track
-// that exists and nothing else.
-function addFieldPatch(state: ContinuousWorldState, budgetTiles: number): number {
-  const size = state.tuning.tileSize;
+// Where the arms are putting track down: just behind the machine, so a section
+// lands on ground the tractor has already crossed rather than under its nose.
+function layPoint(state: ContinuousWorldState): Vec2 {
   const offset = state.speedState === 'crawl' ? 6 : 14;
-  const x = state.rover.x - Math.cos(state.rover.heading) * offset;
-  const y = state.rover.y - Math.sin(state.rover.heading) * offset;
-  const cell = worldToHex(x, y, size);
+  return {
+    x: state.rover.x - Math.cos(state.rover.heading) * offset,
+    y: state.rover.y - Math.sin(state.rover.heading) * offset
+  };
+}
 
-  const index = buildTileIndex(state.fields, size);
-  const from = state.lastLaidCell ?? cell;
+// Lay track ALONG THE PATH, not on a grid.
+//
+// This is the fix for the wiggle. Snapping a section's POSITION to a hex cell
+// means any line that is not one of the six lattice axes staircases: measured
+// on a dead-straight drive at heading -11.5 degrees, the rover's own path
+// deviated 0.0 units and the track behind it deviated 20.9 mean / 56.9 max.
+// No hex size fixes that -- bigger cells staircase harder, smaller ones just
+// make finer debris.
+//
+// So a section is placed at the real path position, carrying the heading it
+// was laid at, one `sectionSpacing` from the last one. Sections are hexes with
+// their flats facing along the path, so one spacing apart means they abut
+// exactly on a straight run and fan slightly through a curve -- track sections,
+// which is what they always claimed to be.
+//
+// Walking from the last laid point rather than placing a single section per
+// emit is what keeps the road connected: emits are measured between points
+// that can drift, so one emit can span more than one section's worth of
+// ground. Walking fills it.
+//
+// Overlap is still impossible, but by test rather than by structure: a
+// candidate closer than MIN_SEPARATION to any existing section is not a new
+// section, it is the one already there.
+//
+// Returns how many sections were actually placed, so the caller charges for
+// track that exists and nothing else.
+function addFieldPatch(state: ContinuousWorldState, budgetTiles: number): number {
+  const spacing = sectionSpacing(state.tuning);
+  const to = layPoint(state);
+
+  const index = buildRoadIndex(state.fields, state.tuning);
+  // Walk from a SECTION, not from a bare point. The anchor tracks the machine
+  // while it runs on road it already owns, so it can sit anywhere inside a
+  // section's footprint -- and stepping one spacing from the edge of a section
+  // lands one spacing plus that offset from its centre, which is past the
+  // connection reach. Measured: every break in a driven road was this, at
+  // 57-71 units where a spacing is 41.6. Snapping the anchor to the section it
+  // is standing on is what makes a new pass weld to the old one.
+  const anchor = state.lastLaidPoint ?? to;
+  const anchorSection = sectionWithin(anchor, index, state.tuning);
+  const from: Vec2 = anchorSection ? { x: anchorSection.x, y: anchorSection.y } : anchor;
+  const span = distance(from, to);
   // Bounded so a desync (a long reverse, a teleport) repairs the near end
-  // rather than drawing a road across the whole map to catch up.
-  const path = hexDistance(from, cell) <= 6 ? hexLine(from, cell) : [cell];
+  // rather than drawing a road across the whole map to catch up: past the
+  // bound the machine simply starts a fresh section where it stands.
+  // Only a genuine desync -- a teleport, a long reverse -- starts a fresh
+  // section instead of walking. A gap of a few hundred units is ordinary: it
+  // is what running out of stock leaves behind, and walking it is exactly how
+  // the road repairs itself once stock returns. Bounding this at six spacings
+  // turned every dry spell into a permanent hole.
+  const continuous = span <= spacing * 40;
+  // Step by EXACTLY one spacing, not by span/steps. Dividing the span into
+  // whole steps rounds the step length up whenever the span is not a clean
+  // multiple, which put consecutive sections up to 1.85 spacings apart -- past
+  // the connection reach, so the road broke on ordinary driving. Any remainder
+  // is left on the anchor and carried into the next emit instead.
+  const steps = continuous ? Math.max(1, Math.floor(span / spacing)) : 1;
+  const bearing = span > 0.001 ? Math.atan2(to.y - from.y, to.x - from.x) : state.rover.heading;
+  const unit = span > 0.001 ? { x: (to.x - from.x) / span, y: (to.y - from.y) / span } : { x: Math.cos(bearing), y: Math.sin(bearing) };
 
   let placed = 0;
-  for (const step of path) {
+  // Where the walk actually got to. Running out of budget mid-walk must leave
+  // the anchor at the last section laid, not at the emit point -- otherwise
+  // the unpaid remainder of the line is never filled and running low on stock
+  // punches a hole.
+  let reached: Vec2 = from;
+  for (let step = 1; step <= steps; step += 1) {
     if (placed >= budgetTiles) break;
-    const key = hexKey(step.q, step.r);
-    const existing = index.get(key);
+    const reach = Math.min(spacing * step, span);
+    const at: Vec2 = continuous
+      ? { x: from.x + unit.x * reach, y: from.y + unit.y * reach }
+      : to;
+
+    // Already track here. Weld the chain onto it rather than laying a second
+    // section on top -- driving over your own road must not double it.
+    const existing = sectionWithin(at, index, state.tuning);
     if (existing) {
       state.layingChainId = existing.id;
+      reached = at;
       continue;
     }
 
-    const centre = hexToWorld(step.q, step.r, size);
     const tile: FieldPatch = {
       id: state.nextFieldId,
-      x: centre.x,
-      y: centre.y,
+      x: at.x,
+      y: at.y,
       radius: state.tuning.fieldRadius,
-      age: 0
+      heading: bearing,
+      age: 0,
+      prevId: state.layingChainId
     };
-    state.fields.push(tile);
-    index.set(key, tile);
+    insertSection(state.fields, index, tile);
     state.layingChainId = state.nextFieldId;
     state.nextFieldId += 1;
     placed += 1;
+    reached = at;
   }
 
-  state.lastLaidCell = cell;
+  state.lastLaidPoint = reached;
   return placed;
 }
 
-// The cell a tile occupies. Laid tiles sit exactly on cell centres so this
-// round-trips exactly; deriving it rather than storing it also means a tile
-// placed by an arena or a test at an arbitrary point still has a defined cell.
-export function fieldCell(at: Vec2, tileSize: number): { q: number; r: number } {
-  return worldToHex(at.x, at.y, tileSize);
-}
 
-// Cached per fields array, because the reclaim pass asks "how connected is this
-// tile" once per tile and rebuilding the index each time is quadratic -- it took
-// one simulation test from 0.15s to 15s. Tiles never move once placed, so the
-// array's length is a sufficient invalidation signal: every add and every lift
-// changes it, and nothing else can change which cell a tile is in.
-interface TileIndexCache {
-  length: number;
-  tileSize: number;
-  index: Map<string, FieldPatch>;
-}
-const tileIndexCache = new WeakMap<FieldPatch[], TileIndexCache>();
 
-export function buildTileIndex(fields: FieldPatch[], tileSize: number): Map<string, FieldPatch> {
-  const cached = tileIndexCache.get(fields);
-  if (cached && cached.length === fields.length && cached.tileSize === tileSize) return cached.index;
-
-  const index = new Map<string, FieldPatch>();
-  for (const field of fields) {
-    const cell = fieldCell(field, tileSize);
-    index.set(hexKey(cell.q, cell.r), field);
-  }
-  tileIndexCache.set(fields, { length: fields.length, tileSize, index });
-  return index;
-}
-
-// Which occupied cells touch this one. Adjacency is read off the coordinates,
-// so it cannot be severed the way a prevId chain could: lifting a tile changes
-// what its neighbours are adjacent TO, and nothing has to be repaired.
-export function fieldNeighbours(
-  field: FieldPatch,
-  index: Map<string, FieldPatch>,
-  tileSize: number
-): FieldPatch[] {
-  const cell = fieldCell(field, tileSize);
-  return hexNeighbours(cell.q, cell.r)
-    .map((neighbour) => index.get(hexKey(neighbour.q, neighbour.r)))
-    .filter((neighbour): neighbour is FieldPatch => neighbour !== undefined && neighbour.id !== field.id);
-}
-
-// What this patch continues from. Prefer the patch laid immediately before it,
-// and otherwise join whatever road it physically touches.
-//
-// The link has to be earned by adjacency, not by id order. The old tangent
-// treated any two patches within 2.8 radii -- 129 units, five spacings -- as
-// the same stretch, which welded unrelated passes together and made the road
-// unreadable. But refusing to join anything at all is the opposite failure: the
-// arms stop while the tractor is on road and restart when it falls off, so a
-// road driven out and back came home as a pile of two-patch stubs. Joining
-// within a spacing and a half is real overlap: patches that close together are
-// one continuous piece of road whatever pass laid them, and the tractor can
-// drive from one onto the other without leaving the track.
-function findJoinablePatchId(state: ContinuousWorldState, at: Vec2): number | undefined {
-  const reach = Math.sqrt(3) * state.tuning.tileSize * 1.5;
-  const previous = state.layingChainId !== undefined
-    ? state.fields.find((field) => field.id === state.layingChainId)
-    : undefined;
-  if (previous && distance(previous, at) <= reach * 2) return previous.id;
-
-  let best: number | undefined;
-  let bestDistance = reach;
-  for (const field of state.fields) {
-    const fieldDistance = distance(field, at);
-    if (fieldDistance > bestDistance) continue;
-    best = field.id;
-    bestDistance = fieldDistance;
-  }
-  return best;
-}
 
 
 function resolveSpeedState(state: ContinuousWorldState): SpeedState {
@@ -1635,27 +1743,6 @@ function resolveSpeedState(state: ContinuousWorldState): SpeedState {
   return 'crawl';
 }
 
-
-
-
-// The piece of road the tractor is standing on, whether or not it is locked to
-// it. Used to weld a new pass onto the old track at the moment the arms restart.
-function findRoadPatchUnderRover(state: ContinuousWorldState): FieldPatch | undefined {
-  let best: FieldPatch | undefined;
-  let bestDistance = state.tuning.fieldRadius;
-  for (const field of state.fields) {
-    if (!isRailworthy(state, field)) continue;
-    const fieldDistance = distance(state.rover, field);
-    if (fieldDistance > bestDistance) continue;
-    best = field;
-    bestDistance = fieldDistance;
-  }
-  return best;
-}
-
-function isRailworthy(state: ContinuousWorldState, field: FieldPatch): boolean {
-  return field.age >= state.tuning.preparedFieldMinAgeSeconds;
-}
 
 
 
@@ -1973,9 +2060,8 @@ function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatc
 // What the player has to state to predict it: the drone eats loose ends, never
 // the middle. That is the whole rule.
 export function isRoadSpendable(state: ContinuousWorldState, point: Vec2): boolean {
-  const index = buildTileIndex(state.fields, state.tuning.tileSize);
-  const cell = fieldCell(point, state.tuning.tileSize);
-  const field = index.get(hexKey(cell.q, cell.r));
+  const index = buildRoadIndex(state.fields, state.tuning);
+  const field = findSectionAt(point, index, state.tuning);
   if (!field) return false;
   return getTrackDegree(state, field, index) <= 1;
 }
@@ -1985,10 +2071,10 @@ export function isRoadSpendable(state: ContinuousWorldState, point: Vec2): boole
 export function getTrackDegree(
   state: ContinuousWorldState,
   field: FieldPatch,
-  index?: Map<string, FieldPatch>
+  index?: RoadIndex
 ): number {
-  const tiles = index ?? buildTileIndex(state.fields, state.tuning.tileSize);
-  return fieldNeighbours(field, tiles, state.tuning.tileSize).length;
+  const tiles = index ?? buildRoadIndex(state.fields, state.tuning);
+  return fieldNeighbours(field, tiles, state.tuning).length;
 }
 
 

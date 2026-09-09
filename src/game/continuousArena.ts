@@ -1,4 +1,3 @@
-import { hexKey, hexToWorld, worldToHex } from './hex';
 import type { FieldPatch, FertileZone, Vec2 } from './continuous';
 
 export type ContinuousArenaId = 'first-run-readable' | 'first-run-tight' | 'last-light-return';
@@ -259,12 +258,12 @@ const FIRST_RUN_TIGHT: ContinuousArenaDefinition = {
 // The safe road is the near ring: out to the flats and back, which is the trip
 // that always works and never pays. It used to run west to the map edge, which
 // was the old field's shape and left the near seams off-corridor entirely.
-// An authored road, as a chain of points about one lattice step apart so
-// consecutive points land in neighbouring cells and the result is a connected
-// piece of track rather than a dotted line. Spacing sits just under the
-// across-flats distance (sqrt(3) * tileSize) for the shipped grain; the cell
-// dedup in createArenaStarterFields absorbs the rest.
-function roadChain(corners: Vec2[], spacing = 26): Vec2[] {
+// An authored road, as a chain of points one section spacing apart so the
+// sections abut and the result is a connected piece of track rather than a
+// dotted line. Spacing is the across-flats distance (sqrt(3) * tileSize) for
+// the shipped grain; the separation dedup in createArenaStarterFields absorbs
+// anything laid closer at a corner.
+function roadChain(corners: Vec2[], spacing = Math.sqrt(3) * 24): Vec2[] {
   const points: Vec2[] = [];
   for (let index = 0; index < corners.length - 1; index += 1) {
     const from = corners[index];
@@ -511,25 +510,37 @@ export function createArenaStarterFields(
   tileSize: number,
   fieldRadius: number
 ): FieldPatch[] {
-  // The apron is track like any other, so it goes on the same lattice the
-  // tractor lays onto. That is what lets the rail follow the apron out of the
-  // depot and straight onto the first tile the machine puts down: they are
-  // neighbours on one grid, not two sets of pieces that happen to be near each
-  // other. Authored points falling in one cell collapse to one tile, which is
-  // the invariant -- a cell is occupied or it is not.
+  // The apron is track like any other, laid the same way the machine lays it:
+  // sections at the authored points, oriented along the road, one spacing
+  // apart. It used to be snapped to the hex lattice, which is exactly the
+  // staircase this change exists to remove -- and it mattered most here,
+  // because the apron is the first road a player ever reads.
+  //
+  // Authored points closer together than a section's own footprint collapse to
+  // one section, which is what keeps the invariant: no road overlaps road.
+  const minSeparation = Math.sqrt(3) * tileSize * 0.85;
+  const points = arena.starterFieldPoints;
   const fields: FieldPatch[] = [];
-  const taken = new Set<string>();
-  for (const point of arena.starterFieldPoints) {
-    const cell = worldToHex(point.x, point.y, tileSize);
-    const key = hexKey(cell.q, cell.r);
-    if (taken.has(key)) continue;
-    taken.add(key);
-    const centre = hexToWorld(cell.q, cell.r, tileSize);
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    if (fields.some((field) => Math.hypot(field.x - point.x, field.y - point.y) <= minSeparation)) continue;
+
+    // Point the section along the road it belongs to. The next authored point
+    // is the road's direction here; at the end of a chain the previous one is.
+    const next = points[index + 1];
+    const previous = points[index - 1];
+    const along = next && Math.hypot(next.x - point.x, next.y - point.y) <= minSeparation * 2
+      ? { x: next.x - point.x, y: next.y - point.y }
+      : previous
+      ? { x: point.x - previous.x, y: point.y - previous.y }
+      : { x: 1, y: 0 };
+
     fields.push({
       id: fields.length + 1,
-      x: centre.x,
-      y: centre.y,
+      x: point.x,
+      y: point.y,
       radius: fieldRadius,
+      heading: Math.atan2(along.y, along.x),
       age: 5.4 - fields.length * 0.18
     });
   }
