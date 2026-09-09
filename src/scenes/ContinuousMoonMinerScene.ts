@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { hexKey, worldToHex } from '../game/hex';
 import {
   createContinuousWorld,
   DEFAULT_DYNAMICS_PRESET_ID,
@@ -28,7 +29,8 @@ import {
   type ReclaimPreview,
   type SpeedState,
   type Vec2,
-  getDronePickupRadius
+  getDronePickupRadius,
+  getRoadAhead
 } from '../game/continuous';
 import {
   CONTINUOUS_ARENAS,
@@ -566,7 +568,6 @@ interface TerrainVisualSnapshot {
   craterCount: number;
   fissureCount: number;
   fertileBedCount: number;
-  preparedFieldBedCount: number;
   ridgeCount: number;
 }
 
@@ -3418,7 +3419,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // has claimed -- so the drone's attention repainted the road itself and the
     // sandy tiles read as a different kind of track. Track is track; what the
     // drone is doing to it is a state ON it, drawn as a mark over the top.
-    this.drawFieldRibbon([...ordinary, ...reserved], 0x6cf5dd, false);
+    this.drawFieldRibbon([...ordinary, ...reserved], 0x6cf5dd);
     this.drawDroneAttentionMarks(ordinary.filter((field) => targeted.has(field.id)), reserved);
     this.drawFieldBirthMarkers(ordinary);
   }
@@ -3429,13 +3430,34 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // overlapping blobs -- it was drawing the reach, not the piece. Corners are
   // projected individually so a tile sits on the ground plane rather than being
   // a flat polygon pasted over it.
+  // The road, drawn as a road.
+  //
+  // Every tile used to be stroked on all six edges, including the edges it
+  // shares with its neighbours -- so interior boundaries were drawn twice and,
+  // with stroke alpha (up to 0.66) above fill alpha (up to 0.46), the strongest
+  // lines in the road were exactly the ones that should not exist. A honeycomb
+  // of cells, not a surface. The geometry was never at fault: hexes are drawn
+  // at the lattice's own size and adjacent tiles share exact projected corners,
+  // so they already tessellate with no gap and no overlap.
+  //
+  // Now the fill carries the road and only BOUNDARY edges are stroked, which
+  // gives a continuous silhouette around a connected run for free -- no polygon
+  // union, just skipping the shared edges.
   private drawFieldRibbon(
     fields: Array<{ id: number; x: number; y: number; radius: number; age: number }>,
-    color: number,
-    reserved: boolean
+    color: number
   ): void {
     const size = this.state.tuning.tileSize;
     const calm = this.visualCalm();
+    const step = Math.sqrt(3) * size;
+
+    // Which cells are occupied, so an edge can ask whether anything is on the
+    // other side of it. Keyed the same way the simulation keys them.
+    const occupied = new Set<string>();
+    for (const field of fields) {
+      const cell = worldToHex(field.x, field.y, size);
+      occupied.add(hexKey(cell.q, cell.r));
+    }
 
     for (const field of fields) {
       const alpha = this.fieldAlpha(field);
@@ -3450,70 +3472,34 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         );
       }
 
-      this.graphics.fillStyle(color, reserved ? alpha * 0.4 : alpha * (0.26 + 0.2 * calm));
+      // Fill leads now. It was 0.26-0.46 under a heavier stroke; a road should
+      // read as a surface with an edge, not as a mesh.
+      this.graphics.fillStyle(color, alpha * (0.5 + 0.16 * calm));
       this.graphics.fillPoints(corners, true);
-      this.graphics.lineStyle(reserved ? 3 : 1.5, color, reserved ? alpha * 0.95 : alpha * (0.4 + 0.26 * calm));
-      this.graphics.strokePoints(corners, true);
-    }
-  }
 
-  private fieldSections<T extends Vec2 & { id: number; prevId?: number }>(fields: T[]): T[][] {
-    const byId = new Map<number, T>();
-    for (const field of fields) byId.set(field.id, field);
-
-    // Heads are the patches nothing in this set is chained to.
-    const linked = new Set<number>();
-    for (const field of fields) {
-      if (field.prevId !== undefined && byId.has(field.prevId)) linked.add(field.prevId);
-    }
-
-    const nextOf = new Map<number, T>();
-    for (const field of fields) {
-      if (field.prevId !== undefined && byId.has(field.prevId)) nextOf.set(field.prevId, field);
-    }
-
-    const sections: T[][] = [];
-    const walked = new Set<number>();
-    const walk = (head: T): void => {
-      const section: T[] = [];
-      let current: T | undefined = head;
-      while (current && !walked.has(current.id)) {
-        walked.add(current.id);
-        section.push(current);
-        current = nextOf.get(current.id);
+      // Edge i runs between corner i and corner i+1, so its outward normal
+      // points at 30 + 60i degrees. Stepping one across-flats along that normal
+      // lands on the neighbouring cell centre -- derived rather than tabulated,
+      // so it cannot fall out of step with the lattice.
+      // Width scales with distance: a constant 1.5px turned far road into wire
+      // while near road stayed a filled band, which read as two kinds of road.
+      const width = Math.max(0.6, 1.6 * this.projectedScale(field));
+      this.graphics.lineStyle(width, color, alpha * (0.34 + 0.2 * calm));
+      for (let edge = 0; edge < 6; edge += 1) {
+        const normal = Math.PI / 6 + (Math.PI / 3) * edge;
+        const neighbour = worldToHex(
+          field.x + step * Math.cos(normal),
+          field.y + step * Math.sin(normal),
+          size
+        );
+        if (occupied.has(hexKey(neighbour.q, neighbour.r))) continue;
+        const from = corners[edge];
+        const to = corners[(edge + 1) % 6];
+        this.graphics.lineBetween(from.x, from.y, to.x, to.y);
       }
-      if (section.length > 0) sections.push(section);
-    };
-
-    for (const field of fields) {
-      if (walked.has(field.id)) continue;
-      const isHead = field.prevId === undefined || !byId.has(field.prevId);
-      if (isHead) walk(field);
-    }
-    // Anything left is part of a chain that closes on itself; start it anywhere.
-    for (const field of fields) {
-      if (!walked.has(field.id)) walk(field);
-    }
-    void linked;
-    return sections;
-  }
-
-
-
-
-  private drawFieldCenterLine<T extends Vec2>(section: T[], color: number, reserved: boolean): void {
-    if (section.length < 2) return;
-
-    this.graphics.lineStyle(reserved ? 3 : 2, color, reserved ? 0.86 : 0.38 + 0.22 * this.visualCalm());
-    for (let index = 0; index < section.length - 1; index += 1) {
-      const from = this.project(section[index]);
-      const to = this.project(section[index + 1]);
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
     }
   }
 
-  // What the drone is looking at, and what it has committed to, drawn ON the
-  // road rather than instead of it.
   private drawDroneAttentionMarks(
     targeted: Array<{ x: number; y: number; age: number }>,
     reserved: Array<{ x: number; y: number; age: number }>
@@ -4486,9 +4472,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private getSpeedStateDisplay(): { label: string; detail: string; color: number; fill: number; text: string; subtext: string } {
 
     if (this.state.speedState === 'prepared') {
+      // The road ahead, said out loud. The whole point of speed ramping with
+      // connected road is that the player can size up the run home BEFORE
+      // committing to it -- a promise you cannot read is not a promise.
+      const ahead = Math.round(getRoadAhead(this.state));
       return {
         label: 'Sprint',
-        detail: 'field grip',
+        detail: ahead > 0 ? `${ahead}m of road ahead` : 'field grip',
         color: 0x78f7df,
         fill: 0x123a37,
         text: '#effffb',
@@ -5163,7 +5153,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         craterCount: TERRAIN_CRATER_COUNT,
         fissureCount: TERRAIN_FISSURE_COUNT,
         fertileBedCount: this.state.fertileZones.length,
-        preparedFieldBedCount: this.getPreparedFieldTerrainSectionCount(),
         ridgeCount: this.state.arena.ridges.length
       },
       oreVeins: this.state.fertileZones
@@ -5185,14 +5174,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     };
   }
 
-  private getPreparedFieldTerrainSectionCount(): number {
-    const preparedFields = [...this.state.fields]
-      .filter((field) => {
-        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds;
-      })
-      .sort((a, b) => a.id - b.id);
-    return this.fieldSections(preparedFields).length;
-  }
 
   private getFertileVeinScreenBounds(zone: FertileZone): ContinuousUiRect {
     const polygon = this.fertileVeinScreenPolygon(zone, zone.vein?.width ?? zone.radius);

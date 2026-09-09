@@ -101,3 +101,28 @@ export function hexCorners(centerX: number, centerY: number, size: number): { x:
   }
   return corners;
 }
+
+// Every cell on the straight line between two cells, inclusive of both ends.
+//
+// The road needs this because an emit step is measured between emit POINTS, not
+// between cell centres. Two points one across-flats apart can sit at opposite
+// edges of their cells and land two cells apart -- measured at 11.5% of
+// straight-line emits -- which is a diagonal hole in the road roughly one emit
+// in nine. Walking the line and filling what it crosses removes that class of
+// gap entirely rather than tuning the step to make it rarer.
+export function hexLine(from: HexCoord, to: HexCoord): HexCoord[] {
+  const steps = hexDistance(from, to);
+  if (steps === 0) return [{ ...from }];
+
+  const cells: HexCoord[] = [];
+  for (let step = 0; step <= steps; step += 1) {
+    const t = step / steps;
+    // Nudged off the exact midpoint so a line passing precisely between two
+    // cells resolves the same way every time instead of alternating with
+    // floating point noise.
+    cells.push(
+      roundHex(from.q + (to.q - from.q) * t + 1e-6, from.r + (to.r - from.r) * t + 2e-6)
+    );
+  }
+  return cells;
+}

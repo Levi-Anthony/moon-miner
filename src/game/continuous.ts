@@ -5,7 +5,7 @@ import {
   type ContinuousArenaDefinition,
   type ContinuousArenaId
 } from './continuousArena';
-import { hexKey, hexNeighbours, hexToWorld, worldToHex } from './hex';
+import { hexDistance, hexKey, hexLine, hexNeighbours, hexToWorld, worldToHex } from './hex';
 
 export type ContinuousPhase = 'playing' | 'won' | 'lost';
 export type SpeedState = 'prepared' | 'fabricating' | 'crawl';
@@ -180,6 +180,10 @@ export interface ContinuousTuning {
   targetOre: number;
   startingSolarSeconds: number;
   preparedSpeed: number;
+  // Top speed on a long connected run home, reached when roadAhead hits
+  // roadRunwayForFullSpeed. Ramped from preparedSpeed, never snapped.
+  roadRunSpeed: number;
+  roadRunwayForFullSpeed: number;
   fabricatingSpeed: number;
   crawlSpeed: number;
   fabricateCostPerSecond: number;
@@ -286,6 +290,9 @@ export interface ContinuousWorldState {
   // The patch the arms laid last, or undefined when they are not laying. New
   // patches chain onto it, so one pass is one piece of track.
   fieldEmitDistance: number;
+  // The cell the last tile went into, so the next emit can fill the line
+  // between them instead of leaving whatever the gap happened to be.
+  lastLaidCell?: { q: number; r: number };
   layingChainId?: number;
   // Recomputed every tick from the track under the tractor. Undefined means
   // there is nothing connected to run on.
@@ -327,10 +334,15 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   targetOre: 42,
   startingSolarSeconds: 165,
   preparedSpeed: 132,
+  roadRunSpeed: 236,
+  roadRunwayForFullSpeed: 210,
   fabricatingSpeed: 74,
   crawlSpeed: 16,
   fabricateCostPerSecond: 1.48,
-  crawlRecoveryPerSecond: 0.1,
+  // Enough to fund crawl-speed laying: a tile falls due every sqrt(3)*tileSize
+  // / crawlSpeed = 2.6s and costs tileCost 0.35, so crawl must recover at least
+  // 0.135/s or 'crawl lays' would still leave holes.
+  crawlRecoveryPerSecond: 0.16,
   crawlRecoveryCeiling: 2.6,
   droneSpeed: 430,
   mineRate: 0.32,
@@ -423,7 +435,10 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // the groove barely existed and using it barely paid, which together are the
   // "what kind of nanobots are these" complaint. Pull and reach raised, and
   // the road is now 78% faster than raw ground rather than 19%.
-  crawlRecoveryPerSecond: 0.1,
+  // Enough to fund crawl-speed laying: a tile falls due every sqrt(3)*tileSize
+  // / crawlSpeed = 2.6s and costs tileCost 0.35, so crawl must recover at least
+  // 0.135/s or 'crawl lays' would still leave holes.
+  crawlRecoveryPerSecond: 0.16,
   crawlRecoveryCeiling: 2.6,
   crawlSpeed: 16,
   fabricatingSpeed: 74,
@@ -442,6 +457,8 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // state at 236; ordinary driving carries it now.
 
   preparedSpeed: 160,
+  roadRunSpeed: 236,
+  roadRunwayForFullSpeed: 210,
   // Refill while on prepared ground. Zero means consequence comes from distance
   // weighting in drone selection, not from a baseline stock mechanic.
   preparedRefillPerSecond: 0
@@ -783,6 +800,77 @@ export function carryFieldsOvernight(fields: FieldPatch[], tuning: ContinuousTun
     ;
 }
 
+// How much connected road continues ahead of the machine, in world units.
+//
+// Restored from the rail, and this is the ONE thing worth keeping from it: the
+// rail's problem was never that it measured the road, it was that it then
+// drove the machine down it. This writes nothing. It is read only as a speed
+// term, so a long clean trail home makes you fast and a stub hands you back to
+// ordinary driving -- which is what lets a player look at the road behind them
+// and decide whether they can make it back before the sun.
+export function getRoadAhead(state: ContinuousWorldState): number {
+  const size = state.tuning.tileSize;
+  const index = buildTileIndex(state.fields, size);
+  const cell = fieldCell(state.rover, size);
+  const under = index.get(hexKey(cell.q, cell.r));
+  if (!under) return 0;
+  return measureRunway(index, size, under, {
+    x: Math.cos(state.rover.heading),
+    y: Math.sin(state.rover.heading)
+  });
+}
+
+function measureRunway(
+  index: Map<string, FieldPatch>,
+  tileSize: number,
+  from: FieldPatch,
+  tangent: Vec2
+): number {
+  const seen = new Set<number>([from.id]);
+  // The direction carried along the walk, updated at every tile. Holding the
+  // starting tangent for the whole run was wrong on exactly the roads that
+  // matter: a track that curves bends away from where it started, so the walk
+  // either stopped at the bend or jumped to a different branch, and the runway
+  // readout swung between 27 and 368 on consecutive frames. A number you cannot
+  // trust is worse than no number, because the whole point of it is deciding
+  // whether to turn round and floor it.
+  let heading = { ...tangent };
+  let current = from;
+  let total = 0;
+
+  // Bounded so track that loops back on itself cannot spin here forever.
+  for (let step = 0; step < 400; step += 1) {
+    // Follow the straightest continuation. At a junction that is the branch the
+    // machine would carry on down, which is what the runway is asked to answer.
+    // The old walk needed a separate proximity scan here to hop between chains
+    // laid on different passes; adjacency makes a junction an ordinary
+    // neighbour, so that special case is gone rather than ported.
+    let next: FieldPatch | undefined;
+    let bestDot = 0;
+    for (const candidate of fieldNeighbours(current, index, tileSize)) {
+      if (seen.has(candidate.id)) continue;
+      const dx = candidate.x - current.x;
+      const dy = candidate.y - current.y;
+      const gap = Math.hypot(dx, dy);
+      if (gap <= 0.001) continue;
+      const dot = (dx / gap) * heading.x + (dy / gap) * heading.y;
+      if (dot <= bestDot) continue;
+      bestDot = dot;
+      next = candidate;
+    }
+    if (!next) break;
+
+    const gap = distance(current, next);
+    // Turn with the road rather than through it. A track can bend as sharply
+    // as the tractor laid it, and the walk has to bend with it.
+    heading = { x: (next.x - current.x) / gap, y: (next.y - current.y) / gap };
+    total += gap;
+    seen.add(next.id);
+    current = next;
+  }
+  return total;
+}
+
 export function getPreparedCoverage(state: ContinuousWorldState, point: Vec2): number {
   let coverage = 0;
   for (const field of state.fields) {
@@ -997,9 +1085,22 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   // DECISIONS.md, 2026-09-08: "The road should pay much more than it does. It
   // pays 30%. It wanted to pay 78%." The rail's 236 delivered that as a
   // separate locked state; preparedSpeed carries it now as ordinary driving.
+  // Road pays, and it pays more the further it reaches ahead of you.
+  //
+  // Flat prepared speed made a single tile under the machine worth exactly as
+  // much as a continuous highway, so laying a tidy connected road earned
+  // nothing and there was never a reason to bet on reaching home. Ramping on
+  // connected road ahead turns the trail into a promise you can size up before
+  // committing: floor it on a long run, ease off on a stub.
+  //
+  // Strictly a speed term. It never writes heading or position -- that is the
+  // whole difference between this and the rail lock that used to take the
+  // wheel.
+  const roadAhead = state.speedState === 'prepared' ? getRoadAhead(state) : 0;
+  const runway = clamp(roadAhead / state.tuning.roadRunwayForFullSpeed, 0, 1);
   const baseSpeed =
     state.speedState === 'prepared'
-      ? state.tuning.preparedSpeed
+      ? state.tuning.preparedSpeed + (state.tuning.roadRunSpeed - state.tuning.preparedSpeed) * runway
       : state.speedState === 'fabricating'
       ? state.tuning.fabricatingSpeed
       : state.tuning.crawlSpeed;
@@ -1086,27 +1187,27 @@ function runFieldSystem(
   }
 
   state.fieldEmitDistance += movedDistance;
-  // Crawl lays nothing, so it never reaches an emit.
-  if (state.speedState !== 'fabricating') return;
 
-  // One emit, one cell. The step is the lattice's across-flats distance, so a
-  // pass lays a line of touching tiles and never hammers a cell it already
-  // holds. As a hand-set number it silently coupled to grain: at a step shorter
-  // than a cell every other emit placed nothing, road grew at half the rate the
-  // machine moved, and the near routes lost most of their prepared running.
-  if (state.fieldEmitDistance >= Math.sqrt(3) * state.tuning.tileSize) {
-    // A tile is paid for whole or not laid at all. That is what makes the road
-    // countable: every tile on the map is one unit of stock parked on the
-    // ground, and the tank tells you exactly how much track you have left in
-    // you. Running out mid-pass drops you to crawl rather than dribbling out
-    // road too thin to drive on.
-    if (state.nanobots < state.tuning.tileCost) return;
-    // Charge only for track actually placed. An emit landing on a cell that is
-    // already held used to bill for a tile it never laid, which quietly drained
-    // the tank at every grain where the emit step is shorter than a cell.
-    if (addFieldPatch(state)) state.nanobots = Math.max(0, state.nanobots - state.tuning.tileCost);
-    state.fieldEmitDistance = 0;
-  }
+  if (state.fieldEmitDistance < Math.sqrt(3) * state.tuning.tileSize) return;
+
+  // NEVER LEAVE A HOLE.
+  //
+  // Crawl lays. It used to lay nothing while still accumulating distance, so
+  // every crawl episode -- seven seconds of recovery at 16 u/s, 112 units --
+  // ended with a tile placed 112 units from the last one: an isolated fragment,
+  // every single time, on the exact stretch you were counting on to get home.
+  //
+  // When there is not enough stock for even one tile the emit is HELD rather
+  // than skipped: the accumulator keeps running and lastLaidCell stays put, so
+  // as soon as stock returns the line-walk in addFieldPatch fills the whole gap
+  // back to where the road stopped. The road repairs itself instead of
+  // recording where you were poor.
+  const affordable = Math.floor(state.nanobots / state.tuning.tileCost);
+  if (affordable < 1) return;
+
+  const placed = addFieldPatch(state, affordable);
+  state.nanobots = Math.max(0, state.nanobots - placed * state.tuning.tileCost);
+  state.fieldEmitDistance = 0;
 }
 
 function runMiningSystem(
@@ -1308,41 +1409,52 @@ function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): { paylo
 // other facet of the drone is a fee, a cooldown, or an eligibility rule, and a
 // tool made only of restrictions reads as a tax however well it is balanced.
 // Reclaiming and reusing rail was always the fiction; it just never did it.
+// The drone lays the road it brought back IN FRONT OF YOU, and connected.
+//
+// It used to project an arc from rover.turnRate. That was wrong in four ways
+// once the rail lock was deleted: turnRate is now a lagging average of player
+// steering rather than the thing that steers, so the arc described a turn from
+// a tenth of a second ago; the projection stepped a full spacing per iteration
+// at up to 69 degrees of heading change, so six steps swept more than a full
+// revolution and curled the spur into a spiral beside the machine; the first
+// tile was placed a whole spacing away, so a spur could land as its OWN
+// connected component; and relayed tiles are born prepared, so driving onto a
+// disconnected spur stopped the machine's own laying and turned one gap into
+// two. Measured: a launch reliably split the road into two components.
+//
+// It now walks the lattice from a cell the road already occupies toward the
+// ground ahead of the machine. Starting on the network is what guarantees the
+// spur is attached; walking the lattice is what stops it skipping cells.
 function layReturnedRail(state: ContinuousWorldState, patches: number): number {
   if (patches <= 0) return 0;
 
-  const spacing = Math.sqrt(3) * state.tuning.tileSize;
+  const size = state.tuning.tileSize;
+  const spacing = Math.sqrt(3) * size;
   const laid = Math.min(patches, state.tuning.droneRailRelayMaxPatches);
-  // Lay it along the arc the tractor is actually on, not down a straight spur
-  // from its nose. Road count is already conserved -- three seeds of self-play
-  // lift 305 patches and put 302 back -- so the drone was never a road tax. It
-  // read as one because the rail came back on a line the machine was not going
-  // to follow: every launch that mattered happened mid-turn, and a straight
-  // 156 unit spur off a turning tractor lands beside the path instead of on it.
-  //
-  // The projection this walks is the same heading-plus-turn-rate arc that
-  // decides which road is protected. That function existed only to say no. It
-  // knows where the machine is going, and until now nothing used it to put
-  // anything there.
-  let x = state.rover.x;
-  let y = state.rover.y;
-  let heading = state.rover.heading;
-  const stepSeconds = state.rover.speed > 0 ? spacing / state.rover.speed : 0;
-  const occupied = buildTileIndex(state.fields, state.tuning.tileSize);
-  let placed = 0;
-  for (let index = 0; index < laid; index += 1) {
-    heading += state.rover.turnRate * stepSeconds;
-    x += Math.cos(heading) * spacing;
-    y += Math.sin(heading) * spacing;
+  const occupied = buildTileIndex(state.fields, size);
 
-    // Returned rail lands on the lattice like everything else, so what the drone
-    // hands back is track the machine can run on rather than a second set of
-    // pieces laid over the first. A cell already held is simply skipped.
-    const cell = worldToHex(x, y, state.tuning.tileSize);
+  // Anchor on road the machine is standing on, falling back to the last cell it
+  // laid into, and only then to the cell under it.
+  const under = worldToHex(state.rover.x, state.rover.y, size);
+  const anchor = occupied.has(hexKey(under.q, under.r))
+    ? under
+    : state.lastLaidCell ?? under;
+
+  // Aim at the ground the machine is heading for, far enough out that the walk
+  // has room to place the whole delivery.
+  const target = worldToHex(
+    state.rover.x + Math.cos(state.rover.heading) * spacing * (laid + 1),
+    state.rover.y + Math.sin(state.rover.heading) * spacing * (laid + 1),
+    size
+  );
+
+  let placed = 0;
+  for (const cell of hexLine(anchor, target)) {
+    if (placed >= laid) break;
     const key = hexKey(cell.q, cell.r);
     if (occupied.has(key)) continue;
 
-    const centre = hexToWorld(cell.q, cell.r, state.tuning.tileSize);
+    const centre = hexToWorld(cell.q, cell.r, size);
     const tile: FieldPatch = {
       id: state.nextFieldId,
       x: centre.x,
@@ -1371,31 +1483,59 @@ function layReturnedRail(state: ContinuousWorldState, patches: number): number {
 //
 // Laying onto a cell you already own tops the tile's value back up rather than
 // doing nothing: driving your own track should not degrade it.
-function addFieldPatch(state: ContinuousWorldState): boolean {
+// Lay track from wherever the last tile went to wherever this emit landed,
+// filling every cell the line crosses.
+//
+// This used to place exactly one tile per emit, which left holes: the emit step
+// is the distance between cell CENTRES, but emits are measured between points
+// that can sit anywhere in their cell, so consecutive emits land two cells
+// apart 11.5% of the time on dead-straight driving. Walking the line is what
+// makes the trail a connected road rather than a dotted one, and it is also
+// what lets the machine keep laying through a turn without the trailing offset
+// swinging a hole into the inside of the corner.
+//
+// Returns how many tiles were actually placed, so the caller charges for track
+// that exists and nothing else.
+function addFieldPatch(state: ContinuousWorldState, budgetTiles: number): number {
+  const size = state.tuning.tileSize;
   const offset = state.speedState === 'crawl' ? 6 : 14;
   const x = state.rover.x - Math.cos(state.rover.heading) * offset;
   const y = state.rover.y - Math.sin(state.rover.heading) * offset;
-  const cell = worldToHex(x, y, state.tuning.tileSize);
+  const cell = worldToHex(x, y, size);
 
-  const index = buildTileIndex(state.fields, state.tuning.tileSize);
-  const existing = index.get(hexKey(cell.q, cell.r));
-  if (existing) {
-    // Cell already held. Nothing to upgrade any more -- a tile is a tile.
-    state.layingChainId = existing.id;
-    return false;
+  const index = buildTileIndex(state.fields, size);
+  const from = state.lastLaidCell ?? cell;
+  // Bounded so a desync (a long reverse, a teleport) repairs the near end
+  // rather than drawing a road across the whole map to catch up.
+  const path = hexDistance(from, cell) <= 6 ? hexLine(from, cell) : [cell];
+
+  let placed = 0;
+  for (const step of path) {
+    if (placed >= budgetTiles) break;
+    const key = hexKey(step.q, step.r);
+    const existing = index.get(key);
+    if (existing) {
+      state.layingChainId = existing.id;
+      continue;
+    }
+
+    const centre = hexToWorld(step.q, step.r, size);
+    const tile: FieldPatch = {
+      id: state.nextFieldId,
+      x: centre.x,
+      y: centre.y,
+      radius: state.tuning.fieldRadius,
+      age: 0
+    };
+    state.fields.push(tile);
+    index.set(key, tile);
+    state.layingChainId = state.nextFieldId;
+    state.nextFieldId += 1;
+    placed += 1;
   }
 
-  const centre = hexToWorld(cell.q, cell.r, state.tuning.tileSize);
-  state.fields.push({
-    id: state.nextFieldId,
-    x: centre.x,
-    y: centre.y,
-    radius: state.tuning.fieldRadius,
-    age: 0
-  });
-  state.layingChainId = state.nextFieldId;
-  state.nextFieldId += 1;
-  return true;
+  state.lastLaidCell = cell;
+  return placed;
 }
 
 // The cell a tile occupies. Laid tiles sit exactly on cell centres so this
