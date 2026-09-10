@@ -15,6 +15,7 @@ import {
   buildRoadIndex,
   fieldNeighbours,
   isRoverAtExtraction,
+  migrateCarriedFields,
   launchReclaimDrone,
   resolveContinuousTuning,
   tickContinuousWorld,
@@ -1074,7 +1075,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         : undefined;
       return {
         shift: typeof parsed?.shift === 'number' ? parsed.shift : 1,
-        fields: Array.isArray(parsed?.fields) ? parsed.fields : [],
+        // Saves written before sections carried a heading come back with it
+        // undefined, which renders every one of them as NaN corners -- an
+        // invisible road that still connects and still works. Backfill on load.
+        fields: Array.isArray(parsed?.fields) ? migrateCarriedFields(parsed.fields) : [],
         depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {}
       };
     } catch {

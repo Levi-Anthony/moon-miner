@@ -916,6 +916,44 @@ function applyCarriedDepletion(zones: FertileZone[], carried: Record<string, num
   });
 }
 
+// Road loaded from a save written before sections had a heading.
+//
+// `heading` became a required field on FieldPatch the day track stopped being
+// snapped to a lattice, and nothing migrated the saves. An old section
+// therefore arrives with `heading` undefined, and the renderer computes its
+// corner angles from `field.heading - Math.PI / 6` -- undefined minus a number
+// is NaN, every corner is NaN, and the section draws as nothing. A save
+// fourteen shifts deep carrying 277 sections would come back very nearly
+// invisible while its topology stayed perfectly intact, which is about the
+// most confusing failure available: the road is all still there, still
+// connects, still makes you fast, and cannot be seen.
+//
+// A section's heading is the direction the road runs through it, so the
+// nearest other section recovers it -- not the heading it was truly laid at,
+// but the one that makes it abut its neighbour, which is the whole job the
+// heading does. An orphan keeps 0 rather than NaN: pointing the wrong way is a
+// blemish, not being drawn at all is a missing road.
+export function migrateCarriedFields(fields: FieldPatch[]): FieldPatch[] {
+  return fields.map((field) => {
+    if (Number.isFinite(field.heading)) return field;
+
+    let nearest: FieldPatch | undefined;
+    let bestGap = Infinity;
+    for (const other of fields) {
+      if (other === field) continue;
+      const gap = distance(field, other);
+      if (gap >= bestGap || gap <= 0.001) continue;
+      bestGap = gap;
+      nearest = other;
+    }
+
+    return {
+      ...field,
+      heading: nearest ? Math.atan2(nearest.y - field.y, nearest.x - field.x) : 0
+    };
+  });
+}
+
 export function carryFieldsOvernight(fields: FieldPatch[], tuning: ContinuousTuning): FieldPatch[] {
   return fields
     .map((field) => ({

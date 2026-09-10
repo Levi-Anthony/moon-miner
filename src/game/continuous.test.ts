@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { hexKey, hexToWorld, worldToHex } from './hex';
 import {
   buildRoadIndex,
+  migrateCarriedFields,
+  type FieldPatch,
   fieldNeighbours,
   sectionSpacing,
   CURRENT_CLASSIC_CONTINUOUS_TUNING,
@@ -1280,6 +1282,45 @@ describe('continuous Moon Miner spike rules', () => {
     // multiplies crawl time by 3, because nearest-worthwhile selection recovers
     // less per trip than the old weighted scoring did.
     expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds);
+  });
+
+  it('backfills a heading onto road saved before sections had one', () => {
+    // A save written by any build before track was laid along the path has no
+    // `heading` on its sections. The renderer derives corner angles from
+    // `heading - PI/6`, so undefined makes every corner NaN and the section
+    // draws as nothing -- while its position, its connections and its speed
+    // bonus all keep working. An invisible road that still functions is worse
+    // than a broken one, because nothing about it reads as a fault.
+    const spacing = Math.sqrt(3) * 24;
+    const legacy = [
+      { id: 1, x: 100, y: 100, radius: 44, age: 6 },
+      { id: 2, x: 100 + spacing, y: 100, radius: 44, age: 6 },
+      { id: 3, x: 100 + spacing * 2, y: 100, radius: 44, age: 6 }
+    ] as unknown as FieldPatch[];
+
+    const migrated = migrateCarriedFields(legacy);
+
+    for (const section of migrated) {
+      expect(Number.isFinite(section.heading)).toBe(true);
+      // Recovered from the neighbour, so a road running east reads as running
+      // east (or west, at the far end -- either way it is the road's own line).
+      expect(Math.abs(Math.sin(section.heading))).toBeLessThan(1e-9);
+    }
+
+    // Positions and identity are untouched: this repairs the drawing, it does
+    // not move anybody's road.
+    expect(migrated.map((section) => [section.id, section.x, section.y])).toEqual(
+      legacy.map((section) => [section.id, section.x, section.y])
+    );
+
+    // A section already carrying a heading is returned as-is.
+    const modern: FieldPatch[] = [{ id: 9, x: 0, y: 0, radius: 44, heading: 1.2, age: 1 }];
+    expect(migrateCarriedFields(modern)[0]).toBe(modern[0]);
+
+    // A lone orphan has no neighbour to learn from, and takes 0 rather than
+    // NaN: pointing the wrong way is a blemish, not being drawn is a hole.
+    const orphan = [{ id: 5, x: 0, y: 0, radius: 44, age: 1 }] as unknown as FieldPatch[];
+    expect(migrateCarriedFields(orphan)[0].heading).toBe(0);
   });
 
   it('lays track along the path it drove, without overlap and without a break', () => {
