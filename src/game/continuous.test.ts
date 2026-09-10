@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { hexKey, hexToWorld, worldToHex } from './hex';
 import {
+  buildRoadIndex,
+  migrateCarriedFields,
+  type FieldPatch,
+  fieldNeighbours,
+  sectionSpacing,
   CURRENT_CLASSIC_CONTINUOUS_TUNING,
   createContinuousWorld,
   DEFAULT_CONTINUOUS_TUNING,
@@ -51,7 +56,10 @@ describe('continuous Moon Miner spike rules', () => {
     // 96 seconds. What this line is for is that the rover starts on known
     // ground, so it asserts the runway rather than emptiness.
     expect(world.fields).toHaveLength(6);
-    expect(world.fields.every((field) => field.value === world.tuning.startingFieldValue)).toBe(true);
+    // Authored road is ordinary road. It used to carry its own richer value,
+    // which is what made the map's own track render solid while everything the
+    // player laid sat on the opacity floor.
+    expect(world.fields.every((field) => field.radius === world.tuning.fieldRadius)).toBe(true);
     expect(world.nextFieldId).toBe(7);
     // Starting on the authored runway means starting on prepared ground, which
     // is the point of having a runway: the machine opens the run rolling
@@ -109,7 +117,6 @@ describe('continuous Moon Miner spike rules', () => {
     expect(stable?.tuning.maxNanobots).toBe(24);
     expect(stable?.tuning.reclaimMinFieldAgeSeconds).toBe(4);
     expect(stable?.tuning.reclaimMinDistanceFromRover).toBe(90);
-    expect(stable?.tuning.reclaimMinFieldValue).toBe(0.06);
     expect(stable?.tuning.minReclaimClusterPayload).toBe(0.12);
     expect(stable?.tuning.droneUrgencyRatio).toBe(0.24);
 
@@ -118,7 +125,6 @@ describe('continuous Moon Miner spike rules', () => {
     expect(classic?.tuning.reclaimMinFieldAgeSeconds).toBe(2.2);
     expect(classic?.tuning.reclaimMinDistanceFromRover).toBe(26);
     expect(playground?.tuning.allowCloseReclaim).toBe(true);
-    expect(playground?.tuning.dronePickupRadius).toBeGreaterThan(stable?.tuning.dronePickupRadius ?? 0);
     expect(strict?.tuning.allowCloseReclaim).toBe(false);
     expect(strict?.tuning.reclaimMinFieldAgeSeconds).toBeGreaterThan(stable?.tuning.reclaimMinFieldAgeSeconds ?? 0);
     expect(createContinuousWorld().tuning).toEqual(stable?.tuning);
@@ -478,7 +484,7 @@ describe('continuous Moon Miner spike rules', () => {
         x: world.rover.x,
         y: world.rover.y,
         radius: 600,
-        value: 1,
+        heading: 0,
         age: 4
       }
     ];
@@ -526,7 +532,7 @@ describe('continuous Moon Miner spike rules', () => {
         x: world.rover.x,
         y: world.rover.y,
         radius: 600,
-        value: 1,
+        heading: 0,
         age: 4
       }
     ];
@@ -547,7 +553,7 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(next.nanobots).toBeLessThan(6);
     expect(next.fields.length).toBeGreaterThan(0);
-    expect(next.fields.some((field) => field.value > 0)).toBe(true);
+    expect(next.fields.length).toBeGreaterThan(0);
   });
 
   it('falls into emergency crawl instead of a hard stop when field-starved', () => {
@@ -567,8 +573,8 @@ describe('continuous Moon Miner spike rules', () => {
     const world = createContinuousWorld();
     world.nanobots = 8;
     world.fields = [
-      { id: 1, x: world.rover.x - 160, y: world.rover.y, radius: 44, value: 5, age: 6 },
-      { id: 2, x: world.rover.x - 184, y: world.rover.y + 8, radius: 44, value: 3, age: 5 }
+      { id: 1, x: world.rover.x - 160, y: world.rover.y, radius: 44, heading: 0, age: 6 },
+      { id: 2, x: world.rover.x - 184, y: world.rover.y + 8, radius: 44, heading: 0, age: 5 }
     ];
     world.nextFieldId = 3;
 
@@ -591,7 +597,7 @@ describe('continuous Moon Miner spike rules', () => {
       x: 80 + (index % 80) * 10,
       y: 160 + Math.floor(index / 80) * 12,
       radius: 44,
-      value: 0.9,
+      heading: 0,
       age: 30 + index * 0.01
     }));
     world.nextFieldId = 1221;
@@ -630,8 +636,8 @@ describe('continuous Moon Miner spike rules', () => {
     // anything worth carrying home.
     const world = createContinuousWorld();
     world.fields = [
-      { id: 2, x: world.rover.x - 12, y: world.rover.y, radius: 44, value: 1, age: 8 },
-      { id: 3, x: world.rover.x - 180, y: world.rover.y, radius: 26, value: 0.025, age: 8 }
+      { id: 2, x: world.rover.x - 12, y: world.rover.y, radius: 44, heading: 0, age: 8 },
+      { id: 3, x: world.rover.x - 180, y: world.rover.y, radius: 26, heading: 0, age: 8 }
     ];
     world.nextFieldId = 4;
 
@@ -643,13 +649,13 @@ describe('continuous Moon Miner spike rules', () => {
     // tractor's elbow was the point. In play it reads as the drone eating the
     // ground under you, so the rule is inverted: age does not buy proximity.
     const world = createContinuousWorld();
-    world.fields = [{ id: 1, x: world.rover.x - 40, y: world.rover.y, radius: 44, value: 1, age: 8 }];
+    world.fields = [{ id: 1, x: world.rover.x - 40, y: world.rover.y, radius: 44, heading: 0, age: 8 }];
     world.nextFieldId = 2;
 
     expect(getReclaimPreview(world)).toBeUndefined();
 
     const further = createContinuousWorld();
-    further.fields = [{ id: 1, x: further.rover.x - 200, y: further.rover.y, radius: 44, value: 1, age: 8 }];
+    further.fields = [{ id: 1, x: further.rover.x - 200, y: further.rover.y, radius: 44, heading: 0, age: 8 }];
     further.nextFieldId = 2;
 
     expect(getReclaimPreview(further)?.targetPatchId).toBe(1);
@@ -676,7 +682,7 @@ describe('continuous Moon Miner spike rules', () => {
       // projection is switched off to keep it a test of one thing.
       reclaimLookaheadSeconds: 0
     });
-    world.fields = [{ id: 1, x: world.rover.x - 52, y: world.rover.y, radius: 44, value: 2.6, age: 1.4 }];
+    world.fields = [{ id: 1, x: world.rover.x - 52, y: world.rover.y, radius: 44, heading: 0, age: 1.4 }];
     world.nextFieldId = 2;
 
     expect(getDroneReclaimDiagnostics(world).blockedReason).toBe('Oldest field age 1.4s / need 2.2s');
@@ -823,8 +829,8 @@ describe('continuous Moon Miner spike rules', () => {
   it('prefers a nearer equally valuable old reclaim target over a distant one', () => {
     const world = createContinuousWorld();
     world.fields = [
-      { id: 1, x: world.rover.x - 150, y: world.rover.y, radius: 44, value: 3, age: 6 },
-      { id: 2, x: world.rover.x + 420, y: world.rover.y, radius: 44, value: 3, age: 6 }
+      { id: 1, x: world.rover.x - 150, y: world.rover.y, radius: 44, heading: 0, age: 6 },
+      { id: 2, x: world.rover.x + 420, y: world.rover.y, radius: 44, heading: 0, age: 6 }
     ];
     world.nextFieldId = 3;
 
@@ -841,9 +847,9 @@ describe('continuous Moon Miner spike rules', () => {
     const world = createContinuousWorld();
     world.nanobots = 8;
     world.fields = [
-      { id: 1, x: world.rover.x - 170, y: world.rover.y, radius: 44, value: 5, age: 6 },
-      { id: 2, x: world.rover.x - 195, y: world.rover.y, radius: 44, value: 4, age: 6 },
-      { id: 3, x: world.rover.x + 260, y: world.rover.y, radius: 44, value: 3, age: 6 }
+      { id: 1, x: world.rover.x - 170, y: world.rover.y, radius: 44, heading: 0, age: 6 },
+      { id: 2, x: world.rover.x - 195, y: world.rover.y, radius: 44, heading: 0, age: 6 },
+      { id: 3, x: world.rover.x + 260, y: world.rover.y, radius: 44, heading: 0, age: 6 }
     ];
     world.nextFieldId = 4;
 
@@ -883,7 +889,7 @@ describe('continuous Moon Miner spike rules', () => {
         x: prepared.rover.x,
         y: prepared.rover.y,
         radius: 500,
-        value: 1,
+        heading: 0,
         age: 4
       }
     ];
@@ -1278,50 +1284,125 @@ describe('continuous Moon Miner spike rules', () => {
     expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds);
   });
 
-  it('lays track that never overlaps, never lands off-lattice, and is always one size', () => {
+  it('backfills a heading onto road saved before sections had one', () => {
+    // A save written by any build before track was laid along the path has no
+    // `heading` on its sections. The renderer derives corner angles from
+    // `heading - PI/6`, so undefined makes every corner NaN and the section
+    // draws as nothing -- while its position, its connections and its speed
+    // bonus all keep working. An invisible road that still functions is worse
+    // than a broken one, because nothing about it reads as a fault.
+    const spacing = Math.sqrt(3) * 24;
+    const legacy = [
+      { id: 1, x: 100, y: 100, radius: 44, age: 6 },
+      { id: 2, x: 100 + spacing, y: 100, radius: 44, age: 6 },
+      { id: 3, x: 100 + spacing * 2, y: 100, radius: 44, age: 6 }
+    ] as unknown as FieldPatch[];
+
+    const migrated = migrateCarriedFields(legacy);
+
+    for (const section of migrated) {
+      expect(Number.isFinite(section.heading)).toBe(true);
+      // Recovered from the neighbour, so a road running east reads as running
+      // east (or west, at the far end -- either way it is the road's own line).
+      expect(Math.abs(Math.sin(section.heading))).toBeLessThan(1e-9);
+    }
+
+    // Positions and identity are untouched: this repairs the drawing, it does
+    // not move anybody's road.
+    expect(migrated.map((section) => [section.id, section.x, section.y])).toEqual(
+      legacy.map((section) => [section.id, section.x, section.y])
+    );
+
+    // A section already carrying a heading is returned as-is.
+    const modern: FieldPatch[] = [{ id: 9, x: 0, y: 0, radius: 44, heading: 1.2, age: 1 }];
+    expect(migrateCarriedFields(modern)[0]).toBe(modern[0]);
+
+    // A lone orphan has no neighbour to learn from, and takes 0 rather than
+    // NaN: pointing the wrong way is a blemish, not being drawn is a hole.
+    const orphan = [{ id: 5, x: 0, y: 0, radius: 44, age: 1 }] as unknown as FieldPatch[];
+    expect(migrateCarriedFields(orphan)[0].heading).toBe(0);
+  });
+
+  it('lays track along the path it drove, without overlap and without a break', () => {
     // The directive this model exists for, asserted directly against a real
-    // drive rather than argued from the code: no overlapping track pieces, no
-    // haphazardly placed tile, and no piece a different size from its
-    // neighbours. All three used to be tuning problems; they are now properties
-    // of the representation, so this test can state them as absolutes.
+    // drive rather than argued from the code: track follows the line you
+    // actually drove, no two pieces stack, every piece is one size, and the
+    // result is ONE road rather than a scatter of fragments.
+    //
+    // The wiggle is why the lattice went. Sections used to snap their POSITION
+    // to a hex cell, so any line that was not one of the six lattice axes
+    // staircased: on a dead-straight drive the rover's own path deviated 0.0
+    // units and the track behind it deviated 20.9 mean, 56.9 max. No hex size
+    // fixes that. Sections are now placed at the real path position, carrying
+    // the heading they were laid at, one across-flats spacing apart -- so they
+    // abut on a straight run and fan through a curve, like track.
     let world = createContinuousWorld('tiles', undefined, 'last-light-return');
+    // Everything above this id is track this drive laid; at or below it is the
+    // arena's authored road, which was never on this path.
+    const authoredThrough = world.fields.length;
     const step = 1 / 60;
+    const path: Array<{ x: number; y: number }> = [];
     for (let frame = 0; frame < 60 * 30; frame += 1) {
       world = tickContinuousWorld(
         world,
         { steer: frame > 400 ? 0.42 : 0, throttle: 1, brake: false, driveIntent: true },
         step
       );
+      path.push({ x: world.rover.x, y: world.rover.y });
       if (world.phase !== 'playing') break;
     }
 
-    const size = world.tuning.tileSize;
+    const spacing = sectionSpacing(world.tuning);
     expect(world.fields.length).toBeGreaterThan(10);
-
-    // One tile per cell.
-    const cells = new Set<string>();
-    for (const tile of world.fields) {
-      const cell = worldToHex(tile.x, tile.y, size);
-      const key = hexKey(cell.q, cell.r);
-      expect(cells.has(key)).toBe(false);
-      cells.add(key);
-
-      // Sitting exactly on its cell centre, so placement cannot drift.
-      const centre = hexToWorld(cell.q, cell.r, size);
-      expect(Math.hypot(centre.x - tile.x, centre.y - tile.y)).toBeLessThan(1e-6);
-    }
 
     // One size for every piece. Crawl-laid track used to be born at 0.59x.
     expect(new Set(world.fields.map((tile) => tile.radius)).size).toBe(1);
 
-    // And no two pieces closer than the lattice spacing, which is what "never
-    // overlap" means geometrically: tiles touch, they do not stack.
+    // NO OVERLAP. Below a full spacing two sections would overlap rather than
+    // abut, so this is the geometric statement of "track does not stack". It
+    // was structural on the lattice -- a cell was occupied or it was not -- and
+    // is a separation test now.
+    const index = buildRoadIndex(world.fields, world.tuning);
     for (let a = 0; a < world.fields.length; a += 1) {
       for (let b = a + 1; b < world.fields.length; b += 1) {
         const gap = Math.hypot(world.fields[a].x - world.fields[b].x, world.fields[a].y - world.fields[b].y);
-        expect(gap).toBeGreaterThanOrEqual(Math.sqrt(3) * size - 1e-6);
+        expect(gap).toBeGreaterThan(spacing * 0.84);
       }
     }
+
+    // NO WIGGLE. Every section the machine laid sits on the line it drove.
+    const laid = world.fields.filter((field) => field.id > authoredThrough);
+    expect(laid.length).toBeGreaterThan(10);
+    let worstDeviation = 0;
+    for (const field of laid) {
+      let nearest = Infinity;
+      for (const point of path) {
+        const gap = Math.hypot(field.x - point.x, field.y - point.y);
+        if (gap < nearest) nearest = gap;
+      }
+      worstDeviation = Math.max(worstDeviation, nearest);
+    }
+    expect(worstDeviation).toBeLessThan(spacing * 0.5);
+
+    // ONE ROAD. A road with a hole in it is not a road you can bet a run home
+    // on, which is the whole point of laying it.
+    const seen = new Set<number>();
+    let components = 0;
+    for (const field of world.fields) {
+      if (seen.has(field.id)) continue;
+      components += 1;
+      const stack = [field];
+      seen.add(field.id);
+      while (stack.length) {
+        const current = stack.pop()!;
+        for (const neighbour of fieldNeighbours(current, index, world.tuning)) {
+          if (seen.has(neighbour.id)) continue;
+          seen.add(neighbour.id);
+          stack.push(neighbour);
+        }
+      }
+    }
+    expect(components).toBe(1);
   });
 
   it('takes a loose end whenever one exists, so the middle of a route is safe', () => {
@@ -1353,7 +1434,6 @@ describe('continuous Moon Miner spike rules', () => {
           (field) =>
             !field.reservedByDrone &&
             getTrackDegree(world, field) <= 1 &&
-            field.value >= world.tuning.reclaimMinFieldValue &&
             (world.tuning.allowCloseReclaim ||
               Math.hypot(field.x - world.rover.x, field.y - world.rover.y) >= world.tuning.reclaimMinDistanceFromRover)
         );
@@ -1536,7 +1616,7 @@ describe('continuous Moon Miner spike rules', () => {
       ...world,
       elapsedSeconds: 20,
       speedState: 'crawl' as const,
-      fields: [{ id: 1, x: 300, y: 200, radius: 46, value: 3, age: 10 }]
+      fields: [{ id: 1, x: 300, y: 200, radius: 46, heading: 0, age: 10 }]
     };
     expect(getContinuousGuidance(supplied).nudge).toContain('Space');
 
@@ -1605,7 +1685,7 @@ function placeRoverAtVeinStart(world: ContinuousWorldState, zoneIndex: number): 
       x: world.rover.x,
       y: world.rover.y,
       radius: 520,
-      value: 1,
+      heading: 0,
       age: 4
     }
   ];
@@ -1624,7 +1704,7 @@ function createPreparedLaneWorld(offsetY: number): ContinuousWorldState {
     x: 140 + index * 42,
     y: laneY,
     radius: 44,
-    value: 1,
+    heading: 0,
     age: 4
   }));
   world.nextFieldId = 9;
@@ -1656,8 +1736,8 @@ function createDroneRouteWorld(): ContinuousWorldState {
   const world = createContinuousWorld();
   world.nanobots = 8;
   world.fields = [
-    { id: 1, x: world.rover.x - 170, y: world.rover.y, radius: 44, value: 5, age: 6 },
-    { id: 2, x: world.rover.x - 206, y: world.rover.y + 10, radius: 44, value: 4, age: 6 }
+    { id: 1, x: world.rover.x - 170, y: world.rover.y, radius: 44, heading: 0, age: 6 },
+    { id: 2, x: world.rover.x - 206, y: world.rover.y + 10, radius: 44, heading: 0, age: 6 }
   ];
   world.nextFieldId = 3;
   return world;

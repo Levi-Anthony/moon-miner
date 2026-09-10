@@ -5,7 +5,7 @@ import {
   type ContinuousArenaDefinition,
   type ContinuousArenaId
 } from './continuousArena';
-import { hexKey, hexNeighbours, hexToWorld, worldToHex } from './hex';
+import { hexNeighbours } from './hex';
 
 export type ContinuousPhase = 'playing' | 'won' | 'lost';
 export type SpeedState = 'prepared' | 'fabricating' | 'crawl';
@@ -38,10 +38,160 @@ export interface RoverMotionState extends Vec2 {
 // A hex cell has six neighbours, so this is the ceiling a degree can take.
 const MAX_TRACK_DEGREE = 6;
 
+// Distance between the centres of consecutive track sections. A section is a
+// hex whose flats face along the path, so laying them one across-flats apart
+// makes them abut exactly on a straight run and fan slightly on a curve --
+// like real track sections, which is what they are.
+export function sectionSpacing(tuning: { tileSize: number }): number {
+  return Math.sqrt(3) * tuning.tileSize;
+}
+
+// Two sections are connected when they are close enough to drive from one onto
+// the other. This replaces lattice adjacency: the grid gave adjacency for free
+// but cost a staircase, because snapping POSITIONS to cells makes any off-axis
+// line wiggle -- measured at up to 56.9 units of lateral wander on a drive with
+// zero steering input. Proximity gives the same graph without the grid, and it
+// still expresses junctions where two passes cross.
+const CONNECTED_WITHIN = 1.35;
+
+interface RoadIndex {
+  bucketSize: number;
+  buckets: Map<string, FieldPatch[]>;
+}
+
+const roadIndexCache = new WeakMap<FieldPatch[], { length: number; bucketSize: number; index: RoadIndex }>();
+
+export function buildRoadIndex(fields: FieldPatch[], tuning: { tileSize: number }): RoadIndex {
+  const bucketSize = sectionSpacing(tuning) * CONNECTED_WITHIN;
+  const cached = roadIndexCache.get(fields);
+  if (cached && cached.length === fields.length && cached.bucketSize === bucketSize) return cached.index;
+
+  const buckets = new Map<string, FieldPatch[]>();
+  for (const field of fields) {
+    const key = `${Math.floor(field.x / bucketSize)},${Math.floor(field.y / bucketSize)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(field);
+    else buckets.set(key, [field]);
+  }
+  const index: RoadIndex = { bucketSize, buckets };
+  roadIndexCache.set(fields, { length: fields.length, bucketSize, index });
+  return index;
+}
+
+export function fieldNeighbours(field: FieldPatch, index: RoadIndex, tuning: { tileSize: number }): FieldPatch[] {
+  const reach = sectionSpacing(tuning) * CONNECTED_WITHIN;
+  const bx = Math.floor(field.x / index.bucketSize);
+  const by = Math.floor(field.y / index.bucketSize);
+  const found: FieldPatch[] = [];
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dy = -1; dy <= 1; dy += 1) {
+      const bucket = index.buckets.get(`${bx + dx},${by + dy}`);
+      if (!bucket) continue;
+      for (const other of bucket) {
+        if (other.id === field.id) continue;
+        if (distance(field, other) <= reach) found.push(other);
+      }
+    }
+  }
+  return found;
+}
+
+// Place a section and keep the spatial index live in the same breath. The
+// lattice version could get away with `index.set(key, tile)` because the index
+// WAS a map; a bucketed index has to be told, and the cached copy has to agree
+// about how many sections it holds or the next query silently rebuilds.
+function insertSection(fields: FieldPatch[], index: RoadIndex, tile: FieldPatch): void {
+  fields.push(tile);
+  const key = `${Math.floor(tile.x / index.bucketSize)},${Math.floor(tile.y / index.bucketSize)}`;
+  const bucket = index.buckets.get(key);
+  if (bucket) bucket.push(tile);
+  else index.buckets.set(key, [tile]);
+  const cached = roadIndexCache.get(fields);
+  if (cached && cached.index === index) cached.length = fields.length;
+}
+
+// Which section is under a point, if any. This replaces the lattice cell
+// lookup: without a grid there is no cell to key on, so "am I on the road" is
+// a nearest-section query. Half a spacing is exactly the section's own
+// footprint, so this answers true on the track and false beside it.
+export function findSectionAt(
+  point: Vec2,
+  index: RoadIndex,
+  tuning: { tileSize: number }
+): FieldPatch | undefined {
+  const reach = sectionSpacing(tuning) * 0.5;
+  const bx = Math.floor(point.x / index.bucketSize);
+  const by = Math.floor(point.y / index.bucketSize);
+  let best: FieldPatch | undefined;
+  let bestGap = reach;
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dy = -1; dy <= 1; dy += 1) {
+      const bucket = index.buckets.get(`${bx + dx},${by + dy}`);
+      if (!bucket) continue;
+      for (const other of bucket) {
+        const gap = distance(point, other);
+        if (gap > bestGap) continue;
+        bestGap = gap;
+        best = other;
+      }
+    }
+  }
+  return best;
+}
+
+// Sections may not be laid on top of one another. On the lattice this was
+// structural -- a cell was occupied or it was not -- and off it, it is this
+// test. Below a full spacing the two hexes would overlap rather than abut, so
+// anything closer than this is not a new section, it is the one already there.
+const MIN_SEPARATION = 0.85;
+
+export function sectionWithin(
+  point: Vec2,
+  index: RoadIndex,
+  tuning: { tileSize: number }
+): FieldPatch | undefined {
+  const reach = sectionSpacing(tuning) * MIN_SEPARATION;
+  const bx = Math.floor(point.x / index.bucketSize);
+  const by = Math.floor(point.y / index.bucketSize);
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dy = -1; dy <= 1; dy += 1) {
+      const bucket = index.buckets.get(`${bx + dx},${by + dy}`);
+      if (!bucket) continue;
+      for (const other of bucket) {
+        if (distance(point, other) <= reach) return other;
+      }
+    }
+  }
+  return undefined;
+}
+
+
+// How far the drone reaches around its target, measured in CELLS rather than
+// world units. As a fixed distance it made hex grain change the economy: the
+// number of tiles inside a fixed radius falls with the square of the grain, so
+// coarser tiles meant a smaller payload per trip and a slower loop, and grain
+// stopped being the aesthetic dial it is supposed to be.
+const DRONE_PICKUP_CELLS = 2.9;
+
+export function getDronePickupRadius(tuning: { tileSize: number }): number {
+  return DRONE_PICKUP_CELLS * Math.sqrt(3) * tuning.tileSize;
+}
+
+// Road is road. A tile has no value of its own -- there is one kind of track,
+// it costs tuning.tileCost to lay and hands the same back when the drone lifts
+// it. The per-tile `value` this used to carry produced three grades of road
+// that looked alike and behaved differently: authored road at 0.85 rendered
+// solid and pulled hard, road you laid at ~0.35 sat on the opacity floor, and
+// road laid while crawling at 0.025 fell under every threshold -- it was drawn
+// like track, occupied a cell like track, and was not track. A third of a
+// run's tiles were that. None of it earned the complexity.
 export interface FieldPatch extends Vec2 {
   id: number;
   radius: number;
-  value: number;
+  // Which way the machine was pointing when this section went down. Track is
+  // laid ALONG the path now rather than snapped to a grid, so a section has an
+  // orientation and the road follows whatever line you actually drove.
+  heading: number;
   age: number;
   reservedByDrone?: boolean;
   // The patch this one was laid immediately after, which is what makes the road
@@ -55,18 +205,6 @@ export interface FieldPatch extends Vec2 {
   prevId?: number;
 }
 
-// A continuous piece of laid road under the tractor, and where it runs.
-export interface RailLock {
-  // Unit vector along the track, oriented the way the tractor is facing.
-  tangent: Vec2;
-  // The centreline point the tractor is being pulled onto.
-  center: Vec2;
-  // Signed distance from that centreline. Zero is dead on the rail.
-  offset: number;
-  // How far ahead the connected track continues, in units. This is what tells
-  // you whether flooring it will get you home or drop you onto bare ground.
-  runwayAhead: number;
-}
 
 export interface ReclaimPreview {
   surcharge: number;
@@ -169,16 +307,18 @@ export interface ContinuousTuning {
   targetOre: number;
   startingSolarSeconds: number;
   preparedSpeed: number;
+  // Top speed on a long connected run home, reached when roadAhead hits
+  // roadRunwayForFullSpeed. Ramped from preparedSpeed, never snapped.
+  roadRunSpeed: number;
+  roadRunwayForFullSpeed: number;
   fabricatingSpeed: number;
   crawlSpeed: number;
   fabricateCostPerSecond: number;
   crawlRecoveryPerSecond: number;
   crawlRecoveryCeiling: number;
   droneSpeed: number;
-  dronePickupRadius: number;
   mineRate: number;
   preparedFieldMinAgeSeconds: number;
-  startingFieldValue: number;
   fieldRadius: number;
   // Lattice grain: the circumradius of one track tile as a PIECE -- what gets
   // placed and drawn. Deliberately distinct from fieldRadius, which is the
@@ -191,13 +331,10 @@ export interface ContinuousTuning {
   // far above it and a whole pass collapses into one tile. Exposed as tuning
   // because the right grain is a playtest question.
   tileSize: number;
-  fieldEmitDistance: number;
-  crawlFieldEmitDistance: number;
-  normalFieldPatchMinValue: number;
-  crawlFieldPatchMinValue: number;
-  fieldValueMultiplierFromSpentStock: number;
+  // What one tile of road costs to lay, and exactly what the drone hands back
+  // when it lifts one. The whole road economy is this number times a count.
+  tileCost: number;
   reclaimMinFieldAgeSeconds: number;
-  reclaimMinFieldValue: number;
   reclaimMinClusterPayload: number;
   droneLaunchCost: number;
   droneLaunchCooldownSeconds: number;
@@ -208,11 +345,8 @@ export interface ContinuousTuning {
   // the target is dropped and re-picked, every tick, for the whole flight.
   reclaimClaimBreakRadius: number;
   reclaimPathClearance: number;
-  reclaimYieldMultiplier: number;
-  overnightFieldDecay: number;
   overnightOreRegrowth: number;
   miningFlowSpeedCap: number;
-  overnightFieldSurvivalValue: number;
   droneRailRelayMaxPatches: number;
   reclaimLockSeconds: number;
   allowCloseReclaim: boolean;
@@ -220,37 +354,23 @@ export interface ContinuousTuning {
   minReclaimClusterPayload: number;
   minReclaimCandidateCount: number;
   preparedCoverageThreshold: number;
-  preparedFieldMinValue: number;
-  preparedMagnetInfluenceMultiplier: number;
-  preparedMagnetCenterPull: number;
-  preparedMagnetPassiveTurnRate: number;
-  preparedMagnetActiveTurnRate: number;
-  preparedMagnetCorrectionRange: number;
   // Speed on connected track. Deliberately far above preparedSpeed: laid road
   // that is only a third quicker than bare ground is a bonus painted on the
   // floor, not a rail you would turn around and run for.
-  railSpeed: number;
   // How far off the centreline the tractor can be and still be considered on
   // the track.
-  railCaptureDistance: number;
   // How closely the tractor has to be pointing along the track to lock onto it,
   // as a dot product. 0.5 is sixty degrees either side -- generous, because
   // being unable to get ON the rail is far worse than getting on it by accident.
-  railCaptureAlignment: number;
   // Steering past this breaks the lock. Below it the wheel does nothing, which
   // is the whole point: on rail you do not steer.
-  railBreakSteer: number;
   // Seconds the rail stays released after you steer off it, so leaving does not
   // fight a magnet that drags you back.
-  railReleaseSeconds: number;
   // How hard heading converges on the track direction, per second.
-  railHeadingSnap: number;
   // How hard the tractor is drawn back to the centreline, in units per second
   // per unit of offset.
-  railCenterSnap: number;
   // Connected track ahead, in units, that earns full rail speed. Below it the
   // rail tapers back toward prepared speed.
-  railRunwayForFullSpeed: number;
   lowStockWarningRatio: number;
   droneUrgencyRatio: number;
   // Refill rate (stock per second) while moving on prepared track when drone is
@@ -288,7 +408,6 @@ export interface ContinuousWorldState {
   solarWindowSeconds: number;
   elapsedSeconds: number;
   lastDroneLaunchAtSeconds: number;
-  dronePendingLaunchCost: number;
   phase: ContinuousPhase;
   speedState: SpeedState;
   arms: ArmAllocation;
@@ -297,17 +416,19 @@ export interface ContinuousWorldState {
   nextFieldId: number;
   // The patch the arms laid last, or undefined when they are not laying. New
   // patches chain onto it, so one pass is one piece of track.
+  fieldEmitDistance: number;
+  // The cell the last tile went into, so the next emit can fill the line
+  // between them instead of leaving whatever the gap happened to be.
+  // Where the last section went down, in world space. The lattice cell it
+  // replaced is what made the road staircase.
+  lastLaidPoint?: Vec2;
   layingChainId?: number;
   // Recomputed every tick from the track under the tractor. Undefined means
   // there is nothing connected to run on.
-  rail?: RailLock;
   // Counts down while the player is deliberately off the rail, so leaving a
   // track does not fight a pull that snaps you straight back onto it.
-  railReleaseRemaining: number;
   // The last piece of road the tractor was standing on.
   lastRoadPatchId?: number;
-  fieldEmitDistance: number;
-  pendingFieldValue: number;
 }
 
 export interface ContinuousCommandResult {
@@ -342,44 +463,23 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   targetOre: 42,
   startingSolarSeconds: 165,
   preparedSpeed: 132,
+  roadRunSpeed: 236,
+  roadRunwayForFullSpeed: 210,
   fabricatingSpeed: 74,
   crawlSpeed: 16,
   fabricateCostPerSecond: 1.48,
-  crawlRecoveryPerSecond: 0.1,
+  // Enough to fund crawl-speed laying: a tile falls due every sqrt(3)*tileSize
+  // / crawlSpeed = 2.6s and costs tileCost 0.35, so crawl must recover at least
+  // 0.135/s or 'crawl lays' would still leave holes.
+  crawlRecoveryPerSecond: 0.16,
   crawlRecoveryCeiling: 2.6,
   droneSpeed: 430,
-  dronePickupRadius: 170,
   mineRate: 0.32,
   preparedFieldMinAgeSeconds: 1.25,
-  // The map's material endowment, per tile of authored road.
-  //
-  // Denser than a tile you lay, which costs fabricateCostPerSecond *
-  // emitDistance / fabricatingSpeed = 1 * 26 / 74 = 0.351. That looked at
-  // first like the mint wearing terrain's clothes, and it is not: conservation
-  // is a property of the lay -> reclaim LOOP, which returns exactly what it
-  // took. An endowment is an initial condition. Total material in a run stays
-  // bounded either way; this only sets where the bound is.
-  //
-  // Dropping it to 0.351 was tried and starved the level -- crawl 8 to 16
-  // seconds on every rung, ore flat at 7/7/16/15/16 -- because material lying
-  // on the ground is worth less than material in the tank: you have to drive
-  // to it and fly it back, and that retrieval friction is real time. Swept
-  // 0.351 to 0.85 against both guards; 0.85 is the only value where the drone
-  // decides three of the five routes AND crawl lands on the ambitious rungs
-  // rather than the cautious ones.
-  startingFieldValue: 0.85,
   fieldRadius: 44,
-  tileSize: 16,
-  fieldEmitDistance: 28,
-  crawlFieldEmitDistance: 12,
-  normalFieldPatchMinValue: 0.12,
-  crawlFieldPatchMinValue: 0.025,
-  // Conservation, second half: a tile stores exactly the stock that built it.
-  // The 5% was a small mint on every patch laid, compounding for the same
-  // reason the yield multiplier did.
-  fieldValueMultiplierFromSpentStock: 1,
+  tileSize: 24,
+  tileCost: 0.35,
   reclaimMinFieldAgeSeconds: 2.2,
-  reclaimMinFieldValue: 0.08,
   reclaimMinClusterPayload: 1.8,
   droneLaunchCost: 2.2,
   droneLaunchCooldownSeconds: 9,
@@ -388,23 +488,6 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   reclaimLookaheadSeconds: 3,
   reclaimClaimBreakRadius: 120,
   reclaimPathClearance: 70,
-  // Conservation. Reclaiming road returns the stock that built it, and not a
-  // unit more. Levi's ruling, 2026-09-09: "conserve. multiply sounds like a
-  // powerup." A reclaim that hands back more than it took is a pickup, not
-  // logistics, and the fiction is that these are the same nanobots coming home.
-  //
-  // This was 3, defended by a comment arguing for a doubling and by a sweep
-  // whose own conclusion was "above 2 the tank caps and the extra is wasted".
-  // Measured over full runs the loop returned 1.37x to 2.43x what laying cost,
-  // so road was a battery paying interest: stock trended UP across a run, the
-  // tank could not empty while any road was out there, and crawl had nothing
-  // to trigger on. That is why launching early was always right.
-  //
-  // At 1 the road is what it always claimed to be -- stock parked on the
-  // ground -- and the total material in a run is fixed. Reach stops being a
-  // number here and becomes a property of the map: see the lower path in
-  // continuousArena.ts, which is this level's material endowment.
-  reclaimYieldMultiplier: 1,
   // Load-bearing, and the window is narrow. Swept 0.20 to 0.55 across six
   // chained shifts: at 0.20 nothing survives the night and it is the old game;
   // at 0.55 the inherited network is rich enough that a run with no drone at
@@ -420,8 +503,6 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // between road you built and road you scraped out while dying, survives.
   overnightOreRegrowth: 0.35,
   miningFlowSpeedCap: 1.45,
-  overnightFieldDecay: 0.94,
-  overnightFieldSurvivalValue: 0.1,
   droneRailRelayMaxPatches: 6,
   reclaimLockSeconds: DRONE_RECLAIM_SECONDS,
   allowCloseReclaim: false,
@@ -429,20 +510,6 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   minReclaimClusterPayload: 0.08,
   minReclaimCandidateCount: 1,
   preparedCoverageThreshold: 0.24,
-  preparedFieldMinValue: 0.08,
-  preparedMagnetInfluenceMultiplier: 1.35,
-  preparedMagnetCenterPull: 0.92,
-  preparedMagnetPassiveTurnRate: 2.25,
-  preparedMagnetActiveTurnRate: 1.35,
-  preparedMagnetCorrectionRange: 0.7,
-  railSpeed: 236,
-  railCaptureDistance: 40,
-  railCaptureAlignment: 0.5,
-  railBreakSteer: 0.34,
-  railReleaseSeconds: 0.55,
-  railHeadingSnap: 9,
-  railCenterSnap: 4.2,
-  railRunwayForFullSpeed: 210,
   lowStockWarningRatio: 0.18,
   droneUrgencyRatio: 0.32,
   // Refill while on prepared ground. Zero means no passive refill on track —
@@ -457,13 +524,8 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   startingNanobots: 6,
   maxNanobots: 24,
   fabricateCostPerSecond: 1,
-  fieldEmitDistance: 26,
   fieldRadius: 46,
-  tileSize: 16,
-  // Conservation, second half: a tile stores exactly the stock that built it.
-  // The 5% was a small mint on every patch laid, compounding for the same
-  // reason the yield multiplier did.
-  fieldValueMultiplierFromSpentStock: 1,
+  tileSize: 24,
   // Raised from 1.35s. Geometry alone is not enough: on a tight loop the road
   // laid under two seconds ago is already clear of the line home, so it was
   // legal to lift and still felt exactly like "it takes the road behind me".
@@ -479,7 +541,6 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // every route shape keeps its supply. At 150 a tight loop can never reclaim
   // at all, which would kill the best answer the corridor has.
   reclaimMinDistanceFromRover: 90,
-  reclaimMinFieldValue: 0.06,
   reclaimMinClusterPayload: 1.8,
   minReclaimClusterPayload: 0.12,
   allowCloseReclaim: false,
@@ -493,32 +554,20 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   droneSpeed: 260,
   // 185 was four field-radii -- a swathe rather than a stretch. 70 lifts a
   // short run of road you can see disappear as a piece.
-  dronePickupRadius: 70,
   reclaimLockSeconds: 0.35,
   lowStockWarningRatio: 0.14,
   droneUrgencyRatio: 0.24,
   preparedCoverageThreshold: 0.22,
   preparedFieldMinAgeSeconds: 1.0,
-  preparedFieldMinValue: 0.06,
   // The shipped preset overrode the magnet down to almost nothing -- an active
   // rate of 0.35 against a passive 1.65 -- and the road advantage to 19%. So
   // the groove barely existed and using it barely paid, which together are the
   // "what kind of nanobots are these" complaint. Pull and reach raised, and
   // the road is now 78% faster than raw ground rather than 19%.
-  preparedMagnetInfluenceMultiplier: 1.5,
-  preparedMagnetCenterPull: 1.05,
-  preparedMagnetPassiveTurnRate: 2.1,
-  preparedMagnetActiveTurnRate: 1.25,
-  preparedMagnetCorrectionRange: 0.85,
-  railSpeed: 236,
-  railCaptureDistance: 40,
-  railCaptureAlignment: 0.5,
-  railBreakSteer: 0.34,
-  railReleaseSeconds: 0.55,
-  railHeadingSnap: 9,
-  railCenterSnap: 4.2,
-  railRunwayForFullSpeed: 210,
-  crawlRecoveryPerSecond: 0.1,
+  // Enough to fund crawl-speed laying: a tile falls due every sqrt(3)*tileSize
+  // / crawlSpeed = 2.6s and costs tileCost 0.35, so crawl must recover at least
+  // 0.135/s or 'crawl lays' would still leave holes.
+  crawlRecoveryPerSecond: 0.16,
   crawlRecoveryCeiling: 2.6,
   crawlSpeed: 16,
   fabricatingSpeed: 74,
@@ -528,7 +577,17 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // the other way by making the distances uncoverable. So +30% is the most the
   // measurement rig can currently evaluate, not the most the road should pay.
   // The magnet below is doing the larger part of the felt reward.
-  preparedSpeed: 96,
+  // Road pays 76% over raw ground (130 against fabricating's 74). DECISIONS.md,
+
+  // 2026-09-08: "The road should pay much more than it does. It pays 30%. It
+
+  // wanted to pay 78%." The rail used to deliver that as a separate locked
+
+  // state at 236; ordinary driving carries it now.
+
+  preparedSpeed: 160,
+  roadRunSpeed: 236,
+  roadRunwayForFullSpeed: 210,
   // Refill while on prepared ground. Zero means consequence comes from distance
   // weighting in drone selection, not from a baseline stock mechanic.
   preparedRefillPerSecond: 0
@@ -556,7 +615,6 @@ export const DYNAMICS_PRESETS: DynamicsPresetDefinition[] = [
       reclaimMinDistanceFromRover: 24,
       allowCloseReclaim: true,
       droneSpeed: 520,
-      dronePickupRadius: 230
     }
   },
   {
@@ -568,7 +626,6 @@ export const DYNAMICS_PRESETS: DynamicsPresetDefinition[] = [
       // it demands older road than the default does.
       reclaimMinFieldAgeSeconds: 6,
       reclaimMinDistanceFromRover: 34,
-      dronePickupRadius: 140,
       allowCloseReclaim: false
     }
   }
@@ -593,7 +650,7 @@ export function createContinuousWorld(
   const resolvedTuning = resolveContinuousTuning(tuning);
   const arena = getContinuousArena(arenaId);
   const solarWindowSeconds = arena.solarWindowSeconds ?? resolvedTuning.startingSolarSeconds;
-  const starter = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, resolvedTuning.tileSize, resolvedTuning.fieldRadius);
+  const starter = createArenaStarterFields(arena, resolvedTuning.tileSize, resolvedTuning.fieldRadius);
   const fields = [...starter, ...carriedFields.map((field, index) => ({ ...field, id: starter.length + 1 + index }))];
   const nextFieldId = fields.length + 1;
 
@@ -630,7 +687,6 @@ export function createContinuousWorld(
     solarWindowSeconds,
     elapsedSeconds: 0,
     lastDroneLaunchAtSeconds: -1000,
-    dronePendingLaunchCost: 0,
     phase: 'playing',
     speedState: 'fabricating',
     arms: allocateArms('fabricating', false, false, 'ready'),
@@ -642,8 +698,6 @@ export function createContinuousWorld(
         : 'Raw field start. Drive to lay your first line, then reclaim it.',
     nextFieldId,
     fieldEmitDistance: 0,
-    pendingFieldValue: 0,
-    railReleaseRemaining: 0
   };
 
   state.speedState = resolveSpeedState(state);
@@ -677,14 +731,9 @@ export function launchReclaimDrone(state: ContinuousWorldState): ContinuousComma
   const preview = getReclaimPreview(state);
   if (!preview) return fail(state, diagnostics.blockedReason ?? 'No reclaimable field yet.');
 
-  // The drone burns stock to fly. Without this the button is free, and every
-  // measurement said the same thing: launching more was monotonically better,
-  // so there was never a reason not to press it the instant it lit.
-  const surcharge = getDroneLaunchSurcharge(state);
 
   const next = cloneContinuousWorld(state);
   next.lastDroneLaunchAtSeconds = state.elapsedSeconds;
-  next.dronePendingLaunchCost = surcharge;
   const patch = next.fields.find((field) => field.id === preview.targetPatchId);
   if (!patch) return fail(state, 'No old field is far enough to reclaim.');
 
@@ -704,10 +753,12 @@ export function launchReclaimDrone(state: ContinuousWorldState): ContinuousComma
   return ok(next, next.message);
 }
 
-export function getDroneLaunchSurcharge(state: ContinuousWorldState): number {
-  const sinceLast = state.elapsedSeconds - state.lastDroneLaunchAtSeconds;
-  const window = Math.max(0.001, state.tuning.droneLaunchCooldownSeconds);
-  return state.tuning.droneLaunchCost * clamp(1 - sinceLast / window, 0, 1);
+// Asking costs no stock. It never should have: a launch fee is a cooldown
+// button wearing a price tag, and canon rules that out. What a bad ask costs
+// you is the flight time you spend without the road, and the track the drone
+// takes to answer it.
+export function getDroneLaunchSurcharge(_state: ContinuousWorldState): number {
+  return 0;
 }
 
 export function getReclaimPreview(state: ContinuousWorldState): ReclaimPreview | undefined {
@@ -865,24 +916,130 @@ function applyCarriedDepletion(zones: FertileZone[], carried: Record<string, num
   });
 }
 
+// Road loaded from a save written before sections had a heading.
+//
+// `heading` became a required field on FieldPatch the day track stopped being
+// snapped to a lattice, and nothing migrated the saves. An old section
+// therefore arrives with `heading` undefined, and the renderer computes its
+// corner angles from `field.heading - Math.PI / 6` -- undefined minus a number
+// is NaN, every corner is NaN, and the section draws as nothing. A save
+// fourteen shifts deep carrying 277 sections would come back very nearly
+// invisible while its topology stayed perfectly intact, which is about the
+// most confusing failure available: the road is all still there, still
+// connects, still makes you fast, and cannot be seen.
+//
+// A section's heading is the direction the road runs through it, so the
+// nearest other section recovers it -- not the heading it was truly laid at,
+// but the one that makes it abut its neighbour, which is the whole job the
+// heading does. An orphan keeps 0 rather than NaN: pointing the wrong way is a
+// blemish, not being drawn at all is a missing road.
+export function migrateCarriedFields(fields: FieldPatch[]): FieldPatch[] {
+  return fields.map((field) => {
+    if (Number.isFinite(field.heading)) return field;
+
+    let nearest: FieldPatch | undefined;
+    let bestGap = Infinity;
+    for (const other of fields) {
+      if (other === field) continue;
+      const gap = distance(field, other);
+      if (gap >= bestGap || gap <= 0.001) continue;
+      bestGap = gap;
+      nearest = other;
+    }
+
+    return {
+      ...field,
+      heading: nearest ? Math.atan2(nearest.y - field.y, nearest.x - field.x) : 0
+    };
+  });
+}
+
 export function carryFieldsOvernight(fields: FieldPatch[], tuning: ContinuousTuning): FieldPatch[] {
   return fields
     .map((field) => ({
       ...field,
-      value: field.value * tuning.overnightFieldDecay,
+
       // Morning road is mature road: it is drivable from the first second,
       // which is the entire point of having laid it yesterday.
       age: Math.max(field.age, tuning.preparedFieldMinAgeSeconds),
       reservedByDrone: undefined
     }))
-    .filter((field) => field.value >= tuning.overnightFieldSurvivalValue);
+    ;
+}
+
+// How much connected road continues ahead of the machine, in world units.
+//
+// Restored from the rail, and this is the ONE thing worth keeping from it: the
+// rail's problem was never that it measured the road, it was that it then
+// drove the machine down it. This writes nothing. It is read only as a speed
+// term, so a long clean trail home makes you fast and a stub hands you back to
+// ordinary driving -- which is what lets a player look at the road behind them
+// and decide whether they can make it back before the sun.
+export function getRoadAhead(state: ContinuousWorldState): number {
+  const index = buildRoadIndex(state.fields, state.tuning);
+  const under = findSectionAt(state.rover, index, state.tuning);
+  if (!under) return 0;
+  return measureRunway(index, state.tuning, under, {
+    x: Math.cos(state.rover.heading),
+    y: Math.sin(state.rover.heading)
+  });
+}
+
+function measureRunway(
+  index: RoadIndex,
+  tuning: { tileSize: number },
+  from: FieldPatch,
+  tangent: Vec2
+): number {
+  const seen = new Set<number>([from.id]);
+  // The direction carried along the walk, updated at every tile. Holding the
+  // starting tangent for the whole run was wrong on exactly the roads that
+  // matter: a track that curves bends away from where it started, so the walk
+  // either stopped at the bend or jumped to a different branch, and the runway
+  // readout swung between 27 and 368 on consecutive frames. A number you cannot
+  // trust is worse than no number, because the whole point of it is deciding
+  // whether to turn round and floor it.
+  let heading = { ...tangent };
+  let current = from;
+  let total = 0;
+
+  // Bounded so track that loops back on itself cannot spin here forever.
+  for (let step = 0; step < 400; step += 1) {
+    // Follow the straightest continuation. At a junction that is the branch the
+    // machine would carry on down, which is what the runway is asked to answer.
+    // The old walk needed a separate proximity scan here to hop between chains
+    // laid on different passes; adjacency makes a junction an ordinary
+    // neighbour, so that special case is gone rather than ported.
+    let next: FieldPatch | undefined;
+    let bestDot = 0;
+    for (const candidate of fieldNeighbours(current, index, tuning)) {
+      if (seen.has(candidate.id)) continue;
+      const dx = candidate.x - current.x;
+      const dy = candidate.y - current.y;
+      const gap = Math.hypot(dx, dy);
+      if (gap <= 0.001) continue;
+      const dot = (dx / gap) * heading.x + (dy / gap) * heading.y;
+      if (dot <= bestDot) continue;
+      bestDot = dot;
+      next = candidate;
+    }
+    if (!next) break;
+
+    const gap = distance(current, next);
+    // Turn with the road rather than through it. A track can bend as sharply
+    // as the tractor laid it, and the walk has to bend with it.
+    heading = { x: (next.x - current.x) / gap, y: (next.y - current.y) / gap };
+    total += gap;
+    seen.add(next.id);
+    current = next;
+  }
+  return total;
 }
 
 export function getPreparedCoverage(state: ContinuousWorldState, point: Vec2): number {
   let coverage = 0;
   for (const field of state.fields) {
     if (field.age < state.tuning.preparedFieldMinAgeSeconds) continue;
-    if (field.value < state.tuning.preparedFieldMinValue) continue;
     const fieldDistance = distance(point, field);
     if (fieldDistance >= field.radius) continue;
     coverage = Math.max(coverage, 1 - fieldDistance / field.radius);
@@ -1070,56 +1227,48 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   );
   const playerTurn = state.rover.steerInput * TURN_RATE * turnMultiplier;
 
-  // Steering past the break is how you get OFF the rail, and it is the only
-  // thing the wheel is for while you are on it. Held for railReleaseSeconds so
-  // one deliberate flick actually leaves, instead of the centreline pull
-  // hauling you straight back the moment you let go.
-  if (Math.abs(input.steer) >= state.tuning.railBreakSteer) {
-    state.railReleaseRemaining = state.tuning.railReleaseSeconds;
-  } else {
-    state.railReleaseRemaining = Math.max(0, state.railReleaseRemaining - deltaSeconds);
-  }
 
-  state.lastRoadPatchId = findRoadPatchUnderRover(state)?.id ?? state.lastRoadPatchId;
-  state.rail = state.railReleaseRemaining > 0 ? undefined : getRailLock(state, Boolean(state.rail));
 
-  if (state.rail) {
-    // On rail the machine is not steered, it is carried. Heading converges on
-    // the track and the chassis is drawn back to the centreline, so a curve you
-    // laid at walking pace can be taken flat out without touching the wheel --
-    // which is the thing that makes a long connected run home worth having.
-    const trackHeading = Math.atan2(state.rail.tangent.y, state.rail.tangent.x);
-    const snap = clamp(state.tuning.railHeadingSnap * deltaSeconds, 0, 1);
-    const correction = angleDifference(trackHeading, state.rover.heading);
-    state.rover.heading = wrapAngle(state.rover.heading + correction * snap);
-    state.rover.turnRate = state.rover.turnRate * 0.7 + (correction * snap / Math.max(deltaSeconds, 0.0001)) * 0.3;
+  // The player steers. Nothing else writes heading.
+  //
+  // Two forces used to live here and between them they took the wheel away.
+  // The rail lock discarded player input entirely and snapped heading onto the
+  // track at 9/s -- above the steering ramp of 4.6, so the reported turn rate
+  // could exceed anything the driver could produce. The magnet, which ran
+  // whenever the rail did not, applied 2.1 rad/s passively against a maximum
+  // player authority of 1.935: steering with it netted 3.185 rad/s, against it
+  // 0.685, a 4.6x asymmetry, and it never released because its strength had a
+  // floor of 0.12. Measured holding W with no steering input at all, the
+  // machine reversed its own turn direction 11 times in 8 seconds.
+  //
+  // What is left is the road being faster, which is the thing the road was
+  // always for.
+  state.rover.turnRate = state.rover.turnRate * 0.7 + playerTurn * 0.3;
+  state.rover.heading = wrapAngle(state.rover.heading + playerTurn * deltaSeconds);
 
-    const pull = clamp(state.tuning.railCenterSnap * deltaSeconds, 0, 1);
-    state.rover.x += (state.rail.center.x - state.rover.x) * pull;
-    state.rover.y += (state.rail.center.y - state.rover.y) * pull;
-  } else {
-    const magnetTurn = getPreparedMagnetTurn(state, input);
-    // Smoothed, because the projection below reads it and a single jittery frame
-    // should not swing where the drone is allowed to go.
-    state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + magnetTurn) * 0.3;
-    state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + magnetTurn) * deltaSeconds);
-  }
-
-  // Rail speed is earned by the road ahead, not by the patch underneath. Ramped
-  // over railRunwayForFullSpeed so a short stub hands you back to ordinary
-  // driving instead of firing you off the end of it at full pelt -- and so the
-  // speed itself tells you how much connected track you have, which is the
-  // readout you need before committing to a run home.
-  const railRunway = state.rail
-    ? clamp(state.rail.runwayAhead / state.tuning.railRunwayForFullSpeed, 0, 1)
-    : 0;
-  const baseSpeed = state.rail
-    ? state.tuning.preparedSpeed + (state.tuning.railSpeed - state.tuning.preparedSpeed) * railRunway
-    : state.speedState === 'prepared'
-      ? state.tuning.preparedSpeed
+  // Road pays in speed, and that is the entire remaining advantage of road.
+  // DECISIONS.md, 2026-09-08: "The road should pay much more than it does. It
+  // pays 30%. It wanted to pay 78%." The rail's 236 delivered that as a
+  // separate locked state; preparedSpeed carries it now as ordinary driving.
+  // Road pays, and it pays more the further it reaches ahead of you.
+  //
+  // Flat prepared speed made a single tile under the machine worth exactly as
+  // much as a continuous highway, so laying a tidy connected road earned
+  // nothing and there was never a reason to bet on reaching home. Ramping on
+  // connected road ahead turns the trail into a promise you can size up before
+  // committing: floor it on a long run, ease off on a stub.
+  //
+  // Strictly a speed term. It never writes heading or position -- that is the
+  // whole difference between this and the rail lock that used to take the
+  // wheel.
+  const roadAhead = state.speedState === 'prepared' ? getRoadAhead(state) : 0;
+  const runway = clamp(roadAhead / state.tuning.roadRunwayForFullSpeed, 0, 1);
+  const baseSpeed =
+    state.speedState === 'prepared'
+      ? state.tuning.preparedSpeed + (state.tuning.roadRunSpeed - state.tuning.preparedSpeed) * runway
       : state.speedState === 'fabricating'
-        ? state.tuning.fabricatingSpeed
-        : state.tuning.crawlSpeed;
+      ? state.tuning.fabricatingSpeed
+      : state.tuning.crawlSpeed;
   const throttleFactor = input.brake ? 0.28 : 0.38 + input.throttle * 0.62;
   const speed = baseSpeed * throttleFactor;
   state.rover.speed = speed;
@@ -1156,7 +1305,13 @@ function runFieldSystem(
 ): void {
   if (state.speedState === 'prepared') {
     state.fieldEmitDistance = 0;
-    state.pendingFieldValue = 0;
+    // Keep the laying anchor with the machine while it runs on road it already
+    // owns. Leaving it parked where the last section went down meant that
+    // falling off the far end of a long run started the next pass from
+    // hundreds of units away. The anchor tracks the EMIT point, not the
+    // machine, so the first section of the next pass lands one spacing from
+    // the road it just left rather than one spacing plus the trailing offset.
+    state.lastLaidPoint = layPoint(state);
     // Running on prepared road lays nothing, so the piece being laid ends here.
     // The next pass is welded to the road under the tractor instead of starting
     // an unrelated chain -- see the emit below.
@@ -1166,8 +1321,8 @@ function runFieldSystem(
 
   if (!driveIntent) {
     state.fieldEmitDistance = 0;
-    state.pendingFieldValue = 0;
     state.layingChainId = undefined;
+    state.lastLaidPoint = layPoint(state);
     // The movement step has already said what reversing or swinging is doing,
     // and this ran after it and overwrote both with the pivot line -- so S read
     // as "pivoting in place" while the machine was plainly backing up. Only
@@ -1183,15 +1338,11 @@ function runFieldSystem(
   }
 
   if (state.speedState === 'fabricating') {
-    const cost = (state.tuning.fabricateCostPerSecond * movedDistance) / state.tuning.fabricatingSpeed;
-    const spent = Math.min(state.nanobots, cost);
-    state.nanobots = Math.max(0, state.nanobots - spent);
-    state.pendingFieldValue += spent * state.tuning.fieldValueMultiplierFromSpentStock;
     state.message = 'Arms are fabricating field just in time. Mining capacity is constrained.';
   } else if (state.speedState === 'crawl') {
-    // Emergency crawl: scraping residue. Stock refill happens in advanceNanobotStock.
-    state.pendingFieldValue += state.tuning.crawlFieldPatchMinValue * deltaSeconds;
-    state.message = 'Emergency crawl: local reclaim legs are scraping enough residue to keep moving.';
+    // Crawl scrapes to keep moving. It does not build. It used to emit tiles at
+    // a twentieth of a tile's worth, which is where the ghost road came from.
+    state.message = 'Emergency crawl: local reclaim legs are scraping enough to keep moving.';
   }
 
   // Starting a new pass: weld it to the road just left, and lay the first patch
@@ -1205,20 +1356,31 @@ function runFieldSystem(
   // road driven out and back was never one road: walking it stopped dead at the
   // depot apron, which is exactly where a run home most needs it not to.
   if (state.layingChainId === undefined) {
-    state.fieldEmitDistance = state.tuning.fieldEmitDistance;
+    state.fieldEmitDistance = Math.sqrt(3) * state.tuning.tileSize;
   }
 
   state.fieldEmitDistance += movedDistance;
-  const emitDistance = state.speedState === 'crawl' ? state.tuning.crawlFieldEmitDistance : state.tuning.fieldEmitDistance;
-  if (state.fieldEmitDistance >= emitDistance) {
-    const value = Math.max(
-      state.speedState === 'crawl' ? state.tuning.crawlFieldPatchMinValue : state.tuning.normalFieldPatchMinValue,
-      state.pendingFieldValue
-    );
-    addFieldPatch(state, value);
-    state.fieldEmitDistance = 0;
-    state.pendingFieldValue = 0;
-  }
+
+  if (state.fieldEmitDistance < Math.sqrt(3) * state.tuning.tileSize) return;
+
+  // NEVER LEAVE A HOLE.
+  //
+  // Crawl lays. It used to lay nothing while still accumulating distance, so
+  // every crawl episode -- seven seconds of recovery at 16 u/s, 112 units --
+  // ended with a tile placed 112 units from the last one: an isolated fragment,
+  // every single time, on the exact stretch you were counting on to get home.
+  //
+  // When there is not enough stock for even one tile the emit is HELD rather
+  // than skipped: the accumulator keeps running and lastLaidCell stays put, so
+  // as soon as stock returns the line-walk in addFieldPatch fills the whole gap
+  // back to where the road stopped. The road repairs itself instead of
+  // recording where you were poor.
+  const affordable = Math.floor(state.nanobots / state.tuning.tileCost);
+  if (affordable < 1) return;
+
+  const placed = addFieldPatch(state, affordable);
+  state.nanobots = Math.max(0, state.nanobots - placed * state.tuning.tileCost);
+  state.fieldEmitDistance = 0;
 }
 
 function runMiningSystem(
@@ -1364,7 +1526,7 @@ function advanceDrone(state: ContinuousWorldState, deltaSeconds: number): void {
     moveDroneToward(state, state.rover, deltaSeconds);
     state.drone.etaSeconds = distance(state.drone, state.rover) / state.tuning.droneSpeed;
     if (distance(state.drone, state.rover) <= 16) {
-      const delivered = state.drone.payload - state.dronePendingLaunchCost;
+      const delivered = state.drone.payload;
       state.nanobots = clamp(state.nanobots + delivered, 0, state.maxNanobots);
       const relaid = layReturnedRail(state, state.drone.liftedPatches);
       state.drone = {
@@ -1411,7 +1573,7 @@ function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): { paylo
   }
 
   state.fields = remainingFields;
-  return { payload: getClusterPayload(lifted, state.tuning.reclaimYieldMultiplier), count: lifted.length };
+  return { payload: getClusterPayload(lifted, state.tuning.tileCost), count: lifted.length };
 }
 
 // The drone brings the rail back and lays it down in front of you, mature
@@ -1420,172 +1582,183 @@ function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): { paylo
 // other facet of the drone is a fee, a cooldown, or an eligibility rule, and a
 // tool made only of restrictions reads as a tax however well it is balanced.
 // Reclaiming and reusing rail was always the fiction; it just never did it.
+// The drone lays the road it brought back IN FRONT OF YOU, and connected.
+//
+// It used to project an arc from rover.turnRate. That was wrong in four ways
+// once the rail lock was deleted: turnRate is now a lagging average of player
+// steering rather than the thing that steers, so the arc described a turn from
+// a tenth of a second ago; the projection stepped a full spacing per iteration
+// at up to 69 degrees of heading change, so six steps swept more than a full
+// revolution and curled the spur into a spiral beside the machine; the first
+// tile was placed a whole spacing away, so a spur could land as its OWN
+// connected component; and relayed tiles are born prepared, so driving onto a
+// disconnected spur stopped the machine's own laying and turned one gap into
+// two. Measured: a launch reliably split the road into two components.
+//
+// It now steps along the ground ahead of the machine from a point the road
+// already occupies. Starting ON the network is what guarantees the spur is
+// attached; stepping by one section spacing is what stops it skipping.
 function layReturnedRail(state: ContinuousWorldState, patches: number): number {
   if (patches <= 0) return 0;
 
-  const spacing = state.tuning.fieldEmitDistance;
+  const spacing = sectionSpacing(state.tuning);
   const laid = Math.min(patches, state.tuning.droneRailRelayMaxPatches);
-  // Lay it along the arc the tractor is actually on, not down a straight spur
-  // from its nose. Road count is already conserved -- three seeds of self-play
-  // lift 305 patches and put 302 back -- so the drone was never a road tax. It
-  // read as one because the rail came back on a line the machine was not going
-  // to follow: every launch that mattered happened mid-turn, and a straight
-  // 156 unit spur off a turning tractor lands beside the path instead of on it.
-  //
-  // The projection this walks is the same heading-plus-turn-rate arc that
-  // decides which road is protected. That function existed only to say no. It
-  // knows where the machine is going, and until now nothing used it to put
-  // anything there.
-  let x = state.rover.x;
-  let y = state.rover.y;
-  let heading = state.rover.heading;
-  const stepSeconds = state.rover.speed > 0 ? spacing / state.rover.speed : 0;
-  const occupied = buildTileIndex(state.fields, state.tuning.tileSize);
+  const index = buildRoadIndex(state.fields, state.tuning);
+
+  // Anchor on a SECTION, so the spur is attached by construction. Anchoring on
+  // a bare point put the first relayed section a spacing from that point and
+  // therefore up to 99 units from the nearest real road -- the spur landed as
+  // its own connected component, which is the exact failure this rewrite is
+  // meant to end.
+  const under =
+    sectionWithin(state.rover, index, state.tuning) ??
+    (state.lastLaidPoint ? sectionWithin(state.lastLaidPoint, index, state.tuning) : undefined);
+  // When there is no road to anchor on -- which happens exactly when the lift
+  // that produced this delivery took the ground the machine was standing on --
+  // the spur starts at the machine's own laying point instead, so the trail it
+  // is laying right now runs straight into it.
+  const anchor: Vec2 = under ? { x: under.x, y: under.y } : layPoint(state);
+  const heading = state.rover.heading;
+
   let placed = 0;
-  for (let index = 0; index < laid; index += 1) {
-    heading += state.rover.turnRate * stepSeconds;
-    x += Math.cos(heading) * spacing;
-    y += Math.sin(heading) * spacing;
+  for (let step = under ? 1 : 0; step <= laid * 2 && placed < laid; step += 1) {
+    const at: Vec2 = {
+      x: anchor.x + Math.cos(heading) * spacing * step,
+      y: anchor.y + Math.sin(heading) * spacing * step
+    };
+    if (sectionWithin(at, index, state.tuning)) continue;
 
-    // Returned rail lands on the lattice like everything else, so what the drone
-    // hands back is track the machine can run on rather than a second set of
-    // pieces laid over the first. A cell already held is simply skipped.
-    const cell = worldToHex(x, y, state.tuning.tileSize);
-    const key = hexKey(cell.q, cell.r);
-    if (occupied.has(key)) continue;
-
-    const centre = hexToWorld(cell.q, cell.r, state.tuning.tileSize);
     const tile: FieldPatch = {
       id: state.nextFieldId,
-      x: centre.x,
-      y: centre.y,
+      x: at.x,
+      y: at.y,
       radius: state.tuning.fieldRadius,
-      value: state.tuning.preparedFieldMinValue * 2,
+      heading,
       // Old enough to count as prepared on arrival. A gift you have to wait
       // for is not a gift.
       age: state.tuning.preparedFieldMinAgeSeconds
     };
-    state.fields.push(tile);
-    occupied.set(key, tile);
+    insertSection(state.fields, index, tile);
     state.nextFieldId += 1;
     placed += 1;
   }
   return placed;
 }
 
-// One tile per cell, every tile the same size, snapped to the lattice.
-//
-// Three things that used to be tuning problems are now structural. Tiles cannot
-// overlap, because a cell is either occupied or it is not. Tiles cannot land
-// haphazardly, because the emit point chooses a CELL and the cell decides where
-// the tile sits. And crawl-laid track is no longer a different size from driven
-// track -- it was born at 0.59x radius, which is most of what made the road read
-// as debris rather than as road.
-//
-// Laying onto a cell you already own tops the tile's value back up rather than
-// doing nothing: driving your own track should not degrade it.
-function addFieldPatch(state: ContinuousWorldState, value: number): void {
+// Where the arms are putting track down: just behind the machine, so a section
+// lands on ground the tractor has already crossed rather than under its nose.
+function layPoint(state: ContinuousWorldState): Vec2 {
   const offset = state.speedState === 'crawl' ? 6 : 14;
-  const x = state.rover.x - Math.cos(state.rover.heading) * offset;
-  const y = state.rover.y - Math.sin(state.rover.heading) * offset;
-  const cell = worldToHex(x, y, state.tuning.tileSize);
-
-  const index = buildTileIndex(state.fields, state.tuning.tileSize);
-  const existing = index.get(hexKey(cell.q, cell.r));
-  if (existing) {
-    existing.value = Math.max(existing.value, value);
-    state.layingChainId = existing.id;
-    return;
-  }
-
-  const centre = hexToWorld(cell.q, cell.r, state.tuning.tileSize);
-  state.fields.push({
-    id: state.nextFieldId,
-    x: centre.x,
-    y: centre.y,
-    radius: state.tuning.fieldRadius,
-    value,
-    age: 0
-  });
-  state.layingChainId = state.nextFieldId;
-  state.nextFieldId += 1;
+  return {
+    x: state.rover.x - Math.cos(state.rover.heading) * offset,
+    y: state.rover.y - Math.sin(state.rover.heading) * offset
+  };
 }
 
-// The cell a tile occupies. Laid tiles sit exactly on cell centres so this
-// round-trips exactly; deriving it rather than storing it also means a tile
-// placed by an arena or a test at an arbitrary point still has a defined cell.
-export function fieldCell(at: Vec2, tileSize: number): { q: number; r: number } {
-  return worldToHex(at.x, at.y, tileSize);
-}
-
-// Cached per fields array, because the reclaim pass asks "how connected is this
-// tile" once per tile and rebuilding the index each time is quadratic -- it took
-// one simulation test from 0.15s to 15s. Tiles never move once placed, so the
-// array's length is a sufficient invalidation signal: every add and every lift
-// changes it, and nothing else can change which cell a tile is in.
-interface TileIndexCache {
-  length: number;
-  tileSize: number;
-  index: Map<string, FieldPatch>;
-}
-const tileIndexCache = new WeakMap<FieldPatch[], TileIndexCache>();
-
-export function buildTileIndex(fields: FieldPatch[], tileSize: number): Map<string, FieldPatch> {
-  const cached = tileIndexCache.get(fields);
-  if (cached && cached.length === fields.length && cached.tileSize === tileSize) return cached.index;
-
-  const index = new Map<string, FieldPatch>();
-  for (const field of fields) {
-    const cell = fieldCell(field, tileSize);
-    index.set(hexKey(cell.q, cell.r), field);
-  }
-  tileIndexCache.set(fields, { length: fields.length, tileSize, index });
-  return index;
-}
-
-// Which occupied cells touch this one. Adjacency is read off the coordinates,
-// so it cannot be severed the way a prevId chain could: lifting a tile changes
-// what its neighbours are adjacent TO, and nothing has to be repaired.
-export function fieldNeighbours(
-  field: FieldPatch,
-  index: Map<string, FieldPatch>,
-  tileSize: number
-): FieldPatch[] {
-  const cell = fieldCell(field, tileSize);
-  return hexNeighbours(cell.q, cell.r)
-    .map((neighbour) => index.get(hexKey(neighbour.q, neighbour.r)))
-    .filter((neighbour): neighbour is FieldPatch => neighbour !== undefined && neighbour.id !== field.id);
-}
-
-// What this patch continues from. Prefer the patch laid immediately before it,
-// and otherwise join whatever road it physically touches.
+// Lay track ALONG THE PATH, not on a grid.
 //
-// The link has to be earned by adjacency, not by id order. The old tangent
-// treated any two patches within 2.8 radii -- 129 units, five spacings -- as
-// the same stretch, which welded unrelated passes together and made the road
-// unreadable. But refusing to join anything at all is the opposite failure: the
-// arms stop while the tractor is on road and restart when it falls off, so a
-// road driven out and back came home as a pile of two-patch stubs. Joining
-// within a spacing and a half is real overlap: patches that close together are
-// one continuous piece of road whatever pass laid them, and the tractor can
-// drive from one onto the other without leaving the track.
-function findJoinablePatchId(state: ContinuousWorldState, at: Vec2): number | undefined {
-  const reach = state.tuning.fieldEmitDistance * 1.5;
-  const previous = state.layingChainId !== undefined
-    ? state.fields.find((field) => field.id === state.layingChainId)
-    : undefined;
-  if (previous && distance(previous, at) <= reach * 2) return previous.id;
+// This is the fix for the wiggle. Snapping a section's POSITION to a hex cell
+// means any line that is not one of the six lattice axes staircases: measured
+// on a dead-straight drive at heading -11.5 degrees, the rover's own path
+// deviated 0.0 units and the track behind it deviated 20.9 mean / 56.9 max.
+// No hex size fixes that -- bigger cells staircase harder, smaller ones just
+// make finer debris.
+//
+// So a section is placed at the real path position, carrying the heading it
+// was laid at, one `sectionSpacing` from the last one. Sections are hexes with
+// their flats facing along the path, so one spacing apart means they abut
+// exactly on a straight run and fan slightly through a curve -- track sections,
+// which is what they always claimed to be.
+//
+// Walking from the last laid point rather than placing a single section per
+// emit is what keeps the road connected: emits are measured between points
+// that can drift, so one emit can span more than one section's worth of
+// ground. Walking fills it.
+//
+// Overlap is still impossible, but by test rather than by structure: a
+// candidate closer than MIN_SEPARATION to any existing section is not a new
+// section, it is the one already there.
+//
+// Returns how many sections were actually placed, so the caller charges for
+// track that exists and nothing else.
+function addFieldPatch(state: ContinuousWorldState, budgetTiles: number): number {
+  const spacing = sectionSpacing(state.tuning);
+  const to = layPoint(state);
 
-  let best: number | undefined;
-  let bestDistance = reach;
-  for (const field of state.fields) {
-    const fieldDistance = distance(field, at);
-    if (fieldDistance > bestDistance) continue;
-    best = field.id;
-    bestDistance = fieldDistance;
+  const index = buildRoadIndex(state.fields, state.tuning);
+  // Walk from a SECTION, not from a bare point. The anchor tracks the machine
+  // while it runs on road it already owns, so it can sit anywhere inside a
+  // section's footprint -- and stepping one spacing from the edge of a section
+  // lands one spacing plus that offset from its centre, which is past the
+  // connection reach. Measured: every break in a driven road was this, at
+  // 57-71 units where a spacing is 41.6. Snapping the anchor to the section it
+  // is standing on is what makes a new pass weld to the old one.
+  const anchor = state.lastLaidPoint ?? to;
+  const anchorSection = sectionWithin(anchor, index, state.tuning);
+  const from: Vec2 = anchorSection ? { x: anchorSection.x, y: anchorSection.y } : anchor;
+  const span = distance(from, to);
+  // Bounded so a desync (a long reverse, a teleport) repairs the near end
+  // rather than drawing a road across the whole map to catch up: past the
+  // bound the machine simply starts a fresh section where it stands.
+  // Only a genuine desync -- a teleport, a long reverse -- starts a fresh
+  // section instead of walking. A gap of a few hundred units is ordinary: it
+  // is what running out of stock leaves behind, and walking it is exactly how
+  // the road repairs itself once stock returns. Bounding this at six spacings
+  // turned every dry spell into a permanent hole.
+  const continuous = span <= spacing * 40;
+  // Step by EXACTLY one spacing, not by span/steps. Dividing the span into
+  // whole steps rounds the step length up whenever the span is not a clean
+  // multiple, which put consecutive sections up to 1.85 spacings apart -- past
+  // the connection reach, so the road broke on ordinary driving. Any remainder
+  // is left on the anchor and carried into the next emit instead.
+  const steps = continuous ? Math.max(1, Math.floor(span / spacing)) : 1;
+  const bearing = span > 0.001 ? Math.atan2(to.y - from.y, to.x - from.x) : state.rover.heading;
+  const unit = span > 0.001 ? { x: (to.x - from.x) / span, y: (to.y - from.y) / span } : { x: Math.cos(bearing), y: Math.sin(bearing) };
+
+  let placed = 0;
+  // Where the walk actually got to. Running out of budget mid-walk must leave
+  // the anchor at the last section laid, not at the emit point -- otherwise
+  // the unpaid remainder of the line is never filled and running low on stock
+  // punches a hole.
+  let reached: Vec2 = from;
+  for (let step = 1; step <= steps; step += 1) {
+    if (placed >= budgetTiles) break;
+    const reach = Math.min(spacing * step, span);
+    const at: Vec2 = continuous
+      ? { x: from.x + unit.x * reach, y: from.y + unit.y * reach }
+      : to;
+
+    // Already track here. Weld the chain onto it rather than laying a second
+    // section on top -- driving over your own road must not double it.
+    const existing = sectionWithin(at, index, state.tuning);
+    if (existing) {
+      state.layingChainId = existing.id;
+      reached = at;
+      continue;
+    }
+
+    const tile: FieldPatch = {
+      id: state.nextFieldId,
+      x: at.x,
+      y: at.y,
+      radius: state.tuning.fieldRadius,
+      heading: bearing,
+      age: 0,
+      prevId: state.layingChainId
+    };
+    insertSection(state.fields, index, tile);
+    state.layingChainId = state.nextFieldId;
+    state.nextFieldId += 1;
+    placed += 1;
+    reached = at;
   }
-  return best;
+
+  state.lastLaidPoint = reached;
+  return placed;
 }
+
+
+
 
 
 function resolveSpeedState(state: ContinuousWorldState): SpeedState {
@@ -1595,276 +1768,21 @@ function resolveSpeedState(state: ContinuousWorldState): SpeedState {
   // the most basic readout in the game -- strobed between crawl and fabricating
   // several times a second. Climbing out now costs more than falling in did, so
   // crawl is a state you are rescued from rather than a flicker.
-  const exitThreshold = state.speedState === 'crawl' ? 2 : 0.85;
-  if (state.nanobots >= exitThreshold) return 'fabricating';
+  // Crawl is not a stock level, it is a fact about road: you crawl when you
+  // cannot pay for the next tile. Stating it in tiles keeps it true whatever a
+  // tile costs -- these used to be 0.85 and 2, absolute numbers left over from
+  // when stock drained continuously, so "can I afford road" and "am I crawling"
+  // were unrelated questions and no tile price could reconcile them.
+  //
+  // Climbing out costs more than falling in, so crawl is a state you are
+  // rescued from rather than a flicker at the boundary.
+  const tiles = state.nanobots / state.tuning.tileCost;
+  if (tiles >= (state.speedState === 'crawl' ? 3 : 1)) return 'fabricating';
   return 'crawl';
 }
 
-function getPreparedMagnetTurn(state: ContinuousWorldState, input: ContinuousInput): number {
-  if (state.speedState !== 'prepared') return 0;
 
-  const magnet = getPreparedFieldMagnet(state);
-  if (!magnet) return 0;
 
-  // The magnet used to switch off completely whenever the player steered the
-  // same way it was already correcting, and drop to a fifth of its strength
-  // when steering against it. Between the two, touching the wheel released the
-  // groove entirely -- so laid road never held the machine, which is what
-  // "the road should have that central magnetism back" is describing.
-  // Steering with it now still gets help; steering against it meets a rail
-  // that resists before it lets go.
-  const activeSteer = Math.abs(input.steer) > 0.06;
-
-  const turnRate = activeSteer ? state.tuning.preparedMagnetActiveTurnRate : state.tuning.preparedMagnetPassiveTurnRate;
-  return clamp(magnet.correction / state.tuning.preparedMagnetCorrectionRange, -1, 1) * turnRate * magnet.strength;
-}
-
-function getPreparedFieldMagnet(state: ContinuousWorldState): { correction: number; strength: number } | undefined {
-  const preparedFields = state.fields
-    .filter((field) => field.age >= state.tuning.preparedFieldMinAgeSeconds && field.value >= state.tuning.preparedFieldMinValue)
-    .sort((a, b) => a.id - b.id);
-  if (preparedFields.length === 0) return undefined;
-
-  const heading = {
-    x: Math.cos(state.rover.heading),
-    y: Math.sin(state.rover.heading)
-  };
-  let totalWeight = 0;
-  let tangentX = 0;
-  let tangentY = 0;
-  let pullX = 0;
-  let pullY = 0;
-
-  for (let index = 0; index < preparedFields.length; index += 1) {
-    const field = preparedFields[index];
-    const fieldDistance = distance(state.rover, field);
-    const influence = field.radius * state.tuning.preparedMagnetInfluenceMultiplier;
-    if (fieldDistance >= influence) continue;
-
-    const weight = (1 - fieldDistance / influence) * clamp(field.value / state.tuning.startingFieldValue, 0.4, 1.4);
-    const tangent = getPreparedFieldTangent(preparedFields, index);
-    if (tangent) {
-      const orientation = heading.x * tangent.x + heading.y * tangent.y >= 0 ? 1 : -1;
-      tangentX += tangent.x * orientation * weight;
-      tangentY += tangent.y * orientation * weight;
-    }
-
-    if (fieldDistance > 0.001) {
-      pullX += ((field.x - state.rover.x) / fieldDistance) * weight;
-      pullY += ((field.y - state.rover.y) / fieldDistance) * weight;
-    }
-    totalWeight += weight;
-  }
-
-  if (totalWeight <= 0.001) return undefined;
-
-  const tangentLength = Math.hypot(tangentX, tangentY);
-  const tangent = tangentLength > 0.001 ? { x: tangentX / tangentLength, y: tangentY / tangentLength } : heading;
-  const centerPull = {
-    x: (pullX / totalWeight) * state.tuning.preparedMagnetCenterPull,
-    y: (pullY / totalWeight) * state.tuning.preparedMagnetCenterPull
-  };
-  const desired = {
-    x: tangent.x + centerPull.x,
-    y: tangent.y + centerPull.y
-  };
-  if (Math.hypot(desired.x, desired.y) <= 0.001) return undefined;
-
-  return {
-    correction: angleDifference(Math.atan2(desired.y, desired.x), state.rover.heading),
-    strength: clamp(totalWeight, 0.12, 1)
-  };
-}
-
-// Where the connected track under the tractor runs, and how far it runs for.
-//
-// This is the piece the road never had. Prepared coverage answered "am I on
-// something" and the magnet answered "roughly which way does the stuff near me
-// point", but neither could answer "is this one continuous piece, and where
-// does it go" -- so laid road could never be a rail, only a patch of faster
-// floor with a nudge attached. Walking the chain answers both, and everything
-// the rail does is built on it: the heading snap, the centreline pull, the
-// speed, and the runway readout that tells you whether flooring it gets you
-// home.
-export function getRailLock(state: ContinuousWorldState, held = false): RailLock | undefined {
-  // Hysteresis, the same shape crawl already uses. Catching the rail should be
-  // easy and losing it should take something happening: without this the lock
-  // dropped and recaught twenty times in a thirty-six second day, which is a
-  // speed swing between 236 and 74 every second and a half. Changing what the
-  // machine IS that often is most of what "not smooth" means from the seat.
-  const captureDistance = state.tuning.railCaptureDistance * (held ? 1.7 : 1);
-  const captureAlignment = state.tuning.railCaptureAlignment * (held ? 0.45 : 1);
-
-  const railworthy = state.fields.filter((field) => isRailworthy(state, field));
-  const index = buildTileIndex(railworthy, state.tuning.tileSize);
-
-  // The nearest piece of track, not the nearest tile: a tile with no occupied
-  // neighbours is a stub, and locking onto a stub is what made the old magnet
-  // swing the machine at nothing.
-  let best: FieldPatch | undefined;
-  let bestDistance = captureDistance;
-  let bestNeighbours: FieldPatch[] = [];
-  for (const field of railworthy) {
-    const fieldDistance = distance(state.rover, field);
-    if (fieldDistance > bestDistance) continue;
-    const neighbours = fieldNeighbours(field, index, state.tuning.tileSize);
-    if (neighbours.length === 0) continue;
-    best = field;
-    bestDistance = fieldDistance;
-    bestNeighbours = neighbours;
-  }
-  if (!best) return undefined;
-
-  // Which way this piece of track runs, taken from the neighbours that best
-  // continue it in each direction. On a plain stretch this reproduces exactly
-  // what prev -> next used to give. At a junction it picks the through route
-  // the machine is pointing down -- which the linked list could not represent
-  // at all, because a patch could only ever have one successor.
-  const facing = { x: Math.cos(state.rover.heading), y: Math.sin(state.rover.heading) };
-  let ahead: FieldPatch | undefined;
-  let behind: FieldPatch | undefined;
-  let aheadScore = -Infinity;
-  let behindScore = Infinity;
-  for (const neighbour of bestNeighbours) {
-    const dot = (neighbour.x - best.x) * facing.x + (neighbour.y - best.y) * facing.y;
-    if (dot > aheadScore) {
-      aheadScore = dot;
-      ahead = neighbour;
-    }
-    if (dot < behindScore) {
-      behindScore = dot;
-      behind = neighbour;
-    }
-  }
-
-  // With a single neighbour, ahead and behind are the same tile, so the tile
-  // under the machine supplies the other end rather than collapsing the tangent
-  // to zero length.
-  const from = behind && behind.id !== ahead?.id ? behind : best;
-  const to = ahead ?? best;
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const length = Math.hypot(dx, dy);
-  if (length <= 0.001) return undefined;
-
-  // Oriented to the way the tractor is pointing, so the same physical track
-  // works in both directions -- which is the entire point of turning round and
-  // running home on it.
-  const forward = facing.x * dx + facing.y * dy >= 0 ? 1 : -1;
-  const tangent = { x: (dx / length) * forward, y: (dy / length) * forward };
-  if (facing.x * tangent.x + facing.y * tangent.y < captureAlignment) {
-    return undefined;
-  }
-
-  // Project onto the centreline through the nearest tile rather than onto the
-  // tile itself, so the pull is sideways onto the track and never backwards
-  // along it.
-  const alongX = state.rover.x - best.x;
-  const alongY = state.rover.y - best.y;
-  const along = alongX * tangent.x + alongY * tangent.y;
-  const center = { x: best.x + tangent.x * along, y: best.y + tangent.y * along };
-  const offset = (state.rover.x - center.x) * -tangent.y + (state.rover.y - center.y) * tangent.x;
-
-  return {
-    tangent,
-    center,
-    offset,
-    runwayAhead: measureRunway(index, state.tuning.tileSize, best, tangent)
-  };
-}
-
-// The piece of road the tractor is standing on, whether or not it is locked to
-// it. Used to weld a new pass onto the old track at the moment the arms restart.
-function findRoadPatchUnderRover(state: ContinuousWorldState): FieldPatch | undefined {
-  let best: FieldPatch | undefined;
-  let bestDistance = state.tuning.fieldRadius;
-  for (const field of state.fields) {
-    if (!isRailworthy(state, field)) continue;
-    const fieldDistance = distance(state.rover, field);
-    if (fieldDistance > bestDistance) continue;
-    best = field;
-    bestDistance = fieldDistance;
-  }
-  return best;
-}
-
-function isRailworthy(state: ContinuousWorldState, field: FieldPatch): boolean {
-  return field.age >= state.tuning.preparedFieldMinAgeSeconds && field.value >= state.tuning.preparedFieldMinValue;
-}
-
-// How much connected track is left in front of you. Walking the chain the way
-// the tractor is facing gives an honest number even where the drone has taken a
-// bite out of the middle: the walk stops at the hole, because that is exactly
-// where the tractor will drop off the rail.
-function measureRunway(
-  index: Map<string, FieldPatch>,
-  tileSize: number,
-  from: FieldPatch,
-  tangent: Vec2
-): number {
-  const seen = new Set<number>([from.id]);
-  // The direction carried along the walk, updated at every tile. Holding the
-  // starting tangent for the whole run was wrong on exactly the roads that
-  // matter: a track that curves bends away from where it started, so the walk
-  // either stopped at the bend or jumped to a different branch, and the runway
-  // readout swung between 27 and 368 on consecutive frames. A number you cannot
-  // trust is worse than no number, because the whole point of it is deciding
-  // whether to turn round and floor it.
-  let heading = { ...tangent };
-  let current = from;
-  let total = 0;
-
-  // Bounded so track that loops back on itself cannot spin here forever.
-  for (let step = 0; step < 400; step += 1) {
-    // Follow the straightest continuation. At a junction that is the branch the
-    // machine would carry on down, which is what the runway is asked to answer.
-    // The old walk needed a separate proximity scan here to hop between chains
-    // laid on different passes; adjacency makes a junction an ordinary
-    // neighbour, so that special case is gone rather than ported.
-    let next: FieldPatch | undefined;
-    let bestDot = 0;
-    for (const candidate of fieldNeighbours(current, index, tileSize)) {
-      if (seen.has(candidate.id)) continue;
-      const dx = candidate.x - current.x;
-      const dy = candidate.y - current.y;
-      const gap = Math.hypot(dx, dy);
-      if (gap <= 0.001) continue;
-      const dot = (dx / gap) * heading.x + (dy / gap) * heading.y;
-      if (dot <= bestDot) continue;
-      bestDot = dot;
-      next = candidate;
-    }
-    if (!next) break;
-
-    const gap = distance(current, next);
-    // Turn with the road rather than through it. A track can bend as sharply
-    // as the tractor laid it, and the walk has to bend with it.
-    heading = { x: (next.x - current.x) / gap, y: (next.y - current.y) / gap };
-    total += gap;
-    seen.add(next.id);
-    current = next;
-  }
-  return total;
-}
-
-function getPreparedFieldTangent(fields: FieldPatch[], index: number): Vec2 | undefined {
-  const field = fields[index];
-  const previous = fields[index - 1];
-  const next = fields[index + 1];
-  const maxGap = field.radius * 2.8;
-
-  const from = previous && distance(previous, field) <= maxGap ? previous : undefined;
-  const to = next && distance(field, next) <= maxGap ? next : undefined;
-  const dx = to && from ? to.x - from.x : to ? to.x - field.x : from ? field.x - from.x : 0;
-  const dy = to && from ? to.y - from.y : to ? to.y - field.y : from ? field.y - from.y : 0;
-  const length = Math.hypot(dx, dy);
-  if (length <= 0.001) return undefined;
-
-  return {
-    x: dx / length,
-    y: dy / length
-  };
-}
 
 function allocateArms(
   speedState: SpeedState,
@@ -2001,7 +1919,7 @@ export function getDroneReclaimDiagnostics(state: ContinuousWorldState): DroneRe
   const bestTarget = topCandidates[0];
   const oldestFieldAge = state.fields.reduce((oldest, field) => Math.max(oldest, field.age), 0);
   const nearEligibleFields = state.fields.filter((field) => {
-    return !field.reservedByDrone && field.age >= state.tuning.reclaimMinFieldAgeSeconds && field.value >= state.tuning.reclaimMinFieldValue;
+    return !field.reservedByDrone && field.age >= state.tuning.reclaimMinFieldAgeSeconds;
   });
   const nearestNearEligibleFieldDistance =
     nearEligibleFields.length > 0 ? Math.min(...nearEligibleFields.map((field) => distance(field, state.rover))) : undefined;
@@ -2042,7 +1960,7 @@ function getDroneBlockedReason(
     return `Oldest field age ${oldestFieldAge.toFixed(1)}s / need ${state.tuning.reclaimMinFieldAgeSeconds.toFixed(1)}s`;
   }
   if (!state.fields.some((field) => !field.reservedByDrone)) return 'No unreserved reclaim target';
-  if (!state.fields.some((field) => !field.reservedByDrone && field.value >= state.tuning.reclaimMinFieldValue)) {
+  if (!state.fields.some((field) => !field.reservedByDrone)) {
     return `Best cluster payload ${bestClusterPayload.toFixed(2)} / need ${state.tuning.minReclaimClusterPayload.toFixed(2)}`;
   }
   if (!state.tuning.allowCloseReclaim && nearestNearEligibleFieldDistance !== undefined && nearestNearEligibleFieldDistance < state.tuning.reclaimMinDistanceFromRover) {
@@ -2064,7 +1982,7 @@ function getReclaimCandidateDiagnostics(state: ContinuousWorldState): ReclaimCan
     if (!isSelectableReclaimTarget(state, field)) continue;
 
     const cluster = getReclaimCluster(state, field);
-    const payload = getClusterPayload(cluster, state.tuning.reclaimYieldMultiplier);
+    const payload = getClusterPayload(cluster, state.tuning.tileCost);
     if (!state.tuning.allowLowPayloadLaunch && payload < state.tuning.minReclaimClusterPayload) continue;
 
     candidates.push(createReclaimCandidateDiagnostics(state, field, cluster, payload));
@@ -2079,8 +1997,8 @@ function createReclaimCandidateDiagnostics(
   cluster: FieldPatch[],
   payload: number
 ): ReclaimCandidateDiagnostics {
-  const weightedAge = getClusterWeightedAge(cluster, payload);
-  const spread = getClusterAverageDistanceFromTarget(cluster, field, payload);
+  const weightedAge = getClusterWeightedAge(cluster);
+  const spread = getClusterAverageDistanceFromTarget(cluster, field);
   const eta = estimateReclaimRefillEtaBreakdown(state, field);
   // The drone goes for your OLDEST road. This replaces "nearest", which was
   // chosen for learnability and turned out to be the worst possible rule for
@@ -2146,8 +2064,10 @@ function compareReclaimCandidates(a: ReclaimCandidateDiagnostics, b: ReclaimCand
 // competent equipment rather than a tool made of eligibility rules.
 //
 // Age is not a factor at any point, in ranking or here.
-function isLiftableRoad(state: ContinuousWorldState, field: FieldPatch): boolean {
-  return field.value >= state.tuning.reclaimMinFieldValue;
+function isLiftableRoad(_state: ContinuousWorldState, _field: FieldPatch): boolean {
+  // Every tile is liftable. There is no grade of road too poor to be worth
+  // carrying home, because there are no grades.
+  return true;
 }
 
 function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatch): boolean {
@@ -2178,9 +2098,8 @@ function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatc
 // What the player has to state to predict it: the drone eats loose ends, never
 // the middle. That is the whole rule.
 export function isRoadSpendable(state: ContinuousWorldState, point: Vec2): boolean {
-  const index = buildTileIndex(state.fields, state.tuning.tileSize);
-  const cell = fieldCell(point, state.tuning.tileSize);
-  const field = index.get(hexKey(cell.q, cell.r));
+  const index = buildRoadIndex(state.fields, state.tuning);
+  const field = findSectionAt(point, index, state.tuning);
   if (!field) return false;
   return getTrackDegree(state, field, index) <= 1;
 }
@@ -2190,10 +2109,10 @@ export function isRoadSpendable(state: ContinuousWorldState, point: Vec2): boole
 export function getTrackDegree(
   state: ContinuousWorldState,
   field: FieldPatch,
-  index?: Map<string, FieldPatch>
+  index?: RoadIndex
 ): number {
-  const tiles = index ?? buildTileIndex(state.fields, state.tuning.tileSize);
-  return fieldNeighbours(field, tiles, state.tuning.tileSize).length;
+  const tiles = index ?? buildRoadIndex(state.fields, state.tuning);
+  return fieldNeighbours(field, tiles, state.tuning).length;
 }
 
 
@@ -2204,21 +2123,23 @@ function getReclaimCluster(state: ContinuousWorldState, target: Vec2): FieldPatc
 }
 
 function isInReclaimCluster(state: ContinuousWorldState, field: FieldPatch, target: Vec2): boolean {
-  return isLiftableRoad(state, field) && distance(field, target) <= state.tuning.dronePickupRadius;
+  return isLiftableRoad(state, field) && distance(field, target) <= getDronePickupRadius(state.tuning);
 }
 
-function getClusterPayload(cluster: FieldPatch[], yieldMultiplier = 1): number {
-  return cluster.reduce((total, field) => total + field.value, 0) * yieldMultiplier;
+// Conservation, structurally rather than by a multiplier set to 1: what comes
+// back is exactly what the tiles cost to lay.
+function getClusterPayload(cluster: FieldPatch[], tileCost: number): number {
+  return cluster.length * tileCost;
 }
 
-function getClusterWeightedAge(cluster: FieldPatch[], payload: number): number {
-  if (payload <= 0) return 0;
-  return cluster.reduce((total, field) => total + field.age * field.value, 0) / payload;
+function getClusterWeightedAge(cluster: FieldPatch[]): number {
+  if (!cluster.length) return 0;
+  return cluster.reduce((total, field) => total + field.age, 0) / cluster.length;
 }
 
-function getClusterAverageDistanceFromTarget(cluster: FieldPatch[], target: Vec2, payload: number): number {
-  if (payload <= 0) return 0;
-  return cluster.reduce((total, field) => total + distance(field, target) * field.value, 0) / payload;
+function getClusterAverageDistanceFromTarget(cluster: FieldPatch[], target: Vec2): number {
+  if (!cluster.length) return 0;
+  return cluster.reduce((total, field) => total + distance(field, target), 0) / cluster.length;
 }
 
 function estimateReclaimRefillEta(state: ContinuousWorldState, target: Vec2): number {

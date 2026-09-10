@@ -12,7 +12,10 @@ import {
   type FieldPatch,
   getReclaimPreview,
   isRoadSpendable,
+  buildRoadIndex,
+  fieldNeighbours,
   isRoverAtExtraction,
+  migrateCarriedFields,
   launchReclaimDrone,
   resolveContinuousTuning,
   tickContinuousWorld,
@@ -27,7 +30,9 @@ import {
   type FertileZone,
   type ReclaimPreview,
   type SpeedState,
-  type Vec2
+  type Vec2,
+  getDronePickupRadius,
+  getRoadAhead
 } from '../game/continuous';
 import {
   CONTINUOUS_ARENAS,
@@ -250,7 +255,6 @@ const TUNING_CONTROLS: TuningControlDefinition[] = [
   { key: 'crawlSpeed', label: 'Crawl speed', min: 8, max: 32, step: 1 },
   { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 1, max: 4.2, step: 0.1, precision: 1 },
   { key: 'droneSpeed', label: 'Drone speed', min: 260, max: 620, step: 10 },
-  { key: 'dronePickupRadius', label: 'Drone pickup', min: 70, max: 260, step: 2 },
   { key: 'crawlRecoveryPerSecond', label: 'Crawl recovery', min: 0.02, max: 0.3, step: 0.01, precision: 2 },
   { key: 'mineRate', label: 'Mining yield', min: 0.18, max: 0.55, step: 0.01, precision: 2 },
   { key: 'startingNanobots', label: 'Start stock', min: 3, max: 16, step: 1 },
@@ -263,9 +267,7 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
     label: 'Launch Gating',
     controls: [
       { key: 'reclaimMinFieldAgeSeconds', label: 'Reclaim min age', min: 0, max: 8, step: 0.05, precision: 2 },
-      { key: 'reclaimMinFieldValue', label: 'Reclaim min value', min: 0, max: 0.4, step: 0.005, precision: 3 },
       { key: 'reclaimMinDistanceFromRover', label: 'Min distance', min: 0, max: 220, step: 1 },
-      { key: 'dronePickupRadius', label: 'Pickup radius', min: 40, max: 260, step: 2 },
       { key: 'droneSpeed', label: 'Drone speed', min: 180, max: 760, step: 10 },
       { key: 'reclaimLockSeconds', label: 'Reclaim lock', min: 0.05, max: 2.5, step: 0.01, precision: 2 },
       { key: 'minReclaimClusterPayload', label: 'Min payload', min: 0, max: 1.2, step: 0.01, precision: 2 },
@@ -281,13 +283,9 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
     label: 'Rail / Field',
     controls: [
       { key: 'fieldRadius', label: 'Field radius', min: 18, max: 82, step: 1 },
-      { key: 'fieldEmitDistance', label: 'Normal emit dist', min: 8, max: 80, step: 1 },
-      { key: 'crawlFieldEmitDistance', label: 'Crawl emit dist', min: 4, max: 48, step: 1 },
-      { key: 'normalFieldPatchMinValue', label: 'Normal min value', min: 0.01, max: 0.5, step: 0.005, precision: 3 },
-      { key: 'crawlFieldPatchMinValue', label: 'Crawl min value', min: 0.005, max: 0.16, step: 0.005, precision: 3 },
+      { key: 'tileSize', label: 'Hex grain', min: 8, max: 48, step: 1 },
       { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 0.2, max: 5, step: 0.05, precision: 2 },
-      { key: 'fieldValueMultiplierFromSpentStock', label: 'Spent stock value', min: 0.2, max: 2.4, step: 0.05, precision: 2 },
-      { key: 'startingFieldValue', label: 'Starting field value', min: 0.1, max: 2, step: 0.05, precision: 2 }
+      { key: 'tileCost', label: 'Cost per tile', min: 0.05, max: 1.2, step: 0.01, precision: 2 }
     ]
   },
   {
@@ -295,12 +293,6 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
     controls: [
       { key: 'preparedFieldMinAgeSeconds', label: 'Prepared min age', min: 0.1, max: 4, step: 0.05, precision: 2 },
       { key: 'preparedCoverageThreshold', label: 'Coverage threshold', min: 0.02, max: 0.8, step: 0.01, precision: 2 },
-      { key: 'preparedFieldMinValue', label: 'Prepared min value', min: 0, max: 0.5, step: 0.005, precision: 3 },
-      { key: 'preparedMagnetInfluenceMultiplier', label: 'Magnet influence', min: 0, max: 3.5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetPassiveTurnRate', label: 'Passive turn', min: 0, max: 5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetActiveTurnRate', label: 'Active turn', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCorrectionRange', label: 'Correction range', min: 0.1, max: 2, step: 0.05, precision: 2 }
     ]
   },
   {
@@ -578,7 +570,6 @@ interface TerrainVisualSnapshot {
   craterCount: number;
   fissureCount: number;
   fertileBedCount: number;
-  preparedFieldBedCount: number;
   ridgeCount: number;
 }
 
@@ -923,6 +914,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private carriedDepletion: Record<string, number> = {};
   private saveDiagnostic: 'loaded' | 'absent' | 'empty' | 'unreadable' | 'off' = 'off';
   private survivedTheNight = 0;
+  // What happened to the last run's recording. It used to be swallowed, which
+  // is how a shipped, working recorder stayed mute for six passes of tuning:
+  // the page called claude.use('db'), the artifact had never been published
+  // WITH the db capability, use() resolved null, and the guard returned in
+  // silence. Nothing was broken and nothing said so. An instrument that cannot
+  // report its own failure is not an instrument.
+  private recordingStatus: string = 'pending';
 
   // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
   // caution about a documented deferral, and the result was that the next day
@@ -946,15 +944,25 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // instead of from how the game is actually played. This closes that.
   private async recordRunTrace(): Promise<void> {
     const claude = (window as unknown as { claude?: { use?: (name: string) => Promise<unknown> } }).claude;
-    if (!claude?.use) return;
+    if (!claude?.use) {
+      this.recordingStatus = 'no runtime';
+      return;
+    }
 
     try {
       const db = (await claude.use('db')) as
         | { doc: (path: string) => { set: (value: Record<string, unknown>) => Promise<unknown> } }
         | null;
-      if (!db) return;
+      // Null is the honest answer to three different questions -- not served,
+      // not granted, failed to load -- and the runtime refuses to distinguish
+      // them on purpose. What matters here is that it is now SAID.
+      if (!db) {
+        this.recordingStatus = 'no store';
+        return;
+      }
 
       const summary = getContinuousLoopSummary(this.loopTrace);
+      const road = this.measureRoadShape();
       const id = `${Date.now()}`;
       await db.doc(`runs/${id}`).set({
         recordedAt: new Date().toISOString(),
@@ -972,6 +980,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         solarWindow: this.state.solarWindowSeconds,
         elapsed: Number(this.state.elapsedSeconds.toFixed(2)),
         reachedExtraction: isRoverAtExtraction(this.state),
+        // The shape of the road you actually left behind. This is the half of
+        // the game I could never see: a scripted agent and a person break the
+        // road in different places, so components measured on self-play is a
+        // fact about the script, not about the design.
+        ...road,
         // The four beats the design says the run has to have.
         milestones: summary.milestones.map((milestone) => ({
           id: milestone.id,
@@ -1000,10 +1013,42 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
           y: Math.round(event.y)
         }))
       });
-    } catch {
-      // No store in this view, or the write was refused. A run that cannot be
-      // recorded still has to be playable.
+      this.recordingStatus = 'recorded';
+    } catch (error) {
+      // A run that cannot be recorded still has to be playable -- but it says
+      // so. Branching on the code rather than the message, per the db contract.
+      const code = (error as { code?: string } | undefined)?.code;
+      this.recordingStatus = code ? `refused: ${code}` : 'refused';
     }
+  }
+
+  // The road you left behind, measured once at the end of the run rather than
+  // per tick. Components is the number the path-laid rewrite moved from 12 to 1
+  // on a scripted drive; loose ends is what the drone is allowed to eat, and so
+  // what decides whether a lift can cut your way home.
+  private measureRoadShape(): Record<string, number> {
+    const index = buildRoadIndex(this.state.fields, this.state.tuning);
+    const seen = new Set<number>();
+    let components = 0;
+    let looseEnds = 0;
+
+    for (const field of this.state.fields) {
+      if (fieldNeighbours(field, index, this.state.tuning).length <= 1) looseEnds += 1;
+      if (seen.has(field.id)) continue;
+      components += 1;
+      const stack = [field];
+      seen.add(field.id);
+      while (stack.length) {
+        const current = stack.pop()!;
+        for (const neighbour of fieldNeighbours(current, index, this.state.tuning)) {
+          if (seen.has(neighbour.id)) continue;
+          seen.add(neighbour.id);
+          stack.push(neighbour);
+        }
+      }
+    }
+
+    return { sections: this.state.fields.length, roadComponents: components, looseEnds };
   }
 
   private loadCarriedRoad(): FieldPatch[] {
@@ -1030,7 +1075,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         : undefined;
       return {
         shift: typeof parsed?.shift === 'number' ? parsed.shift : 1,
-        fields: Array.isArray(parsed?.fields) ? parsed.fields : [],
+        // Saves written before sections carried a heading come back with it
+        // undefined, which renders every one of them as NaN corners -- an
+        // invisible road that still connects and still works. Backfill on load.
+        fields: Array.isArray(parsed?.fields) ? migrateCarriedFields(parsed.fields) : [],
         depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {}
       };
     } catch {
@@ -2397,15 +2445,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     // The rail catching is the single best moment the machine has, so it gets
-    // said out loud with the number that matters: how much connected track you
-    // just picked up.
-    const railedNow = Boolean(this.state.rail);
+    const railedNow = this.state.speedState === 'prepared';
     if (railedNow !== this.previousRailed) {
       if (railedNow) {
         this.addEffect('sprint', this.state.rover.x, this.state.rover.y, 620);
-        this.showEventMessage(`On rail. ${Math.round(this.state.rail?.runwayAhead ?? 0)}m of track ahead.`, 1200, timeMs, 1);
+        this.showEventMessage('On prepared road. Running fast.', 1200, timeMs, 1);
       } else {
-        this.showEventMessage('Off the rail. Steering is yours again.', 900, timeMs, 1);
+        this.showEventMessage('Off the road. Fabricating as you go.', 900, timeMs, 1);
       }
     }
     this.previousRailed = railedNow;
@@ -2544,11 +2590,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       // pins them to the world, so the grid streams toward you and wraps.
       const camera = this.cameraFocus();
       const axes = this.cameraAxes();
-      const camLateral = camera.x * axes.right.x + camera.y * axes.right.y;
       const camForward = camera.x * axes.forward.x + camera.y * axes.forward.y;
-      const wrapInto = (value: number, min: number, span: number): number =>
-        min + ((((value - min) % span) + span) % span);
-
       const rungPhase = ((camForward % 120) + 120) % 120;
       for (let index = 0; index < 8; index += 1) {
         const forward = 500 - index * 120 - rungPhase;
@@ -2558,18 +2600,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         this.graphics.lineBetween(from.x, from.y, to.x, to.y);
       }
 
-      for (let index = 0; index < 46; index += 1) {
-        if (visualCalm < 0.7 && index % 2 === 1) continue;
-        const point = this.project(
-          this.cameraLocalPoint(
-            wrapInto(-560 + ((index * 173) % 1120) - camLateral, -560, 1120),
-            wrapInto(-330 + ((index * 89) % 840) - camForward, -330, 840)
-          )
-        );
-        const radius = 1 + (index % 3);
-        this.graphics.fillStyle(index % 5 === 0 ? 0x465060 : 0x252c38, (0.32 + 0.33 * visualCalm));
-        this.graphics.fillCircle(point.x, point.y, radius);
-      }
+      // A second speckle field ran here on its own palette and its own density,
+      // stacked over the world-anchored grit in drawRegolith. Two unrelated
+      // ground textures at once is two grounds. The grit survives: it carries
+      // the optical flow the surface needs to read as moving at all.
     }
 
     this.graphics.lineStyle(1, 0x262e3b, 0.8);
@@ -2630,9 +2664,18 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawSky();
     const NEAR = -360;
     const FAR = 2600;
-    const BANDS = 34;
+    // Was 34 bands whose colour ramped at pow(t, 0.55) while their spacing
+    // ramped at pow(t, 2.1). The near bands were therefore both the widest on
+    // screen and the most colour-separated, so the ground read as terraced
+    // steps rather than one surface -- "multiple kinds of different floor".
+    // Colour now ramps on the same curve as depth, which is what aerial
+    // perspective is, and more bands make the remaining steps finer.
+    const BANDS = 48;
     const nearColor = 0x7d7061;
-    const farColor = 0x1b2130;
+    // Matched to the colour drawSky reaches at the horizon (0x2f3444). It was
+    // 0x1b2130, so the furthest ground met the sky in a hard step -- the last
+    // horizontal edge on the floor once the haze strips came off.
+    const farColor = 0x2f3444;
 
     const layout = this.getLayout();
     const horizon = this.horizonScreenY();
@@ -2644,7 +2687,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       const t1 = Math.pow((index + 1) / BANDS, 2.1);
       const forward0 = NEAR + (FAR - NEAR) * t0;
       const forward1 = NEAR + (FAR - NEAR) * t1;
-      const shade = ContinuousMoonMinerScene.mixColor(nearColor, farColor, Math.pow(index / BANDS, 0.55));
+      const shade = ContinuousMoonMinerScene.mixColor(nearColor, farColor, t0);
       this.graphics.fillStyle(shade, 1);
       this.graphics.fillPoints(
         [
@@ -2688,21 +2731,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
           (world.x - gritCamera.x) * gritAxes.forward.x + (world.y - gritCamera.y) * gritAxes.forward.y;
         if (forward < NEAR) continue;
         const depth = (forward - NEAR) / (FAR - NEAR);
-        if (depth > 0.72) continue;
+        // Culled hard at 0.72, which left a seam across the middle distance
+        // where textured ground became flat ground. It fades out instead.
+        if (depth > 0.99) continue;
         const point = this.project(world);
         if (point.y < horizon) continue;
         const tone = hash % 4 === 0 ? 0x8a8072 : 0x4a4640;
-        this.graphics.fillStyle(tone, 0.5 * (1 - depth));
+        this.graphics.fillStyle(tone, 0.5 * Math.pow(1 - depth, 1.7));
         this.graphics.fillCircle(point.x, point.y, (1 + (hash % 3)) * (1 - depth * 0.6));
       }
     }
 
-    // Haze band where ground meets sky.
-    for (let index = 0; index < 7; index += 1) {
-      const spread = 4 + index * 7;
-      this.graphics.fillStyle(0x39414f, 0.16 - index * 0.02);
-      this.graphics.fillRect(0, horizon - spread * 0.35, this.getLayout().width, spread);
-    }
+    // Seven stacked haze strips used to sit here: seven more horizontal edges
+    // on a surface that already had too many.
   }
 
   private drawTacticalBackdrop(layout: SceneLayout, visualCalm: number): void {
@@ -2769,7 +2810,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.drawFertileTerrainBed(zone, visualCalm);
     }
 
-    this.drawPreparedFieldTerrainBeds(visualCalm);
   }
 
   private drawArenaNavigationGuides(): void {
@@ -2984,68 +3024,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.fillPoints(inner, true, true);
   }
 
-  private drawPreparedFieldTerrainBeds(visualCalm: number): void {
-    const preparedFields = [...this.state.fields]
-      .filter((field) => {
-        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds && field.value >= this.state.tuning.preparedFieldMinValue;
-      })
-      .sort((a, b) => a.id - b.id);
-    const sections = this.fieldSections(preparedFields);
 
-    for (const section of sections) {
-      if (section.length === 1) {
-        this.drawPreparedFieldTerrainCap(section[0], visualCalm);
-        continue;
-      }
 
-      for (let index = 0; index < section.length - 1; index += 1) {
-        this.drawPreparedFieldTerrainSegment(section[index], section[index + 1], visualCalm);
-      }
-      this.drawPreparedFieldTerrainCap(section[0], visualCalm);
-      this.drawPreparedFieldTerrainCap(section[section.length - 1], visualCalm);
-    }
-  }
-
-  private drawPreparedFieldTerrainSegment(
-    from: { x: number; y: number; radius: number; value: number },
-    to: { x: number; y: number; radius: number; value: number },
-    visualCalm: number
-  ): void {
-    const fromScreen = this.project(from);
-    const toScreen = this.project(to);
-    const dx = toScreen.x - fromScreen.x;
-    const dy = toScreen.y - fromScreen.y;
-    const length = Math.hypot(dx, dy);
-    if (length <= 0.01) return;
-
-    const normal = { x: -dy / length, y: dx / length };
-    const fromWidth = this.fieldRoadWidth(from) * 1.42;
-    const toWidth = this.fieldRoadWidth(to) * 1.42;
-    const points = [
-      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
-      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
-      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
-      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
-    ];
-
-    this.graphics.fillStyle(0x193334, 0.12 + visualCalm * 0.06);
-    this.graphics.fillPoints(points, true, true);
-    this.graphics.lineStyle(1, 0x3b5f5c, 0.18 + visualCalm * 0.1);
-    this.graphics.strokePoints(points, true, true);
-  }
-
-  private drawPreparedFieldTerrainCap(
-    field: { x: number; y: number; radius: number; value: number },
-    visualCalm: number
-  ): void {
-    const center = this.project(field);
-    const width = this.fieldRoadWidth(field) * 1.42;
-    const yScale = this.shapeYScale();
-    this.graphics.fillStyle(0x193334, 0.1 + visualCalm * 0.05);
-    this.graphics.fillEllipse(center.x, center.y, width * 2.12, width * 1.22 * yScale);
-    this.graphics.lineStyle(1, 0x3b5f5c, 0.14 + visualCalm * 0.1);
-    this.graphics.strokeEllipse(center.x, center.y, width * 2.12, width * 1.22 * yScale);
-  }
 
   private terrainFeaturePoint(index: number, salt: number): Vec2 {
     return {
@@ -3487,37 +3467,57 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const targeted = new Set<number>();
     if (preview) {
       for (const field of ordinary) {
-        if (Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius) {
+        if (Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= getDronePickupRadius(this.state.tuning)) {
           targeted.add(field.id);
         }
       }
     }
 
-    this.drawFieldRibbon(ordinary.filter((field) => !targeted.has(field.id)), 0x6cf5dd, false);
-    this.drawFieldRibbon(ordinary.filter((field) => targeted.has(field.id)), 0xd8a24a, false);
-    this.drawFieldRibbon(reserved, 0xffa06c, true);
+    // ONE ROAD, ONE COLOUR. This used to draw three ribbons in three colours --
+    // cyan ordinary, sand for what the drone is looking at, orange for what it
+    // has claimed -- so the drone's attention repainted the road itself and the
+    // sandy tiles read as a different kind of track. Track is track; what the
+    // drone is doing to it is a state ON it, drawn as a mark over the top.
+    this.drawFieldRibbon([...ordinary, ...reserved], 0x6cf5dd);
+    this.drawDroneAttentionMarks(ordinary.filter((field) => targeted.has(field.id)), reserved);
     this.drawFieldBirthMarkers(ordinary);
   }
 
-  // Track is drawn as the tiles it is: one flat-top hex per occupied cell, at
-  // the lattice's own size. The old ribbon walked prevId chains and filled
-  // ellipses of the patch's INFLUENCE radius, which is why the road looked like
-  // overlapping blobs -- it was drawing the reach, not the piece. Corners are
-  // projected individually so a tile sits on the ground plane rather than being
-  // a flat polygon pasted over it.
+  // The road, drawn as the track sections it is.
+  //
+  // A section is a hex with its FLATS FACING ALONG THE PATH, rotated to the
+  // heading the machine was on when it laid it. Sections are laid one
+  // across-flats apart, so consecutive sections abut on their leading and
+  // trailing flats on a straight run and fan slightly through a curve --
+  // exactly like real track.
+  //
+  // That makes the boundary test free. The leading and trailing flats (edges 0
+  // and 3 once the hex is rotated so edge 0 faces the heading) are the ones a
+  // section shares with the sections before and after it, so they are never
+  // stroked; the four side edges always are. No adjacency query, no cell
+  // lookup, and the result is one continuous silhouette down the run rather
+  // than a honeycomb of doubled interior lines.
+  //
+  // Fill leads and the stroke stays quiet. It used to be the other way round --
+  // stroke alpha up to 0.66 over fill up to 0.46 -- so the strongest lines in
+  // the road were the ones that should not have been drawn at all.
   private drawFieldRibbon(
-    fields: Array<{ id: number; x: number; y: number; radius: number; value: number; age: number }>,
-    color: number,
-    reserved: boolean
+    fields: Array<{ id: number; x: number; y: number; radius: number; heading: number; age: number }>,
+    color: number
   ): void {
     const size = this.state.tuning.tileSize;
     const calm = this.visualCalm();
 
     for (const field of fields) {
       const alpha = this.fieldAlpha(field);
+      // Rotate so edge 0's outward normal points along the heading. Edge i runs
+      // between corner i and corner i+1 and its normal sits at 30 degrees off
+      // the corner angle, so this offset puts the leading flat square across
+      // the path.
+      const rotation = field.heading - Math.PI / 6;
       const corners: Array<{ x: number; y: number }> = [];
       for (let corner = 0; corner < 6; corner += 1) {
-        const angle = (Math.PI / 3) * corner;
+        const angle = (Math.PI / 3) * corner + rotation;
         corners.push(
           this.project({
             x: field.x + size * Math.cos(angle),
@@ -3526,162 +3526,41 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         );
       }
 
-      this.graphics.fillStyle(color, reserved ? alpha * 0.4 : alpha * (0.26 + 0.2 * calm));
+      this.graphics.fillStyle(color, alpha * (0.5 + 0.16 * calm));
       this.graphics.fillPoints(corners, true);
-      this.graphics.lineStyle(reserved ? 3 : 1.5, color, reserved ? alpha * 0.95 : alpha * (0.4 + 0.26 * calm));
-      this.graphics.strokePoints(corners, true);
-    }
-  }
 
-  private fieldSections<T extends Vec2 & { id: number; prevId?: number }>(fields: T[]): T[][] {
-    const byId = new Map<number, T>();
-    for (const field of fields) byId.set(field.id, field);
-
-    // Heads are the patches nothing in this set is chained to.
-    const linked = new Set<number>();
-    for (const field of fields) {
-      if (field.prevId !== undefined && byId.has(field.prevId)) linked.add(field.prevId);
-    }
-
-    const nextOf = new Map<number, T>();
-    for (const field of fields) {
-      if (field.prevId !== undefined && byId.has(field.prevId)) nextOf.set(field.prevId, field);
-    }
-
-    const sections: T[][] = [];
-    const walked = new Set<number>();
-    const walk = (head: T): void => {
-      const section: T[] = [];
-      let current: T | undefined = head;
-      while (current && !walked.has(current.id)) {
-        walked.add(current.id);
-        section.push(current);
-        current = nextOf.get(current.id);
+      // Width scales with distance: a constant 1.5px turned far road into wire
+      // while near road stayed a filled band, which read as two kinds of road.
+      const width = Math.max(0.6, 1.6 * this.projectedScale(field));
+      this.graphics.lineStyle(width, color, alpha * (0.34 + 0.2 * calm));
+      for (const edge of [1, 2, 4, 5]) {
+        const from = corners[edge];
+        const to = corners[(edge + 1) % 6];
+        this.graphics.lineBetween(from.x, from.y, to.x, to.y);
       }
-      if (section.length > 0) sections.push(section);
-    };
-
-    for (const field of fields) {
-      if (walked.has(field.id)) continue;
-      const isHead = field.prevId === undefined || !byId.has(field.prevId);
-      if (isHead) walk(field);
     }
-    // Anything left is part of a chain that closes on itself; start it anywhere.
-    for (const field of fields) {
-      if (!walked.has(field.id)) walk(field);
-    }
-    void linked;
-    return sections;
   }
 
-  private drawFieldSegment(
-    from: { x: number; y: number; radius: number; value: number; age: number },
-    to: { x: number; y: number; radius: number; value: number; age: number },
-    color: number,
-    reserved: boolean
+  private drawDroneAttentionMarks(
+    targeted: Array<{ x: number; y: number; age: number }>,
+    reserved: Array<{ x: number; y: number; age: number }>
   ): void {
-    const fromScreen = this.project(from);
-    const toScreen = this.project(to);
-    const dx = toScreen.x - fromScreen.x;
-    const dy = toScreen.y - fromScreen.y;
-    const length = Math.hypot(dx, dy);
-    if (length <= 0.01) return;
-
-    const normal = { x: -dy / length, y: dx / length };
-    const fromWidth = this.fieldRoadWidth(from);
-    const toWidth = this.fieldRoadWidth(to);
-    const points = [
-      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
-      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
-      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
-      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
-    ];
-    const alpha = Math.min(this.fieldAlpha(from), this.fieldAlpha(to));
-    const ordinaryAlpha = alpha * (0.34 + 0.24 * this.visualCalm());
-
-    const shadow = [
-      { x: fromScreen.x + normal.x * (fromWidth + 4), y: fromScreen.y + normal.y * (fromWidth + 4) },
-      { x: toScreen.x + normal.x * (toWidth + 4), y: toScreen.y + normal.y * (toWidth + 4) },
-      { x: toScreen.x - normal.x * (toWidth + 4), y: toScreen.y - normal.y * (toWidth + 4) },
-      { x: fromScreen.x - normal.x * (fromWidth + 4), y: fromScreen.y - normal.y * (fromWidth + 4) }
-    ];
-    this.graphics.fillStyle(0x14201f, alpha * 0.62);
-    this.graphics.fillPoints(shadow, true, true);
-    // The deck used to be filled with FIELD_DECK_COLOR unconditionally, so the
-    // `color` argument was thrown away for every road that is not reserved --
-    // which is nearly all of it. That is why the road read as a scuff in the
-    // regolith: 0x6d8f89 is very close to the ground it is drawn on. Tinting
-    // the deck toward the state colour is what makes the corridor rule visible
-    // at all, and it is the only reason this function takes a colour.
-    this.graphics.fillStyle(
-      reserved ? color : mixColor(FIELD_DECK_COLOR, color, 0.5),
-      reserved ? alpha * 0.5 : Math.min(0.94, ordinaryAlpha + 0.4)
-    );
-    this.graphics.fillPoints(points, true, true);
-    if (reserved) {
-      this.graphics.lineStyle(4, color, alpha * 0.88);
-      this.graphics.strokePoints(points, true, true);
-      const scanProgress = (this.time.now / 480) % 1;
-      const scan = {
-        x: Phaser.Math.Linear(fromScreen.x, toScreen.x, scanProgress),
-        y: Phaser.Math.Linear(fromScreen.y, toScreen.y, scanProgress)
-      };
-      this.graphics.fillStyle(0xffd2b7, alpha * 0.92);
-      this.graphics.fillCircle(scan.x, scan.y, 5);
-      this.graphics.lineStyle(1, 0xfff0df, alpha * 0.82);
-      this.graphics.strokeCircle(scan.x, scan.y, 10);
-    } else {
-      // The edge is where the two road states read most cheaply, so it carries
-      // the colour at full strength while the deck stays ambient.
-      this.graphics.lineStyle(3, color, Math.min(0.92, alpha * 0.95));
-      this.graphics.strokePoints(points, true, true);
+    const pulse = 0.5 + Math.sin(this.time.now / 260) * 0.5;
+    for (const field of targeted) {
+      const screen = this.project(field);
+      const width = this.fieldRoadWidth(field);
+      this.graphics.lineStyle(1.5, 0xd8a24a, 0.3 + pulse * 0.22);
+      this.graphics.strokeCircle(screen.x, screen.y, width * 0.72);
+    }
+    for (const field of reserved) {
+      const screen = this.project(field);
+      const width = this.fieldRoadWidth(field);
+      this.graphics.lineStyle(2.5, 0xffa06c, 0.72 + pulse * 0.2);
+      this.graphics.strokeCircle(screen.x, screen.y, width * 0.82);
     }
   }
 
-  private drawFieldJoint(
-    field: { x: number; y: number; radius: number; value: number; age: number },
-    reserved: boolean,
-    color: number
-  ): void {
-    if (reserved) return;
-    const center = this.project(field);
-    const width = this.fieldRoadWidth(field);
-    const yScale = this.shapeYScale();
-    const alpha = Math.min(0.94, this.fieldAlpha(field) * (0.24 + 0.18 * this.visualCalm()) + 0.4);
-    // Joints take the same tint as the segments they connect, or the ribbon
-    // reads as coloured plates strung on a grey thread.
-    this.graphics.fillStyle(mixColor(FIELD_DECK_COLOR, color, 0.5), alpha);
-    this.graphics.fillEllipse(center.x, center.y, width * 2, width * 2 * yScale);
-  }
-
-  private drawFieldCap(
-    field: { x: number; y: number; radius: number; value: number; age: number },
-    color: number,
-    reserved: boolean,
-    alpha: number
-  ): void {
-    const center = this.project(field);
-    const width = this.fieldRoadWidth(field);
-    const yScale = this.shapeYScale();
-    const ordinaryAlpha = alpha * (0.24 + 0.18 * this.visualCalm());
-    this.graphics.fillStyle(color, reserved ? alpha * 0.34 : ordinaryAlpha);
-    this.graphics.fillEllipse(center.x, center.y, width * 2.08, width * 1.2 * yScale);
-    this.graphics.lineStyle(reserved ? 4 : 2, color, reserved ? alpha * 0.9 : alpha * (0.34 + 0.24 * this.visualCalm()));
-    this.graphics.strokeEllipse(center.x, center.y, width * 2.08, width * 1.2 * yScale);
-  }
-
-  private drawFieldCenterLine<T extends Vec2>(section: T[], color: number, reserved: boolean): void {
-    if (section.length < 2) return;
-
-    this.graphics.lineStyle(reserved ? 3 : 2, color, reserved ? 0.86 : 0.38 + 0.22 * this.visualCalm());
-    for (let index = 0; index < section.length - 1; index += 1) {
-      const from = this.project(section[index]);
-      const to = this.project(section[index + 1]);
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
-    }
-  }
-
-  private drawFieldBirthMarkers(fields: Array<{ x: number; y: number; radius: number; value: number; age: number }>): void {
+  private drawFieldBirthMarkers(fields: Array<{ x: number; y: number; radius: number; age: number }>): void {
     for (const field of fields) {
       const readyAge = this.state.tuning.preparedFieldMinAgeSeconds;
       if (field.age > readyAge) continue;
@@ -3709,7 +3588,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     const targetScreen = this.project(preview.target);
     const previewFields = this.state.fields.filter((field) => {
-      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius;
+      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= getDronePickupRadius(this.state.tuning);
     });
     const pulse = 0.5 + Math.sin(this.time.now / 260) * 0.5;
     const radius = this.droneReservationRadius(targetScreen, previewFields);
@@ -3796,7 +3675,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.drawStaticText('drone-target-detail', 0, 0, '', 1, '#ffffff');
   }
 
-  private droneReservationRadius(targetScreen: Vec2, reservedFields: Array<{ x: number; y: number; radius: number; value: number }>): number {
+  private droneReservationRadius(targetScreen: Vec2, reservedFields: Array<{ x: number; y: number; radius: number }>): number {
     let radius = 34;
     for (const field of reservedFields) {
       const fieldScreen = this.project(field);
@@ -3805,18 +3684,36 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return clamp(radius, 34, 78);
   }
 
-  private fieldRoadWidth(field: { x: number; y: number; radius: number; value: number }): number {
-    return field.radius * this.projectedScale(field) * clamp(0.52 + field.value * 0.12, 0.48, 0.7);
+  // Half the width of a piece of track, in screen units.
+  //
+  // Keyed to the LATTICE, not to fieldRadius. It used to return radius * 0.6 --
+  // 26.4 from an influence radius of 44 -- and the terrain layers then widened
+  // that by 1.42, painting 75-unit blobs on a 27.7-unit lattice. That is road
+  // overlap surviving in the renderer long after the simulation stopped
+  // overlapping: the tiles were one per cell, and three of the four draw paths
+  // were still drawing the reach instead of the piece.
+  //
+  // The inradius (across-flats / 2) is the honest half-width: tiles drawn at it
+  // touch their neighbours and never stack.
+  private fieldRoadWidth(field: { x: number; y: number }): number {
+    return this.state.tuning.tileSize * 0.866 * this.projectedScale(field);
   }
 
-  private fieldAlpha(field: { value: number; age: number }): number {
-    const maturityAlpha =
-      field.age < this.state.tuning.preparedFieldMinAgeSeconds
-        ? clamp(0.44 + (field.age / this.state.tuning.preparedFieldMinAgeSeconds) * 0.36, 0.44, 0.8)
-        : 1;
-    const ageAlpha = clamp(1 - field.age / 140, 0.44, 0.92);
-    const valueAlpha = clamp(field.value / 0.85, 0.42, 1);
-    return maturityAlpha * ageAlpha * valueAlpha;
+  // Road is road, so opacity no longer grades it. It used to divide a tile's
+  // value by 0.85 -- the value of AUTHORED road -- which meant every metre you
+  // laid yourself rendered at the 0.42 floor while the map's own road rendered
+  // solid. That is where "some road is transparent and some is a permanent main
+  // road" came from, and there was never a second kind of road behind it.
+  //
+  // What survives is the one distinction that is real and temporary: track that
+  // has not set yet is faint, and reads as solid the moment it can carry you.
+  // Road is road, and opacity says nothing about it. Age used to fade a tile
+  // from 0.55 to 1.0 over its first 1.25s, which -- stacked with the birth ring
+  // and the terrain bed that appeared at the same threshold -- put every tile
+  // through three visual recipes before it settled. The birth ring alone now
+  // says "still setting"; everything else is one road at one opacity.
+  private fieldAlpha(_field: { age: number }): number {
+    return 1;
   }
 
   private drawPointerTarget(): void {
@@ -4614,24 +4511,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private getSpeedStateDisplay(): { label: string; detail: string; color: number; fill: number; text: string; subtext: string } {
-    // Rail gets its own chip, and the detail line is the runway rather than a
-    // mood word. Before committing to a run home the only question is how much
-    // connected track is ahead, and this is where it is answered.
-    if (this.state.rail) {
-      return {
-        label: 'Rail',
-        detail: this.getRailStatusLine(),
-        color: 0xb6ff6c,
-        fill: 0x1e3a12,
-        text: '#f4fff0',
-        subtext: '#d3ffb2'
-      };
-    }
 
     if (this.state.speedState === 'prepared') {
+      // The road ahead, said out loud. The whole point of speed ramping with
+      // connected road is that the player can size up the run home BEFORE
+      // committing to it -- a promise you cannot read is not a promise.
+      const ahead = Math.round(getRoadAhead(this.state));
       return {
         label: 'Sprint',
-        detail: 'field grip',
+        detail: ahead > 0 ? `${ahead}m of road ahead` : 'field grip',
         color: 0x78f7df,
         fill: 0x123a37,
         text: '#effffb',
@@ -4789,9 +4677,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       const screen = this.project(field);
       const distanceFromRover = Math.hypot(field.x - this.state.rover.x, field.y - this.state.rover.y);
       const oldEnough = field.age >= this.state.tuning.reclaimMinFieldAgeSeconds;
-      const valuableEnough = field.value >= this.state.tuning.reclaimMinFieldValue;
       const farEnough = this.state.tuning.allowCloseReclaim || distanceFromRover >= this.state.tuning.reclaimMinDistanceFromRover;
-      const eligible = !field.reservedByDrone && oldEnough && valuableEnough && farEnough;
+      const eligible = !field.reservedByDrone && oldEnough && farEnough;
       const radius = Math.max(7, this.fieldRoadWidth(field) * 0.7);
 
       if (this.droneRailLab.overlayReclaimEligibility) {
@@ -4814,8 +4701,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       }
 
       if (this.droneRailLab.overlayFieldValue) {
-        this.graphics.fillStyle(0xffd35a, clamp(field.value / Math.max(0.1, this.state.tuning.startingFieldValue), 0.12, 0.72));
-        this.graphics.fillCircle(screen.x, screen.y, clamp(3 + field.value * 8, 3, 15));
+        // Was a value readout. Tiles are uniform now, so what is worth seeing
+        // is how far a tile is from having set enough to carry you.
+        const setting = clamp(field.age / this.state.tuning.preparedFieldMinAgeSeconds, 0, 1);
+        this.graphics.fillStyle(0xffd35a, 0.12 + setting * 0.6);
+        this.graphics.fillCircle(screen.x, screen.y, 4 + setting * 6);
       }
 
       if (this.droneRailLab.overlaySelectedDroneTarget && bestId === field.id) {
@@ -4848,14 +4738,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.drawStaticText('drone-rail-prepared-coverage', 0, 0, '', 1, '#ffffff');
     }
 
-    if (this.droneRailLab.overlayPreparedMagnetInfluence) {
-      for (const field of this.state.fields) {
-        if (field.age < this.state.tuning.preparedFieldMinAgeSeconds || field.value < this.state.tuning.preparedFieldMinValue) continue;
-        const screen = this.project(field);
-        this.graphics.lineStyle(1, 0x78f7df, 0.24);
-        this.graphics.strokeCircle(screen.x, screen.y, field.radius * this.projectedScale(field) * this.state.tuning.preparedMagnetInfluenceMultiplier);
-      }
-    }
 
     if (this.droneRailLab.overlayFieldEmissionPoints || this.droneRailLab.overlayCrawlEmissionPoints) {
       const offset = this.state.speedState === 'crawl' ? 6 : 14;
@@ -4987,9 +4869,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         if (index % 3 !== 0 && field.age < this.state.tuning.preparedFieldMinAgeSeconds * 2) return;
         const screen = this.project(field);
         const alpha = clamp(field.age / 120, 0.22, 0.9);
-        const color = field.value > 0.75 ? 0xffd35a : field.age > 75 ? 0x8dffea : 0x6f8094;
+        const color = field.age > 75 ? 0x8dffea : 0x6f8094;
         this.graphics.lineStyle(1, color, alpha);
-        this.graphics.strokeCircle(screen.x, screen.y, 7 + field.value * 8);
+        this.graphics.strokeCircle(screen.x, screen.y, 9);
       });
     }
 
@@ -5034,12 +4916,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return this.state.speedState === 'crawl' || this.state.nanobots / this.state.maxNanobots < this.state.tuning.droneUrgencyRatio;
   }
 
-  // What the player needs before committing to a run home: how much connected
-  // track is under and ahead of them.
-  private getRailStatusLine(): string {
-    if (!this.state.rail) return 'no rail';
-    return `${Math.round(this.state.rail.runwayAhead)}m of track`;
-  }
 
   private getDroneStatusLine(): string {
     if (this.state.drone.status === 'ready') {
@@ -5136,8 +5012,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       layout.width / 2,
       y + height + 24,
       this.isShiftModeEnabled()
-        ? `${this.survivedTheNight} lengths of rail survive the night`
-        : '',
+        ? `${this.survivedTheNight} lengths of rail survive the night  ·  run ${this.recordingStatus}`
+        : `run ${this.recordingStatus}`,
       layout.mode === 'mobilePortrait' ? 13 : 15,
       '#9fb3c8',
       0.5
@@ -5318,7 +5194,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         craterCount: TERRAIN_CRATER_COUNT,
         fissureCount: TERRAIN_FISSURE_COUNT,
         fertileBedCount: this.state.fertileZones.length,
-        preparedFieldBedCount: this.getPreparedFieldTerrainSectionCount(),
         ridgeCount: this.state.arena.ridges.length
       },
       oreVeins: this.state.fertileZones
@@ -5340,14 +5215,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     };
   }
 
-  private getPreparedFieldTerrainSectionCount(): number {
-    const preparedFields = [...this.state.fields]
-      .filter((field) => {
-        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds && field.value >= this.state.tuning.preparedFieldMinValue;
-      })
-      .sort((a, b) => a.id - b.id);
-    return this.fieldSections(preparedFields).length;
-  }
 
   private getFertileVeinScreenBounds(zone: FertileZone): ContinuousUiRect {
     const polygon = this.fertileVeinScreenPolygon(zone, zone.vein?.width ?? zone.radius);
@@ -5391,7 +5258,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private getDronePreviewTargetSnapshot(preview: ReclaimPreview): ContinuousUiRect {
     const screen = this.project(preview.target);
     const previewFields = this.state.fields.filter((field) => {
-      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius;
+      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= getDronePickupRadius(this.state.tuning);
     });
     const radius = this.droneReservationRadius(screen, previewFields) + 18;
     return {
