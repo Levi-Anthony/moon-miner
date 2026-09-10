@@ -12,6 +12,8 @@ import {
   type FieldPatch,
   getReclaimPreview,
   isRoadSpendable,
+  buildRoadIndex,
+  fieldNeighbours,
   isRoverAtExtraction,
   launchReclaimDrone,
   resolveContinuousTuning,
@@ -911,6 +913,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private carriedDepletion: Record<string, number> = {};
   private saveDiagnostic: 'loaded' | 'absent' | 'empty' | 'unreadable' | 'off' = 'off';
   private survivedTheNight = 0;
+  // What happened to the last run's recording. It used to be swallowed, which
+  // is how a shipped, working recorder stayed mute for six passes of tuning:
+  // the page called claude.use('db'), the artifact had never been published
+  // WITH the db capability, use() resolved null, and the guard returned in
+  // silence. Nothing was broken and nothing said so. An instrument that cannot
+  // report its own failure is not an instrument.
+  private recordingStatus: string = 'pending';
 
   // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
   // caution about a documented deferral, and the result was that the next day
@@ -934,15 +943,25 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // instead of from how the game is actually played. This closes that.
   private async recordRunTrace(): Promise<void> {
     const claude = (window as unknown as { claude?: { use?: (name: string) => Promise<unknown> } }).claude;
-    if (!claude?.use) return;
+    if (!claude?.use) {
+      this.recordingStatus = 'no runtime';
+      return;
+    }
 
     try {
       const db = (await claude.use('db')) as
         | { doc: (path: string) => { set: (value: Record<string, unknown>) => Promise<unknown> } }
         | null;
-      if (!db) return;
+      // Null is the honest answer to three different questions -- not served,
+      // not granted, failed to load -- and the runtime refuses to distinguish
+      // them on purpose. What matters here is that it is now SAID.
+      if (!db) {
+        this.recordingStatus = 'no store';
+        return;
+      }
 
       const summary = getContinuousLoopSummary(this.loopTrace);
+      const road = this.measureRoadShape();
       const id = `${Date.now()}`;
       await db.doc(`runs/${id}`).set({
         recordedAt: new Date().toISOString(),
@@ -960,6 +979,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         solarWindow: this.state.solarWindowSeconds,
         elapsed: Number(this.state.elapsedSeconds.toFixed(2)),
         reachedExtraction: isRoverAtExtraction(this.state),
+        // The shape of the road you actually left behind. This is the half of
+        // the game I could never see: a scripted agent and a person break the
+        // road in different places, so components measured on self-play is a
+        // fact about the script, not about the design.
+        ...road,
         // The four beats the design says the run has to have.
         milestones: summary.milestones.map((milestone) => ({
           id: milestone.id,
@@ -988,10 +1012,42 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
           y: Math.round(event.y)
         }))
       });
-    } catch {
-      // No store in this view, or the write was refused. A run that cannot be
-      // recorded still has to be playable.
+      this.recordingStatus = 'recorded';
+    } catch (error) {
+      // A run that cannot be recorded still has to be playable -- but it says
+      // so. Branching on the code rather than the message, per the db contract.
+      const code = (error as { code?: string } | undefined)?.code;
+      this.recordingStatus = code ? `refused: ${code}` : 'refused';
     }
+  }
+
+  // The road you left behind, measured once at the end of the run rather than
+  // per tick. Components is the number the path-laid rewrite moved from 12 to 1
+  // on a scripted drive; loose ends is what the drone is allowed to eat, and so
+  // what decides whether a lift can cut your way home.
+  private measureRoadShape(): Record<string, number> {
+    const index = buildRoadIndex(this.state.fields, this.state.tuning);
+    const seen = new Set<number>();
+    let components = 0;
+    let looseEnds = 0;
+
+    for (const field of this.state.fields) {
+      if (fieldNeighbours(field, index, this.state.tuning).length <= 1) looseEnds += 1;
+      if (seen.has(field.id)) continue;
+      components += 1;
+      const stack = [field];
+      seen.add(field.id);
+      while (stack.length) {
+        const current = stack.pop()!;
+        for (const neighbour of fieldNeighbours(current, index, this.state.tuning)) {
+          if (seen.has(neighbour.id)) continue;
+          seen.add(neighbour.id);
+          stack.push(neighbour);
+        }
+      }
+    }
+
+    return { sections: this.state.fields.length, roadComponents: components, looseEnds };
   }
 
   private loadCarriedRoad(): FieldPatch[] {
@@ -4952,8 +5008,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       layout.width / 2,
       y + height + 24,
       this.isShiftModeEnabled()
-        ? `${this.survivedTheNight} lengths of rail survive the night`
-        : '',
+        ? `${this.survivedTheNight} lengths of rail survive the night  ·  run ${this.recordingStatus}`
+        : `run ${this.recordingStatus}`,
       layout.mode === 'mobilePortrait' ? 13 : 15,
       '#9fb3c8',
       0.5
