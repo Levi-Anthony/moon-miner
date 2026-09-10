@@ -754,6 +754,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
     this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => this.handlePointerUp(pointer));
     this.input.on('pointerupoutside', (pointer: Phaser.Input.Pointer) => this.handlePointerUp(pointer));
+    // Phaser tracks a single touch by default, so on portrait mobile the thumb
+    // holding the drive pad owned the only pointer and a second finger tapping
+    // Launch produced no event -- you could not launch the drone while driving.
+    // A second pointer lets the Launch button register a simultaneous touch.
+    this.input.addPointer(1);
 
     this.exposeDebugHook();
     this.createTuningPanel();
