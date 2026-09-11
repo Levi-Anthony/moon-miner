@@ -1,49 +1,29 @@
 import Phaser from 'phaser';
 
 // A deliberately tiny sandbox for one question only: does driving + laying a
-// road + the slide feel good? Nothing else lives here -- no drone, no shifts,
-// no quota, no nanobots, no tuning panel.
+// road + the slide feel good? No drone, shifts, quota, nanobots, or main-game
+// machinery -- just the core, with live sliders so the feel can be locked
+// before it is baked into Moon Miner.
 //
-// The road is the owner's idea, not a grid of tiles: lay a lane about 2.5 car
-// widths wide, so ordinary driving sits in a free middle band and is NOT
-// affected by the road at all (this is what kills the wobble). The lane only
-// constrains you near its edges -- you have to steer at a boundary to leave it.
-// The lane is drawn as one continuous ribbon (a thick stroked path), so it
-// reads as a road with no seams, no transparency stack, no tile-fitting.
-//
-// Laying vs sliding: the first pass over raw ground is laying (slower). Driving
-// back onto road you already laid is the slide (faster). That is the whole
-// reward loop, in isolation.
+// The road is the owner's idea, not a grid of tiles: a lane ~2.5 car widths
+// wide, drawn as one continuous ribbon. Once you are on laid road it CARRIES
+// you -- a pure-pursuit follow steers along the lane so hands-off you slide
+// down it, and it eases off the gas in sharp corners so it can actually take
+// them. Leaving takes a deliberate turn (the follow is capped below your steer).
 
 const CAR_LENGTH = 30;
 const CAR_WIDTH = 18;
-
-// The lane, in car widths. This is the number the owner asked for -- wide
-// enough to decouple the road from the driving line.
-const LANE_CAR_WIDTHS = 2.5;
-const LANE_WIDTH = CAR_WIDTH * LANE_CAR_WIDTHS;
-const LANE_HALF = LANE_WIDTH / 2;
-
-// Fraction of the half-width that is completely free. Inside this the road does
-// nothing to your heading; only between here and the edge does it push back.
-const FREE_BAND_FRAC = 0.55;
-
 const GROUND_SPEED = 130;
-const ROAD_SPEED = 210; // the slide
-const TURN_RATE = 2.7; // rad/s at full lock
-// How hard the road steers you along itself once you are on it. Capped below
-// TURN_RATE so a deliberate turn always wins -- the road carries you, it never
-// traps you. Passive, this is enough to just slide down the road hands-off.
-const FOLLOW_STEER = 1.9;
-// Pure-pursuit look-ahead: aim at a point this far along the road ahead.
-// Larger is gentler and smoother (no hunting); tuned for the wide lane.
-const FOLLOW_LOOKAHEAD = 64;
+const TURN_RATE = 2.7; // rad/s at full manual lock
+const FREE_BAND_FRAC = 0.55; // cosmetic: width of the brighter centre stripe
+const POINT_SPACING = 7; // sample a road point every this-many units travelled
 
-// Sample a new road point every this-many world units of travel.
-const POINT_SPACING = 7;
-// Ignore this much of the freshly laid tail when deciding "am I on old road", so
-// the lane you are currently laying under yourself does not count as slide.
-const RECENT_SKIP = LANE_WIDTH * 1.6;
+// Adjustable defaults (all live-tunable from the on-screen panel).
+const DEFAULT_LANE_CAR_WIDTHS = 2.5;
+const DEFAULT_ROAD_SPEED = 210; // the slide
+const DEFAULT_FOLLOW_STEER = 2.5; // how hard the road steers you along itself
+const DEFAULT_LOOKAHEAD = 52; // pure-pursuit aim distance; smaller = snappier
+const DEFAULT_CORNER_EASE = 0.45; // how much it slows in the sharpest corners
 
 interface Vec2 {
   x: number;
@@ -67,12 +47,25 @@ export class SandboxScene extends Phaser.Scene {
   private distanceSinceLastPoint = 0;
   private onRoad = false;
 
+  // Live-tunable feel.
+  private laneWidth = CAR_WIDTH * DEFAULT_LANE_CAR_WIDTHS;
+  private roadSpeed = DEFAULT_ROAD_SPEED;
+  private followSteer = DEFAULT_FOLLOW_STEER;
+  private lookahead = DEFAULT_LOOKAHEAD;
+  private cornerEase = DEFAULT_CORNER_EASE;
+
   private keys?: Record<string, Phaser.Input.Keyboard.Key>;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
-  private touch?: { throttle: boolean; steer: number };
+  private touch?: { steer: number };
+  private panel?: HTMLElement;
+  private panelToggle?: HTMLButtonElement;
 
   constructor() {
     super('sandbox');
+  }
+
+  private get laneHalf(): number {
+    return this.laneWidth / 2;
   }
 
   create(): void {
@@ -96,13 +89,19 @@ export class SandboxScene extends Phaser.Scene {
     });
     this.input.on('pointerup', () => (this.touch = undefined));
     this.input.on('pointerupoutside', () => (this.touch = undefined));
+
+    this.buildControls();
   }
 
   private updateTouch(pointer: Phaser.Input.Pointer): void {
-    // Touch anywhere to drive; horizontal position relative to screen centre
-    // steers. Simple on purpose.
-    const steer = Phaser.Math.Clamp((pointer.x - this.scale.gameSize.width / 2) / (this.scale.gameSize.width / 3), -1, 1);
-    this.touch = { throttle: true, steer };
+    // Touch anywhere on the playfield to drive; horizontal position relative to
+    // screen centre steers.
+    const steer = Phaser.Math.Clamp(
+      (pointer.x - this.scale.gameSize.width / 2) / (this.scale.gameSize.width / 3),
+      -1,
+      1
+    );
+    this.touch = { steer };
   }
 
   update(_time: number, deltaMs: number): void {
@@ -110,36 +109,40 @@ export class SandboxScene extends Phaser.Scene {
 
     if (this.keys?.R?.isDown) this.resetPath();
 
-    // Smooth the wheel so a digital key does not snap the heading.
     const targetSteer = this.touch ? this.touch.steer : this.keyboardSteer();
     this.steerInput += Phaser.Math.Clamp(targetSteer - this.steerInput, -6 * dt, 6 * dt);
 
-    const throttle = this.touch?.throttle || this.keys?.W?.isDown || this.cursors?.up?.isDown ? 1 : 0;
+    const throttle = this.touch || this.keys?.W?.isDown || this.cursors?.up?.isDown ? 1 : 0;
 
     const road = this.sampleRoad();
     this.onRoad = road.onRoad;
 
     const playerTurn = this.steerInput * TURN_RATE;
     let followTurn = 0;
-    if (road.onRoad) {
-      // Steer toward a point further along the road (pure pursuit): this both
-      // eases you back toward the middle and follows the road's curve, so
-      // hands-off you simply slide down it. Proportional, so it settles instead
-      // of hunting. Player steering adds on top and, being stronger, wins.
-      const err = angleDelta(road.desiredHeading, this.rover.heading);
-      followTurn = Phaser.Math.Clamp(err / 0.6, -1, 1) * FOLLOW_STEER;
-    }
-    this.rover.heading += (playerTurn + followTurn) * dt;
+    let speed = road.onRoad ? this.roadSpeed : GROUND_SPEED;
 
-    const baseSpeed = road.onRoad ? ROAD_SPEED : GROUND_SPEED;
-    this.rover.speed = baseSpeed * throttle;
+    if (road.onRoad) {
+      // Pure pursuit: steer toward a point further along the road, which both
+      // re-centres and follows the curve. Proportional, so it settles rather
+      // than hunting. Player steering adds on top and, being stronger, wins.
+      const err = angleDelta(road.desiredHeading, this.rover.heading);
+      followTurn = Phaser.Math.Clamp(err / 0.5, -1, 1) * this.followSteer;
+      // Ease off the gas in sharp corners so a tight bend is actually takeable
+      // instead of flinging you off the outside.
+      const sharp = Math.min(Math.abs(err) / 0.9, 1);
+      speed *= 1 - this.cornerEase * sharp;
+    }
+
+    this.rover.heading += (playerTurn + followTurn) * dt;
+    this.rover.speed = speed * throttle;
 
     if (throttle > 0) {
-      const prev = { x: this.rover.x, y: this.rover.y };
+      const prevX = this.rover.x;
+      const prevY = this.rover.y;
       this.rover.x += Math.cos(this.rover.heading) * this.rover.speed * dt;
       this.rover.y += Math.sin(this.rover.heading) * this.rover.speed * dt;
       this.keepInBounds();
-      this.recordPath(Phaser.Math.Distance.Between(prev.x, prev.y, this.rover.x, this.rover.y));
+      this.recordPath(Phaser.Math.Distance.Between(prevX, prevY, this.rover.x, this.rover.y));
     }
 
     this.draw();
@@ -160,7 +163,6 @@ export class SandboxScene extends Phaser.Scene {
     if (clampedX !== this.rover.x || clampedY !== this.rover.y) {
       this.rover.x = clampedX;
       this.rover.y = clampedY;
-      // Turn back toward the middle so a boundary hit is a gentle correction.
       this.rover.heading = Math.atan2(h / 2 - this.rover.y, w / 2 - this.rover.x);
     }
   }
@@ -174,11 +176,11 @@ export class SandboxScene extends Phaser.Scene {
     }
   }
 
-  // Distance from the rover to the nearest laid road segment (ignoring the tail
-  // it is currently laying). Returns whether the rover is on road and, if it is
-  // near an edge, which way to nudge it back in.
   private sampleRoad(): { onRoad: boolean; desiredHeading: number } {
-    const skipPoints = Math.ceil(RECENT_SKIP / POINT_SPACING);
+    // Ignore the freshly laid tail so the lane being laid under the rover does
+    // not itself count as road to slide on.
+    const recentSkip = this.laneWidth * 1.6;
+    const skipPoints = Math.ceil(recentSkip / POINT_SPACING);
     const limit = this.path.length - skipPoints;
     if (limit < 2) return { onRoad: false, desiredHeading: this.rover.heading };
 
@@ -194,17 +196,14 @@ export class SandboxScene extends Phaser.Scene {
       }
     }
 
-    if (bestDist >= LANE_HALF) return { onRoad: false, desiredHeading: this.rover.heading };
+    if (bestDist >= this.laneHalf) return { onRoad: false, desiredHeading: this.rover.heading };
 
-    // Orient the road's tangent to the way we're driving, then aim a look-ahead
-    // point along it. The centre point plus the look-ahead means steering toward
-    // it both re-centres and follows the curve.
     let tangent = best.angle;
     if (Math.cos(tangent) * Math.cos(this.rover.heading) + Math.sin(tangent) * Math.sin(this.rover.heading) < 0) {
       tangent += Math.PI;
     }
-    const targetX = best.cx + Math.cos(tangent) * FOLLOW_LOOKAHEAD;
-    const targetY = best.cy + Math.sin(tangent) * FOLLOW_LOOKAHEAD;
+    const targetX = best.cx + Math.cos(tangent) * this.lookahead;
+    const targetY = best.cy + Math.sin(tangent) * this.lookahead;
     return { onRoad: true, desiredHeading: Math.atan2(targetY - this.rover.y, targetX - this.rover.x) };
   }
 
@@ -230,24 +229,21 @@ export class SandboxScene extends Phaser.Scene {
     const g = this.graphics;
     g.clear();
 
-    // Raw ground.
     g.fillStyle(0x0f1420, 1);
     g.fillRect(0, 0, this.scale.gameSize.width, this.scale.gameSize.height);
 
     if (this.path.length >= 2) {
-      // The lane as one continuous ribbon: an outer edge stroke and an inner
-      // fill, so it reads as a road with defined shoulders and no seams.
-      this.strokePolyline(0x2b3550, LANE_WIDTH + 4);
-      this.strokePolyline(0x50607f, LANE_WIDTH);
-      this.strokePolyline(0x6f83a6, LANE_WIDTH * FREE_BAND_FRAC * 2 * 0.5);
+      this.strokePolyline(0x2b3550, this.laneWidth + 4);
+      this.strokePolyline(0x50607f, this.laneWidth);
+      this.strokePolyline(0x6f83a6, this.laneWidth * FREE_BAND_FRAC);
     }
 
     this.drawRover();
     this.hud.setText(
       [
         this.onRoad ? 'ON ROAD — slide' : 'raw ground — laying',
-        `speed ${this.rover.speed.toFixed(0)}   lane ${LANE_CAR_WIDTHS.toFixed(1)} car-widths`,
-        'W/↑ drive · A/D or ←/→ steer · R reset · (touch: hold + drag)'
+        `speed ${this.rover.speed.toFixed(0)}`,
+        'W/↑ drive · A/D or ←/→ steer · R reset'
       ].join('\n')
     );
   }
@@ -284,5 +280,130 @@ export class SandboxScene extends Phaser.Scene {
     g.lineTo(tailRight.x, tailRight.y);
     g.closePath();
     g.fillPath();
+  }
+
+  // An on-screen, hide/show-able, touch-friendly panel of the feel knobs. Lives
+  // only in the sandbox; it is how the numbers get locked before the port.
+  private buildControls(): void {
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
+      position: 'fixed',
+      left: '50%',
+      bottom: '10px',
+      transform: 'translateX(-50%)',
+      zIndex: '50',
+      width: 'min(380px, 92vw)',
+      boxSizing: 'border-box',
+      padding: '12px 14px',
+      borderRadius: '14px',
+      border: '1px solid rgba(246,248,251,0.25)',
+      background: 'rgba(10,14,22,0.9)',
+      color: '#eef3f8',
+      font: '13px system-ui, sans-serif',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '10px'
+    } as CSSStyleDeclaration);
+
+    const header = document.createElement('div');
+    Object.assign(header.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
+    const title = document.createElement('strong');
+    title.textContent = 'Road feel';
+    const hide = document.createElement('button');
+    hide.textContent = 'Hide';
+    this.styleButton(hide);
+    hide.addEventListener('click', () => this.togglePanel(false));
+    header.append(title, hide);
+    panel.appendChild(header);
+
+    this.addSlider(panel, 'Follow strength', 1.0, TURN_RATE, 0.05, () => this.followSteer, (v) => (this.followSteer = v));
+    this.addSlider(panel, 'Look-ahead', 20, 120, 2, () => this.lookahead, (v) => (this.lookahead = v), 0);
+    this.addSlider(
+      panel,
+      'Lane (car widths)',
+      1.5,
+      4,
+      0.1,
+      () => this.laneWidth / CAR_WIDTH,
+      (v) => (this.laneWidth = v * CAR_WIDTH),
+      1
+    );
+    this.addSlider(panel, 'Slide speed', 150, 320, 5, () => this.roadSpeed, (v) => (this.roadSpeed = v), 0);
+    this.addSlider(panel, 'Corner brake', 0, 0.8, 0.05, () => this.cornerEase, (v) => (this.cornerEase = v));
+
+    document.body.appendChild(panel);
+    this.panel = panel;
+
+    const toggle = document.createElement('button');
+    toggle.textContent = '⚙ Road';
+    this.styleButton(toggle);
+    Object.assign(toggle.style, {
+      position: 'fixed',
+      left: '50%',
+      bottom: '10px',
+      transform: 'translateX(-50%)',
+      zIndex: '50',
+      display: 'none'
+    } as CSSStyleDeclaration);
+    toggle.addEventListener('click', () => this.togglePanel(true));
+    document.body.appendChild(toggle);
+    this.panelToggle = toggle;
+  }
+
+  private togglePanel(show: boolean): void {
+    if (this.panel) this.panel.style.display = show ? 'flex' : 'none';
+    if (this.panelToggle) this.panelToggle.style.display = show ? 'none' : 'block';
+  }
+
+  private styleButton(button: HTMLButtonElement): void {
+    button.type = 'button';
+    Object.assign(button.style, {
+      padding: '8px 14px',
+      borderRadius: '10px',
+      border: '1px solid rgba(246,248,251,0.35)',
+      background: 'rgba(28,36,54,0.95)',
+      color: '#eef3f8',
+      font: '13px system-ui, sans-serif',
+      cursor: 'pointer'
+    } as CSSStyleDeclaration);
+  }
+
+  private addSlider(
+    parent: HTMLElement,
+    label: string,
+    min: number,
+    max: number,
+    step: number,
+    get: () => number,
+    set: (value: number) => void,
+    decimals = 2
+  ): void {
+    const row = document.createElement('label');
+    Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '10px' });
+
+    const name = document.createElement('span');
+    name.textContent = label;
+    Object.assign(name.style, { flex: '0 0 42%' });
+
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = String(min);
+    range.max = String(max);
+    range.step = String(step);
+    range.value = String(get());
+    Object.assign(range.style, { flex: '1', height: '28px' });
+
+    const value = document.createElement('span');
+    value.textContent = get().toFixed(decimals);
+    Object.assign(value.style, { flex: '0 0 44px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' });
+
+    range.addEventListener('input', () => {
+      const v = Number(range.value);
+      set(v);
+      value.textContent = v.toFixed(decimals);
+    });
+
+    row.append(name, range, value);
+    parent.appendChild(row);
   }
 }
