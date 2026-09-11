@@ -245,8 +245,8 @@ interface TuningControlDefinition {
 }
 
 const TUNING_CONTROLS: TuningControlDefinition[] = [
-  { key: 'preparedSpeed', label: 'Normal speed', min: 60, max: 150, step: 1 },
-  { key: 'fabricatingSpeed', label: 'Raw speed', min: 45, max: 120, step: 1 },
+  { key: 'preparedSpeed', label: 'Normal speed', min: 40, max: 360, step: 1 },
+  { key: 'fabricatingSpeed', label: 'Raw speed', min: 20, max: 260, step: 1 },
   { key: 'crawlSpeed', label: 'Crawl speed', min: 8, max: 32, step: 1 },
   { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 1, max: 4.2, step: 0.1, precision: 1 },
   { key: 'droneSpeed', label: 'Drone speed', min: 260, max: 620, step: 10 },
@@ -296,11 +296,16 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
       { key: 'preparedFieldMinAgeSeconds', label: 'Prepared min age', min: 0.1, max: 4, step: 0.05, precision: 2 },
       { key: 'preparedCoverageThreshold', label: 'Coverage threshold', min: 0.02, max: 0.8, step: 0.01, precision: 2 },
       { key: 'preparedFieldMinValue', label: 'Prepared min value', min: 0, max: 0.5, step: 0.005, precision: 3 },
-      { key: 'preparedMagnetInfluenceMultiplier', label: 'Magnet influence', min: 0, max: 3.5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetPassiveTurnRate', label: 'Passive turn', min: 0, max: 5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetActiveTurnRate', label: 'Active turn', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCorrectionRange', label: 'Correction range', min: 0.1, max: 2, step: 0.05, precision: 2 }
+      { key: 'preparedMagnetInfluenceMultiplier', label: 'Lane reach', min: 0, max: 10, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 6, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetPassiveTurnRate', label: 'Carry (hands-off)', min: 0, max: 10, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetActiveTurnRate', label: 'Active turn', min: 0, max: 10, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetCorrectionRange', label: 'Correction range', min: 0.1, max: 6, step: 0.05, precision: 2 },
+      { key: 'gripFloor', label: 'Grip floor', min: 0, max: 1, step: 0.01, precision: 2 },
+      { key: 'gripActiveSteerFactor', label: 'Leave resistance', min: 0, max: 1, step: 0.01, precision: 2 },
+      { key: 'railCaptureDistance', label: 'Rail catch width', min: 10, max: 220, step: 2 },
+      { key: 'railSpeed', label: 'Slide top speed', min: 40, max: 400, step: 5 },
+      { key: 'railRunwayForFullSpeed', label: 'Runway for full slide', min: 20, max: 420, step: 5 }
     ]
   },
   {
@@ -310,8 +315,8 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
       { key: 'maxNanobots', label: 'Max stock', min: 8, max: 64, step: 1 },
       { key: 'crawlRecoveryPerSecond', label: 'Crawl recovery', min: 0, max: 0.5, step: 0.01, precision: 2 },
       { key: 'crawlSpeed', label: 'Crawl speed', min: 4, max: 44, step: 1 },
-      { key: 'fabricatingSpeed', label: 'Raw speed', min: 30, max: 140, step: 1 },
-      { key: 'preparedSpeed', label: 'Prepared speed', min: 40, max: 180, step: 1 },
+      { key: 'fabricatingSpeed', label: 'Raw speed', min: 20, max: 260, step: 1 },
+      { key: 'preparedSpeed', label: 'Prepared speed', min: 40, max: 360, step: 1 },
       { key: 'lowStockWarningRatio', label: 'Low-stock ratio', min: 0.02, max: 0.6, step: 0.01, precision: 2 },
       { key: 'droneUrgencyRatio', label: 'Drone urgency ratio', min: 0.02, max: 0.75, step: 0.01, precision: 2 }
     ]
