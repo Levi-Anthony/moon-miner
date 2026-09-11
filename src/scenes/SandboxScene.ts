@@ -25,6 +25,13 @@ const DEFAULT_FOLLOW_STEER = 2.5; // how hard the road steers you along itself
 const DEFAULT_LOOKAHEAD = 52; // pure-pursuit aim distance; smaller = snappier
 const DEFAULT_CORNER_EASE = 0.45; // how much it slows in the sharpest corners
 
+// M2 nanobots: laying road on raw ground spends stock; sliding on laid road
+// recovers it; empty, you can still drive but cannot lay new road.
+const DEFAULT_MAX_NANOBOTS = 100;
+const DEFAULT_START_NANOBOTS = 60;
+const DEFAULT_LAY_COST = 0.6; // stock per world-unit of road laid
+const DEFAULT_RECOVER_RATE = 16; // stock per second while sliding on road
+
 interface Vec2 {
   x: number;
   y: number;
@@ -53,6 +60,12 @@ export class SandboxScene extends Phaser.Scene {
   private followSteer = DEFAULT_FOLLOW_STEER;
   private lookahead = DEFAULT_LOOKAHEAD;
   private cornerEase = DEFAULT_CORNER_EASE;
+
+  private nanobots = DEFAULT_START_NANOBOTS;
+  private maxNanobots = DEFAULT_MAX_NANOBOTS;
+  private startNanobots = DEFAULT_START_NANOBOTS;
+  private layCost = DEFAULT_LAY_COST;
+  private recoverRate = DEFAULT_RECOVER_RATE;
 
   private keys?: Record<string, Phaser.Input.Keyboard.Key>;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -142,7 +155,20 @@ export class SandboxScene extends Phaser.Scene {
       this.rover.x += Math.cos(this.rover.heading) * this.rover.speed * dt;
       this.rover.y += Math.sin(this.rover.heading) * this.rover.speed * dt;
       this.keepInBounds();
-      this.recordPath(Phaser.Math.Distance.Between(prevX, prevY, this.rover.x, this.rover.y));
+      const moved = Phaser.Math.Distance.Between(prevX, prevY, this.rover.x, this.rover.y);
+
+      if (road.onRoad) {
+        // Sliding on laid road recovers stock.
+        this.nanobots = Math.min(this.maxNanobots, this.nanobots + this.recoverRate * dt);
+      } else {
+        // Raw ground: lay new road if we can pay for it. Out of stock you keep
+        // driving but leave no road behind.
+        const cost = this.layCost * moved;
+        if (this.nanobots >= cost) {
+          this.nanobots -= cost;
+          this.recordPath(moved);
+        }
+      }
     }
 
     this.draw();
@@ -223,6 +249,7 @@ export class SandboxScene extends Phaser.Scene {
   private resetPath(): void {
     this.path = [{ x: this.rover.x, y: this.rover.y }];
     this.distanceSinceLastPoint = 0;
+    this.nanobots = Math.min(this.startNanobots, this.maxNanobots);
   }
 
   private draw(): void {
@@ -239,10 +266,23 @@ export class SandboxScene extends Phaser.Scene {
     }
 
     this.drawRover();
+
+    // Nanobot stock bar.
+    const empty = this.nanobots < this.layCost;
+    const barX = 14;
+    const barY = 78;
+    const barW = 168;
+    const barH = 12;
+    g.fillStyle(0x263042, 1);
+    g.fillRoundedRect(barX, barY, barW, barH, 4);
+    g.fillStyle(empty ? 0xff6b6b : 0x6cf5dd, 1);
+    g.fillRoundedRect(barX, barY, Math.max(2, barW * (this.nanobots / this.maxNanobots)), barH, 4);
+
+    const state = this.onRoad ? 'ON ROAD — slide (recovering)' : empty ? 'raw ground — OUT of nanobots, no road laid' : 'raw ground — laying';
     this.hud.setText(
       [
-        this.onRoad ? 'ON ROAD — slide' : 'raw ground — laying',
-        `speed ${this.rover.speed.toFixed(0)}`,
+        state,
+        `nanobots ${this.nanobots.toFixed(0)}/${this.maxNanobots}   speed ${this.rover.speed.toFixed(0)}`,
         'W/↑ drive · A/D or ←/→ steer · R reset'
       ].join('\n')
     );
@@ -330,6 +370,10 @@ export class SandboxScene extends Phaser.Scene {
     );
     this.addSlider(panel, 'Slide speed', 150, 320, 5, () => this.roadSpeed, (v) => (this.roadSpeed = v), 0);
     this.addSlider(panel, 'Corner brake', 0, 0.8, 0.05, () => this.cornerEase, (v) => (this.cornerEase = v));
+    this.addSlider(panel, 'Max nanobots', 20, 400, 5, () => this.maxNanobots, (v) => (this.maxNanobots = v), 0);
+    this.addSlider(panel, 'Start nanobots', 0, 400, 5, () => this.startNanobots, (v) => (this.startNanobots = v), 0);
+    this.addSlider(panel, 'Lay cost', 0, 3, 0.05, () => this.layCost, (v) => (this.layCost = v));
+    this.addSlider(panel, 'Recover rate', 0, 60, 1, () => this.recoverRate, (v) => (this.recoverRate = v), 0);
 
     document.body.appendChild(panel);
     this.panel = panel;
