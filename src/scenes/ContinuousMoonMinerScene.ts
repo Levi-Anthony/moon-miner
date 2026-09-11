@@ -689,6 +689,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private escapeKey?: Phaser.Input.Keyboard.Key;
   private debugStateElement?: HTMLScriptElement;
   private tuningPanelElement?: HTMLElement;
+  private sessionReadoutElement?: HTMLDivElement;
   private cameraLabElement?: HTMLElement;
   private droneRailLabElement?: HTMLElement;
   private droneRailDiagnosticsElement?: HTMLElement;
@@ -881,9 +882,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private handleKeyboardEvent(event: KeyboardEvent): void {
-    if (!import.meta.env.DEV) return;
     if (event.repeat) return;
 
+    // The control panel toggle works in every build, so the deployed playtest
+    // site can open it from a keyboard; the rest of the keys stay dev-only.
     if (event.key === '`' || event.key === '~') {
       event.preventDefault();
       this.debugOverlayVisible = !this.debugOverlayVisible;
@@ -891,6 +893,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       return;
     }
 
+    if (!import.meta.env.DEV) return;
     if (this.isTypingInForm(event.target)) return;
 
     if (event.key.toLowerCase() === 'v') {
@@ -1064,8 +1067,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private shouldOpenDebugOverlay(): boolean {
-    if (!import.meta.env.DEV) return false;
-
     try {
       const params = new URLSearchParams(window.location.search);
       return params.get('debug') === '1';
@@ -1311,6 +1312,95 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.syncDroneRailLabPanel();
   }
 
+  // A full reset of the beginning state: wipe the carried road out of storage so
+  // the board stops inheriting yesterday's residue, drop back to shift 1, and
+  // regenerate a fresh map. This is the "start a new game / clear the board"
+  // control -- distinct from Reset Day, which restarts the current day keeping
+  // whatever road was inherited.
+  private startNewGame(): void {
+    try {
+      window.localStorage.removeItem(CARRIED_ROAD_STORAGE_KEY);
+    } catch {
+      // Storage can be unavailable; the new game simply starts from bare ground.
+    }
+    this.shiftNumber = 1;
+    this.carriedIn = 0;
+    this.carriedDepletion = {};
+    this.saveDiagnostic = 'off';
+    this.state = createContinuousWorld(`new-game-${Date.now()}`, this.state.tuning, this.state.arenaId, [], {});
+    this.cameraHeading = this.state.rover.heading;
+    this.tacticalCameraFocus = this.tacticalCameraTarget();
+    this.loopTrace = createContinuousLoopTrace(this.state);
+    this.pointerTarget = undefined;
+    this.mobileDrive = undefined;
+    this.selfPlay = undefined;
+    this.effects = [];
+    this.eventMessage = undefined;
+    this.previousDroneStatus = this.state.drone.status;
+    this.previousSpeedState = this.state.speedState;
+    this.previousPhase = this.state.phase;
+    this.previousOre = this.state.rover.ore;
+    this.showEventMessage('New game. Board wiped to bare ground.', 1400, this.time.now, 2);
+    this.syncTuningPanel();
+    this.syncCameraLabPanel();
+    this.syncDroneRailLabPanel();
+  }
+
+  // The recorder that writes to a Claude Artifact database is inert on a plain
+  // static host (no window.claude), so nothing about a run is saved server-side.
+  // This copies the finished run's own trace summary to the clipboard so it can
+  // be pasted somewhere it can actually be read.
+  private copyRunData(button: HTMLButtonElement): void {
+    const summary = getContinuousLoopSummary(this.loopTrace);
+    const payload = {
+      capturedAt: new Date().toISOString(),
+      shift: this.shiftNumber,
+      carriedIn: this.carriedIn,
+      arenaId: this.state.arenaId,
+      phase: this.state.phase,
+      ore: Number(this.state.rover.ore.toFixed(2)),
+      oreRequired: this.state.arena.extraction?.oreRequired ?? this.state.targetOre,
+      elapsedSeconds: Number(this.state.elapsedSeconds.toFixed(2)),
+      solarRemaining: Number(this.state.solarSeconds.toFixed(2)),
+      hitLoop: summary.hitLoop,
+      milestones: summary.milestones.map((milestone) => ({
+        id: milestone.id,
+        hit: milestone.hit,
+        atSeconds: milestone.atSeconds === undefined ? null : Number(milestone.atSeconds.toFixed(2))
+      })),
+      speedSeconds: summary.speedSeconds,
+      lowestNanobots: Number(summary.lowestNanobots.toFixed(2)),
+      tuning: this.state.tuning
+    };
+    const text = JSON.stringify(payload, null, 2);
+    const original = button.textContent ?? 'Copy Run Data';
+
+    if (!navigator.clipboard) {
+      console.info('Moon Miner run data:', text);
+      button.textContent = 'Logged to console';
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1200);
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        button.textContent = 'Copied';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 1200);
+      })
+      .catch(() => {
+        console.info('Moon Miner run data:', text);
+        button.textContent = 'Logged to console';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 1200);
+      });
+  }
+
   private setArena(arenaId: ContinuousArenaId): void {
     if (!CONTINUOUS_ARENAS[arenaId]) return;
 
@@ -1396,8 +1486,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private createTuningPanel(): void {
-    if (!import.meta.env.DEV) return;
-
+    // Built in every build now: the deployed playtest site needs the control
+    // panel (New Game, tuning, Copy Run Data). It stays hidden until ?debug=1,
+    // the ~ key, or the on-screen toggle opens it, so a plain player never sees
+    // it.
     const existing = document.getElementById('moon-miner-tuning-panel');
     const panel = existing ?? document.createElement('aside');
     panel.id = 'moon-miner-tuning-panel';
@@ -1406,8 +1498,45 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.tuningControls.clear();
 
     const title = document.createElement('h2');
-    title.textContent = 'Dynamics';
+    title.textContent = 'Control Panel';
     panel.appendChild(title);
+
+    // Session controls first, so the beginning-of-game buttons sit at the top of
+    // the panel where they are reachable on a phone without scrolling past every
+    // tuning slider.
+    const sessionReadout = document.createElement('div');
+    sessionReadout.className = 'moon-miner-tuning__diagnostics';
+    this.sessionReadoutElement = sessionReadout;
+    panel.appendChild(sessionReadout);
+
+    const session = document.createElement('div');
+    session.className = 'moon-miner-tuning__actions';
+
+    const newGameButton = document.createElement('button');
+    newGameButton.type = 'button';
+    newGameButton.textContent = 'New Game (wipe board)';
+    newGameButton.addEventListener('click', () => this.startNewGame());
+
+    const resetDayButton = document.createElement('button');
+    resetDayButton.type = 'button';
+    resetDayButton.textContent = 'Reset Day';
+    resetDayButton.addEventListener('click', () => this.resetRun());
+
+    const copyRunButton = document.createElement('button');
+    copyRunButton.type = 'button';
+    copyRunButton.textContent = 'Copy Run Data';
+    copyRunButton.addEventListener('click', () => this.copyRunData(copyRunButton));
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.textContent = 'Close';
+    closeButton.addEventListener('click', () => {
+      this.debugOverlayVisible = false;
+      this.syncDebugOverlayVisibility();
+    });
+
+    session.append(newGameButton, resetDayButton, copyRunButton, closeButton);
+    panel.appendChild(session);
 
     const arenaRow = document.createElement('label');
     arenaRow.className = 'moon-miner-tuning__row moon-miner-tuning__row--select';
@@ -1833,6 +1962,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private syncTuningPanel(): void {
+    if (this.sessionReadoutElement) {
+      const carry = this.carriedIn > 0 ? `${this.carriedIn} lengths carried in` : 'bare ground';
+      this.sessionReadoutElement.textContent = `Shift ${this.shiftNumber} · ${carry} · ${this.state.arenaId}`;
+    }
+
     if (this.arenaSelectElement) {
       this.arenaSelectElement.value = this.state.arenaId;
     }
