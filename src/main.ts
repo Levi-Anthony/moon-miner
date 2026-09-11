@@ -1,8 +1,12 @@
 import Phaser from 'phaser';
 import './styles.css';
 import { ContinuousMoonMinerScene } from './scenes/ContinuousMoonMinerScene';
+import { SandboxScene } from './scenes/SandboxScene';
 
 const params = new URLSearchParams(window.location.search);
+// A minimal drive + lay-road + slide sandbox, isolated from the main game so
+// the core feel can be tuned without the rest of the machinery. ?sandbox=1
+const useSandbox = params.get('sandbox') === '1';
 const forceMobile = params.get('mobile') === '1';
 const forceDesktop = params.get('desktop') === '1';
 const portraitTouch =
@@ -22,7 +26,7 @@ const config: Phaser.Types.Core.GameConfig = {
     width: gameSize.width,
     height: gameSize.height
   },
-  scene: [ContinuousMoonMinerScene]
+  scene: [useSandbox ? SandboxScene : ContinuousMoonMinerScene]
 };
 
 new Phaser.Game(config);
