@@ -31,9 +31,13 @@ const FREE_BAND_FRAC = 0.55;
 const GROUND_SPEED = 130;
 const ROAD_SPEED = 210; // the slide
 const TURN_RATE = 2.7; // rad/s at full lock
-// The edge push, capped well below TURN_RATE so a deliberate steer always wins:
-// the road holds you in, it never traps you.
-const BOUNDARY_STEER = 1.7;
+// How hard the road steers you along itself once you are on it. Capped below
+// TURN_RATE so a deliberate turn always wins -- the road carries you, it never
+// traps you. Passive, this is enough to just slide down the road hands-off.
+const FOLLOW_STEER = 1.9;
+// Pure-pursuit look-ahead: aim at a point this far along the road ahead.
+// Larger is gentler and smoother (no hunting); tuned for the wide lane.
+const FOLLOW_LOOKAHEAD = 64;
 
 // Sample a new road point every this-many world units of travel.
 const POINT_SPACING = 7;
@@ -44,6 +48,13 @@ const RECENT_SKIP = LANE_WIDTH * 1.6;
 interface Vec2 {
   x: number;
   y: number;
+}
+
+function angleDelta(target: number, current: number): number {
+  let d = target - current;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
 }
 
 export class SandboxScene extends Phaser.Scene {
@@ -109,8 +120,16 @@ export class SandboxScene extends Phaser.Scene {
     this.onRoad = road.onRoad;
 
     const playerTurn = this.steerInput * TURN_RATE;
-    const boundaryTurn = road.boundaryPush * BOUNDARY_STEER;
-    this.rover.heading += (playerTurn + boundaryTurn) * dt;
+    let followTurn = 0;
+    if (road.onRoad) {
+      // Steer toward a point further along the road (pure pursuit): this both
+      // eases you back toward the middle and follows the road's curve, so
+      // hands-off you simply slide down it. Proportional, so it settles instead
+      // of hunting. Player steering adds on top and, being stronger, wins.
+      const err = angleDelta(road.desiredHeading, this.rover.heading);
+      followTurn = Phaser.Math.Clamp(err / 0.6, -1, 1) * FOLLOW_STEER;
+    }
+    this.rover.heading += (playerTurn + followTurn) * dt;
 
     const baseSpeed = road.onRoad ? ROAD_SPEED : GROUND_SPEED;
     this.rover.speed = baseSpeed * throttle;
@@ -158,37 +177,38 @@ export class SandboxScene extends Phaser.Scene {
   // Distance from the rover to the nearest laid road segment (ignoring the tail
   // it is currently laying). Returns whether the rover is on road and, if it is
   // near an edge, which way to nudge it back in.
-  private sampleRoad(): { onRoad: boolean; boundaryPush: number } {
+  private sampleRoad(): { onRoad: boolean; desiredHeading: number } {
     const skipPoints = Math.ceil(RECENT_SKIP / POINT_SPACING);
     const limit = this.path.length - skipPoints;
-    if (limit < 2) return { onRoad: false, boundaryPush: 0 };
+    if (limit < 2) return { onRoad: false, desiredHeading: this.rover.heading };
 
     let bestDist = Infinity;
-    let bestSigned = 0;
+    let best = { cx: this.rover.x, cy: this.rover.y, angle: this.rover.heading };
     for (let i = 1; i < limit; i += 1) {
       const a = this.path[i - 1];
       const b = this.path[i];
       const projected = this.projectPointToSegment(this.rover, a, b);
       if (projected.dist < bestDist) {
         bestDist = projected.dist;
-        bestSigned = projected.signed;
+        best = { cx: projected.cx, cy: projected.cy, angle: projected.angle };
       }
     }
 
-    if (bestDist >= LANE_HALF) return { onRoad: false, boundaryPush: 0 };
+    if (bestDist >= LANE_HALF) return { onRoad: false, desiredHeading: this.rover.heading };
 
-    const freeRadius = LANE_HALF * FREE_BAND_FRAC;
-    let boundaryPush = 0;
-    if (bestDist > freeRadius) {
-      // How far into the outer band, 0 at the free edge, 1 at the lane edge.
-      const over = (bestDist - freeRadius) / (LANE_HALF - freeRadius);
-      // Push toward the centreline: opposite the sign of the lateral offset.
-      boundaryPush = -Math.sign(bestSigned) * over;
+    // Orient the road's tangent to the way we're driving, then aim a look-ahead
+    // point along it. The centre point plus the look-ahead means steering toward
+    // it both re-centres and follows the curve.
+    let tangent = best.angle;
+    if (Math.cos(tangent) * Math.cos(this.rover.heading) + Math.sin(tangent) * Math.sin(this.rover.heading) < 0) {
+      tangent += Math.PI;
     }
-    return { onRoad: true, boundaryPush };
+    const targetX = best.cx + Math.cos(tangent) * FOLLOW_LOOKAHEAD;
+    const targetY = best.cy + Math.sin(tangent) * FOLLOW_LOOKAHEAD;
+    return { onRoad: true, desiredHeading: Math.atan2(targetY - this.rover.y, targetX - this.rover.x) };
   }
 
-  private projectPointToSegment(p: Vec2, a: Vec2, b: Vec2): { dist: number; signed: number } {
+  private projectPointToSegment(p: Vec2, a: Vec2, b: Vec2): { dist: number; cx: number; cy: number; angle: number } {
     const abx = b.x - a.x;
     const aby = b.y - a.y;
     const lenSq = abx * abx + aby * aby;
@@ -196,13 +216,9 @@ export class SandboxScene extends Phaser.Scene {
     t = Phaser.Math.Clamp(t, 0, 1);
     const cx = a.x + abx * t;
     const cy = a.y + aby * t;
-    const dx = p.x - cx;
-    const dy = p.y - cy;
-    const dist = Math.hypot(dx, dy);
-    // Signed lateral offset using the segment normal, so we know which side.
-    const len = Math.sqrt(lenSq) || 1;
-    const signed = (dx * -aby + dy * abx) / len;
-    return { dist, signed };
+    const dist = Math.hypot(p.x - cx, p.y - cy);
+    const angle = Math.atan2(aby, abx);
+    return { dist, cx, cy, angle };
   }
 
   private resetPath(): void {
