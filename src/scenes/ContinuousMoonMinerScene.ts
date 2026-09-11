@@ -690,6 +690,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private debugStateElement?: HTMLScriptElement;
   private tuningPanelElement?: HTMLElement;
   private sessionReadoutElement?: HTMLDivElement;
+  private debugToggleElement?: HTMLButtonElement;
+  // Whether the control panel is reachable this session (?debug=1, or ~ pressed).
+  // Gates the floating on-screen toggle so a plain player never sees it.
+  private debugModeAvailable = false;
   private cameraLabElement?: HTMLElement;
   private droneRailLabElement?: HTMLElement;
   private droneRailDiagnosticsElement?: HTMLElement;
@@ -720,6 +724,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.droneRailLab = this.loadStoredDroneRailLab();
     this.viewMode = this.cameraLab.viewMode;
     this.debugOverlayVisible = this.shouldOpenDebugOverlay();
+    this.debugModeAvailable = this.debugOverlayVisible;
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -888,6 +893,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // site can open it from a keyboard; the rest of the keys stay dev-only.
     if (event.key === '`' || event.key === '~') {
       event.preventDefault();
+      this.debugModeAvailable = true;
       this.debugOverlayVisible = !this.debugOverlayVisible;
       this.syncDebugOverlayVisibility();
       return;
@@ -1623,6 +1629,44 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     if (!existing) document.body.appendChild(panel);
     this.tuningPanelElement = panel;
+
+    // A floating toggle so the panel can be tucked away and brought back on a
+    // phone, which has no ~ key. Hidden unless the panel is reachable this
+    // session; parked on the left edge, clear of the top vitals and the bottom
+    // drive/launch controls. Inline styles keep it self-contained.
+    const existingToggle = document.getElementById('moon-miner-debug-toggle') as HTMLButtonElement | null;
+    const toggle = existingToggle ?? document.createElement('button');
+    toggle.id = 'moon-miner-debug-toggle';
+    toggle.type = 'button';
+    Object.assign(toggle.style, {
+      position: 'fixed',
+      left: '8px',
+      top: '50%',
+      transform: 'translateY(-50%)',
+      zIndex: '40',
+      width: '44px',
+      height: '44px',
+      borderRadius: '22px',
+      border: '1px solid rgba(246, 248, 251, 0.35)',
+      background: 'rgba(12, 16, 24, 0.82)',
+      color: '#f6f8fb',
+      fontSize: '20px',
+      lineHeight: '1',
+      cursor: 'pointer',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '0',
+      display: 'none'
+    });
+    if (!existingToggle) {
+      toggle.addEventListener('click', () => {
+        this.debugOverlayVisible = !this.debugOverlayVisible;
+        this.syncDebugOverlayVisibility();
+      });
+      document.body.appendChild(toggle);
+    }
+    this.debugToggleElement = toggle;
+
     this.syncTuningPanel();
     this.syncDebugOverlayVisibility();
   }
@@ -1905,7 +1949,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private syncDebugOverlayVisibility(): void {
-    if (!import.meta.env.DEV) return;
+    // The floating toggle is how a phone opens and closes the panel (no ~ key),
+    // so it is driven here in every build. style.display, not the hidden
+    // attribute, because the button carries an inline display that would win
+    // over [hidden].
+    if (this.debugToggleElement) {
+      this.debugToggleElement.style.display = this.debugModeAvailable ? 'flex' : 'none';
+      this.debugToggleElement.textContent = this.debugOverlayVisible ? '✕' : '⚙';
+      this.debugToggleElement.setAttribute(
+        'aria-label',
+        this.debugOverlayVisible ? 'Close control panel' : 'Open control panel'
+      );
+    }
+
     if (!this.tuningPanelElement && !this.cameraLabElement && !this.droneRailLabElement) return;
 
     for (const panel of [this.tuningPanelElement, this.cameraLabElement, this.droneRailLabElement]) {
