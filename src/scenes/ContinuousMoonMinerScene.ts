@@ -3696,10 +3696,73 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       }
     }
 
-    this.drawFieldRibbon(ordinary.filter((field) => !targeted.has(field.id)), 0x6cf5dd, false);
-    this.drawFieldRibbon(ordinary.filter((field) => targeted.has(field.id)), 0xd8a24a, false);
-    this.drawFieldRibbon(reserved, 0xffa06c, true);
-    this.drawFieldBirthMarkers(ordinary);
+    // One road, one continuous ribbon, one colour. Drawn by smoothing the
+    // laid-field centreline and stroking it as a single wide lane -- no hex
+    // tiles, no per-tile seams, no live cyan/amber repaint. The lattice
+    // zig-zag in the field centres is smoothed out (Chaikin) so the road
+    // reads as a road instead of wobbling. The drone's targeting is shown as
+    // a reticle by drawReclaimPreview/drawDroneReservation, not by repainting
+    // the ground.
+    void targeted;
+    void reserved;
+    const width = this.state.tuning.fieldRadius * 1.7;
+    const gap = this.state.tuning.fieldRadius * 2.4;
+    for (const run of this.splitRoadRuns(ordinary, gap)) {
+      const smooth = this.smoothPolyline(run, 2);
+      this.strokeRoadRibbon(smooth, 0x2b3550, width + 6);
+      this.strokeRoadRibbon(smooth, 0x54708f, width);
+      this.strokeRoadRibbon(smooth, 0x7d9ac0, Math.max(2, width * 0.26));
+    }
+  }
+
+  // Break the ordered fields into contiguous runs: a jump larger than `gap`
+  // (a reclaimed hole, or a fresh pass laid somewhere else) starts a new run so
+  // the ribbon never draws a straight line across ground that has no road.
+  private splitRoadRuns(fields: Array<{ x: number; y: number }>, gap: number): Vec2[][] {
+    const runs: Vec2[][] = [];
+    let run: Vec2[] = [];
+    for (const field of fields) {
+      const prev = run[run.length - 1];
+      if (prev && Math.hypot(field.x - prev.x, field.y - prev.y) > gap) {
+        if (run.length) runs.push(run);
+        run = [];
+      }
+      run.push({ x: field.x, y: field.y });
+    }
+    if (run.length) runs.push(run);
+    return runs;
+  }
+
+  // Chaikin corner-cutting: rounds the lattice zig-zag into a smooth centreline.
+  private smoothPolyline(points: Vec2[], iterations: number): Vec2[] {
+    let pts = points;
+    for (let iter = 0; iter < iterations && pts.length >= 3; iter += 1) {
+      const out: Vec2[] = [pts[0]];
+      for (let i = 0; i < pts.length - 1; i += 1) {
+        const a = pts[i];
+        const b = pts[i + 1];
+        out.push({ x: a.x * 0.75 + b.x * 0.25, y: a.y * 0.75 + b.y * 0.25 });
+        out.push({ x: a.x * 0.25 + b.x * 0.75, y: a.y * 0.25 + b.y * 0.75 });
+      }
+      out.push(pts[pts.length - 1]);
+      pts = out;
+    }
+    return pts;
+  }
+
+  private strokeRoadRibbon(points: Vec2[], color: number, width: number): void {
+    if (points.length === 1) {
+      this.graphics.fillStyle(color, 1);
+      this.graphics.fillCircle(points[0].x, points[0].y, width / 2);
+      return;
+    }
+    this.graphics.lineStyle(width, color, 1);
+    this.graphics.beginPath();
+    this.graphics.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      this.graphics.lineTo(points[i].x, points[i].y);
+    }
+    this.graphics.strokePath();
   }
 
   // Track is drawn as the tiles it is: one flat-top hex per occupied cell, at
