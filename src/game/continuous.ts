@@ -251,6 +251,14 @@ export interface ContinuousTuning {
   // Connected track ahead, in units, that earns full rail speed. Below it the
   // rail tapers back toward prepared speed.
   railRunwayForFullSpeed: number;
+  // Grip floor: the fraction of full grip a freshly caught rail already has,
+  // before any connected runway lengthens it. Keeps a stub feeling magnetic
+  // rather than dead.
+  gripFloor: number;
+  // How much of grip's authority survives while the player is actively
+  // steering. Below 1 the wheel always wins, so grip is a magnet you can leave,
+  // never a rail that holds you on.
+  gripActiveSteerFactor: number;
   lowStockWarningRatio: number;
   droneUrgencyRatio: number;
   // Refill rate (stock per second) while moving on prepared track when drone is
@@ -443,6 +451,8 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   railHeadingSnap: 9,
   railCenterSnap: 4.2,
   railRunwayForFullSpeed: 210,
+  gripFloor: 0.2,
+  gripActiveSteerFactor: 0.5,
   lowStockWarningRatio: 0.18,
   droneUrgencyRatio: 0.32,
   // Refill while on prepared ground. Zero means no passive refill on track —
@@ -518,6 +528,8 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   railHeadingSnap: 9,
   railCenterSnap: 4.2,
   railRunwayForFullSpeed: 210,
+  gripFloor: 0.2,
+  gripActiveSteerFactor: 0.5,
   crawlRecoveryPerSecond: 0.1,
   crawlRecoveryCeiling: 2.6,
   crawlSpeed: 16,
@@ -1083,27 +1095,30 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   state.lastRoadPatchId = findRoadPatchUnderRover(state)?.id ?? state.lastRoadPatchId;
   state.rail = state.railReleaseRemaining > 0 ? undefined : getRailLock(state, Boolean(state.rail));
 
-  if (state.rail) {
-    // On rail the machine is not steered, it is carried. Heading converges on
-    // the track and the chassis is drawn back to the centreline, so a curve you
-    // laid at walking pace can be taken flat out without touching the wheel --
-    // which is the thing that makes a long connected run home worth having.
-    const trackHeading = Math.atan2(state.rail.tangent.y, state.rail.tangent.x);
-    const snap = clamp(state.tuning.railHeadingSnap * deltaSeconds, 0, 1);
-    const correction = angleDifference(trackHeading, state.rover.heading);
-    state.rover.heading = wrapAngle(state.rover.heading + correction * snap);
-    state.rover.turnRate = state.rover.turnRate * 0.7 + (correction * snap / Math.max(deltaSeconds, 0.0001)) * 0.3;
+  // One grip, not two. The old fork was binary: a captured rail carried the
+  // machine outright and ignored the wheel, while anything short of a captured
+  // rail fell to a magnet that in practice almost never fired -- so the road was
+  // a hard lock or nothing, never the medium magnetism the design asks for. Now
+  // a single grip strength scales with how much connected track is under the
+  // machine: a stub nudges, a long run holds firmly, and the player's wheel is
+  // ALWAYS applied on top, so active steering can leave at any grip.
+  const grip = getPreparedGrip(state);
+  const activeSteer = Math.abs(input.steer) > 0.06;
+  // Steering into the groove keeps full authority; steering against it meets a
+  // rail that resists before it lets go, never one that holds you on.
+  const gripAuthority = grip.strength * (activeSteer ? state.tuning.gripActiveSteerFactor : 1);
 
-    const pull = clamp(state.tuning.railCenterSnap * deltaSeconds, 0, 1);
-    state.rover.x += (state.rail.center.x - state.rover.x) * pull;
-    state.rover.y += (state.rail.center.y - state.rover.y) * pull;
-  } else {
-    const magnetTurn = getPreparedMagnetTurn(state, input);
-    // Smoothed, because the projection below reads it and a single jittery frame
-    // should not swing where the drone is allowed to go.
-    state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + magnetTurn) * 0.3;
-    state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + magnetTurn) * deltaSeconds);
-  }
+  // Heading help expressed as a turn rate, capped below TURN_RATE so grip can
+  // never out-turn a full manual lock -- the structural guarantee that this is a
+  // magnet and not a rail you cannot leave. The correction already aims at "run
+  // along the track AND drift onto its centreline", so a single heading pull
+  // both holds a passive line and resists an active turn off it, with no
+  // separate positional snap fighting the wheel. Smoothed, because the drone
+  // projection reads turnRate and one jittery frame should not swing where the
+  // drone is allowed to go.
+  const gripTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * gripAuthority;
+  state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + gripTurn) * 0.3;
+  state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + gripTurn) * deltaSeconds);
 
   // Rail speed is earned by the road ahead, not by the patch underneath. Ramped
   // over railRunwayForFullSpeed so a short stub hands you back to ordinary
@@ -1600,23 +1615,38 @@ function resolveSpeedState(state: ContinuousWorldState): SpeedState {
   return 'crawl';
 }
 
-function getPreparedMagnetTurn(state: ContinuousWorldState, input: ContinuousInput): number {
-  if (state.speedState !== 'prepared') return 0;
+// The single source of road grip. Returns a heading correction toward the
+// track and a strength in [0,1], and is what collapses the old
+// rail-lock/magnet fork into one continuous feel.
+//
+// The GEOMETRY is shared: getPreparedFieldMagnet already blends "run along the
+// track" with "drift onto its centreline", which is exactly the heading grip
+// should aim at, captured rail or not. The rail only decides how HARD that help
+// pulls -- a stub or fresh patch grips at the floor, a long connected run grips
+// toward full -- so the runway readout and the felt grip are now the same fact.
+function getPreparedGrip(state: ContinuousWorldState): { correction: number; strength: number } {
+  if (state.speedState !== 'prepared' && !state.rail) {
+    return { correction: 0, strength: 0 };
+  }
 
   const magnet = getPreparedFieldMagnet(state);
-  if (!magnet) return 0;
+  if (!magnet) {
+    return { correction: 0, strength: 0 };
+  }
 
-  // The magnet used to switch off completely whenever the player steered the
-  // same way it was already correcting, and drop to a fifth of its strength
-  // when steering against it. Between the two, touching the wheel released the
-  // groove entirely -- so laid road never held the machine, which is what
-  // "the road should have that central magnetism back" is describing.
-  // Steering with it now still gets help; steering against it meets a rail
-  // that resists before it lets go.
-  const activeSteer = Math.abs(input.steer) > 0.06;
+  // Base grip is the loose-prepared feel: how much stuff is near you and how
+  // aligned it is. This is the level the old magnet already provided on any
+  // prepared ground, and the floor keeps even a thin edge gripping a little.
+  const base = Math.max(state.tuning.gripFloor, magnet.strength);
+  if (!state.rail) {
+    return { correction: magnet.correction, strength: base };
+  }
 
-  const turnRate = activeSteer ? state.tuning.preparedMagnetActiveTurnRate : state.tuning.preparedMagnetPassiveTurnRate;
-  return clamp(magnet.correction / state.tuning.preparedMagnetCorrectionRange, -1, 1) * turnRate * magnet.strength;
+  // A captured, connected rail firms UP from that base toward a full lock as the
+  // runway ahead lengthens -- so a stub grips like loose road and a long run
+  // home grips hard, and the runway readout and the felt grip are the same fact.
+  const runwayFraction = clamp(state.rail.runwayAhead / state.tuning.railRunwayForFullSpeed, 0, 1);
+  return { correction: magnet.correction, strength: base + (1 - base) * runwayFraction };
 }
 
 function getPreparedFieldMagnet(state: ContinuousWorldState): { correction: number; strength: number } | undefined {

@@ -245,8 +245,8 @@ interface TuningControlDefinition {
 }
 
 const TUNING_CONTROLS: TuningControlDefinition[] = [
-  { key: 'preparedSpeed', label: 'Normal speed', min: 60, max: 150, step: 1 },
-  { key: 'fabricatingSpeed', label: 'Raw speed', min: 45, max: 120, step: 1 },
+  { key: 'preparedSpeed', label: 'Normal speed', min: 40, max: 360, step: 1 },
+  { key: 'fabricatingSpeed', label: 'Raw speed', min: 20, max: 260, step: 1 },
   { key: 'crawlSpeed', label: 'Crawl speed', min: 8, max: 32, step: 1 },
   { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 1, max: 4.2, step: 0.1, precision: 1 },
   { key: 'droneSpeed', label: 'Drone speed', min: 260, max: 620, step: 10 },
@@ -296,11 +296,16 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
       { key: 'preparedFieldMinAgeSeconds', label: 'Prepared min age', min: 0.1, max: 4, step: 0.05, precision: 2 },
       { key: 'preparedCoverageThreshold', label: 'Coverage threshold', min: 0.02, max: 0.8, step: 0.01, precision: 2 },
       { key: 'preparedFieldMinValue', label: 'Prepared min value', min: 0, max: 0.5, step: 0.005, precision: 3 },
-      { key: 'preparedMagnetInfluenceMultiplier', label: 'Magnet influence', min: 0, max: 3.5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetPassiveTurnRate', label: 'Passive turn', min: 0, max: 5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetActiveTurnRate', label: 'Active turn', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCorrectionRange', label: 'Correction range', min: 0.1, max: 2, step: 0.05, precision: 2 }
+      { key: 'preparedMagnetInfluenceMultiplier', label: 'Lane reach', min: 0, max: 10, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 6, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetPassiveTurnRate', label: 'Carry (hands-off)', min: 0, max: 10, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetActiveTurnRate', label: 'Active turn', min: 0, max: 10, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetCorrectionRange', label: 'Correction range', min: 0.1, max: 6, step: 0.05, precision: 2 },
+      { key: 'gripFloor', label: 'Grip floor', min: 0, max: 1, step: 0.01, precision: 2 },
+      { key: 'gripActiveSteerFactor', label: 'Leave resistance', min: 0, max: 1, step: 0.01, precision: 2 },
+      { key: 'railCaptureDistance', label: 'Rail catch width', min: 10, max: 220, step: 2 },
+      { key: 'railSpeed', label: 'Slide top speed', min: 40, max: 400, step: 5 },
+      { key: 'railRunwayForFullSpeed', label: 'Runway for full slide', min: 20, max: 420, step: 5 }
     ]
   },
   {
@@ -310,8 +315,8 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
       { key: 'maxNanobots', label: 'Max stock', min: 8, max: 64, step: 1 },
       { key: 'crawlRecoveryPerSecond', label: 'Crawl recovery', min: 0, max: 0.5, step: 0.01, precision: 2 },
       { key: 'crawlSpeed', label: 'Crawl speed', min: 4, max: 44, step: 1 },
-      { key: 'fabricatingSpeed', label: 'Raw speed', min: 30, max: 140, step: 1 },
-      { key: 'preparedSpeed', label: 'Prepared speed', min: 40, max: 180, step: 1 },
+      { key: 'fabricatingSpeed', label: 'Raw speed', min: 20, max: 260, step: 1 },
+      { key: 'preparedSpeed', label: 'Prepared speed', min: 40, max: 360, step: 1 },
       { key: 'lowStockWarningRatio', label: 'Low-stock ratio', min: 0.02, max: 0.6, step: 0.01, precision: 2 },
       { key: 'droneUrgencyRatio', label: 'Drone urgency ratio', min: 0.02, max: 0.75, step: 0.01, precision: 2 }
     ]
@@ -689,6 +694,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private escapeKey?: Phaser.Input.Keyboard.Key;
   private debugStateElement?: HTMLScriptElement;
   private tuningPanelElement?: HTMLElement;
+  private sessionReadoutElement?: HTMLDivElement;
+  private debugToggleElement?: HTMLButtonElement;
+  // Whether the control panel is reachable this session (?debug=1, or ~ pressed).
+  // Gates the floating on-screen toggle so a plain player never sees it.
+  private debugModeAvailable = false;
   private cameraLabElement?: HTMLElement;
   private droneRailLabElement?: HTMLElement;
   private droneRailDiagnosticsElement?: HTMLElement;
@@ -719,6 +729,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.droneRailLab = this.loadStoredDroneRailLab();
     this.viewMode = this.cameraLab.viewMode;
     this.debugOverlayVisible = this.shouldOpenDebugOverlay();
+    // Always show the on-screen toggle so the panel is reachable on a phone
+    // (no ~ key) without needing ?debug=1 in the URL. The panel still starts
+    // closed unless ?debug=1 opened it.
+    this.debugModeAvailable = true;
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -754,6 +768,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
     this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => this.handlePointerUp(pointer));
     this.input.on('pointerupoutside', (pointer: Phaser.Input.Pointer) => this.handlePointerUp(pointer));
+    // Phaser tracks a single touch by default, so on portrait mobile the thumb
+    // holding the drive pad owned the only pointer and a second finger tapping
+    // Launch produced no event -- you could not launch the drone while driving.
+    // A second pointer lets the Launch button register a simultaneous touch.
+    this.input.addPointer(1);
 
     this.exposeDebugHook();
     this.createTuningPanel();
@@ -876,16 +895,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private handleKeyboardEvent(event: KeyboardEvent): void {
-    if (!import.meta.env.DEV) return;
     if (event.repeat) return;
 
+    // The control panel toggle works in every build, so the deployed playtest
+    // site can open it from a keyboard; the rest of the keys stay dev-only.
     if (event.key === '`' || event.key === '~') {
       event.preventDefault();
+      this.debugModeAvailable = true;
       this.debugOverlayVisible = !this.debugOverlayVisible;
       this.syncDebugOverlayVisibility();
       return;
     }
 
+    if (!import.meta.env.DEV) return;
     if (this.isTypingInForm(event.target)) return;
 
     if (event.key.toLowerCase() === 'v') {
@@ -1059,8 +1081,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private shouldOpenDebugOverlay(): boolean {
-    if (!import.meta.env.DEV) return false;
-
     try {
       const params = new URLSearchParams(window.location.search);
       return params.get('debug') === '1';
@@ -1306,6 +1326,95 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.syncDroneRailLabPanel();
   }
 
+  // A full reset of the beginning state: wipe the carried road out of storage so
+  // the board stops inheriting yesterday's residue, drop back to shift 1, and
+  // regenerate a fresh map. This is the "start a new game / clear the board"
+  // control -- distinct from Reset Day, which restarts the current day keeping
+  // whatever road was inherited.
+  private startNewGame(): void {
+    try {
+      window.localStorage.removeItem(CARRIED_ROAD_STORAGE_KEY);
+    } catch {
+      // Storage can be unavailable; the new game simply starts from bare ground.
+    }
+    this.shiftNumber = 1;
+    this.carriedIn = 0;
+    this.carriedDepletion = {};
+    this.saveDiagnostic = 'off';
+    this.state = createContinuousWorld(`new-game-${Date.now()}`, this.state.tuning, this.state.arenaId, [], {});
+    this.cameraHeading = this.state.rover.heading;
+    this.tacticalCameraFocus = this.tacticalCameraTarget();
+    this.loopTrace = createContinuousLoopTrace(this.state);
+    this.pointerTarget = undefined;
+    this.mobileDrive = undefined;
+    this.selfPlay = undefined;
+    this.effects = [];
+    this.eventMessage = undefined;
+    this.previousDroneStatus = this.state.drone.status;
+    this.previousSpeedState = this.state.speedState;
+    this.previousPhase = this.state.phase;
+    this.previousOre = this.state.rover.ore;
+    this.showEventMessage('New game. Board wiped to bare ground.', 1400, this.time.now, 2);
+    this.syncTuningPanel();
+    this.syncCameraLabPanel();
+    this.syncDroneRailLabPanel();
+  }
+
+  // The recorder that writes to a Claude Artifact database is inert on a plain
+  // static host (no window.claude), so nothing about a run is saved server-side.
+  // This copies the finished run's own trace summary to the clipboard so it can
+  // be pasted somewhere it can actually be read.
+  private copyRunData(button: HTMLButtonElement): void {
+    const summary = getContinuousLoopSummary(this.loopTrace);
+    const payload = {
+      capturedAt: new Date().toISOString(),
+      shift: this.shiftNumber,
+      carriedIn: this.carriedIn,
+      arenaId: this.state.arenaId,
+      phase: this.state.phase,
+      ore: Number(this.state.rover.ore.toFixed(2)),
+      oreRequired: this.state.arena.extraction?.oreRequired ?? this.state.targetOre,
+      elapsedSeconds: Number(this.state.elapsedSeconds.toFixed(2)),
+      solarRemaining: Number(this.state.solarSeconds.toFixed(2)),
+      hitLoop: summary.hitLoop,
+      milestones: summary.milestones.map((milestone) => ({
+        id: milestone.id,
+        hit: milestone.hit,
+        atSeconds: milestone.atSeconds === undefined ? null : Number(milestone.atSeconds.toFixed(2))
+      })),
+      speedSeconds: summary.speedSeconds,
+      lowestNanobots: Number(summary.lowestNanobots.toFixed(2)),
+      tuning: this.state.tuning
+    };
+    const text = JSON.stringify(payload, null, 2);
+    const original = button.textContent ?? 'Copy Run Data';
+
+    if (!navigator.clipboard) {
+      console.info('Moon Miner run data:', text);
+      button.textContent = 'Logged to console';
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1200);
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        button.textContent = 'Copied';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 1200);
+      })
+      .catch(() => {
+        console.info('Moon Miner run data:', text);
+        button.textContent = 'Logged to console';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 1200);
+      });
+  }
+
   private setArena(arenaId: ContinuousArenaId): void {
     if (!CONTINUOUS_ARENAS[arenaId]) return;
 
@@ -1391,8 +1500,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private createTuningPanel(): void {
-    if (!import.meta.env.DEV) return;
-
+    // Built in every build now: the deployed playtest site needs the control
+    // panel (New Game, tuning, Copy Run Data). It stays hidden until ?debug=1,
+    // the ~ key, or the on-screen toggle opens it, so a plain player never sees
+    // it.
     const existing = document.getElementById('moon-miner-tuning-panel');
     const panel = existing ?? document.createElement('aside');
     panel.id = 'moon-miner-tuning-panel';
@@ -1401,8 +1512,45 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.tuningControls.clear();
 
     const title = document.createElement('h2');
-    title.textContent = 'Dynamics';
+    title.textContent = 'Control Panel';
     panel.appendChild(title);
+
+    // Session controls first, so the beginning-of-game buttons sit at the top of
+    // the panel where they are reachable on a phone without scrolling past every
+    // tuning slider.
+    const sessionReadout = document.createElement('div');
+    sessionReadout.className = 'moon-miner-tuning__diagnostics';
+    this.sessionReadoutElement = sessionReadout;
+    panel.appendChild(sessionReadout);
+
+    const session = document.createElement('div');
+    session.className = 'moon-miner-tuning__actions';
+
+    const newGameButton = document.createElement('button');
+    newGameButton.type = 'button';
+    newGameButton.textContent = 'New Game (wipe board)';
+    newGameButton.addEventListener('click', () => this.startNewGame());
+
+    const resetDayButton = document.createElement('button');
+    resetDayButton.type = 'button';
+    resetDayButton.textContent = 'Reset Day';
+    resetDayButton.addEventListener('click', () => this.resetRun());
+
+    const copyRunButton = document.createElement('button');
+    copyRunButton.type = 'button';
+    copyRunButton.textContent = 'Copy Run Data';
+    copyRunButton.addEventListener('click', () => this.copyRunData(copyRunButton));
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.textContent = 'Close';
+    closeButton.addEventListener('click', () => {
+      this.debugOverlayVisible = false;
+      this.syncDebugOverlayVisibility();
+    });
+
+    session.append(newGameButton, resetDayButton, copyRunButton, closeButton);
+    panel.appendChild(session);
 
     const arenaRow = document.createElement('label');
     arenaRow.className = 'moon-miner-tuning__row moon-miner-tuning__row--select';
@@ -1489,6 +1637,44 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     if (!existing) document.body.appendChild(panel);
     this.tuningPanelElement = panel;
+
+    // A floating toggle so the panel can be tucked away and brought back on a
+    // phone, which has no ~ key. Hidden unless the panel is reachable this
+    // session; parked on the left edge, clear of the top vitals and the bottom
+    // drive/launch controls. Inline styles keep it self-contained.
+    const existingToggle = document.getElementById('moon-miner-debug-toggle') as HTMLButtonElement | null;
+    const toggle = existingToggle ?? document.createElement('button');
+    toggle.id = 'moon-miner-debug-toggle';
+    toggle.type = 'button';
+    Object.assign(toggle.style, {
+      position: 'fixed',
+      left: '8px',
+      top: '50%',
+      transform: 'translateY(-50%)',
+      zIndex: '40',
+      width: '44px',
+      height: '44px',
+      borderRadius: '22px',
+      border: '1px solid rgba(246, 248, 251, 0.35)',
+      background: 'rgba(12, 16, 24, 0.82)',
+      color: '#f6f8fb',
+      fontSize: '20px',
+      lineHeight: '1',
+      cursor: 'pointer',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '0',
+      display: 'none'
+    });
+    if (!existingToggle) {
+      toggle.addEventListener('click', () => {
+        this.debugOverlayVisible = !this.debugOverlayVisible;
+        this.syncDebugOverlayVisibility();
+      });
+      document.body.appendChild(toggle);
+    }
+    this.debugToggleElement = toggle;
+
     this.syncTuningPanel();
     this.syncDebugOverlayVisibility();
   }
@@ -1771,7 +1957,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private syncDebugOverlayVisibility(): void {
-    if (!import.meta.env.DEV) return;
+    // The floating toggle is how a phone opens and closes the panel (no ~ key),
+    // so it is driven here in every build. style.display, not the hidden
+    // attribute, because the button carries an inline display that would win
+    // over [hidden].
+    if (this.debugToggleElement) {
+      this.debugToggleElement.style.display = this.debugModeAvailable ? 'flex' : 'none';
+      this.debugToggleElement.textContent = this.debugOverlayVisible ? '✕' : '⚙';
+      this.debugToggleElement.setAttribute(
+        'aria-label',
+        this.debugOverlayVisible ? 'Close control panel' : 'Open control panel'
+      );
+    }
+
     if (!this.tuningPanelElement && !this.cameraLabElement && !this.droneRailLabElement) return;
 
     for (const panel of [this.tuningPanelElement, this.cameraLabElement, this.droneRailLabElement]) {
@@ -1828,6 +2026,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private syncTuningPanel(): void {
+    if (this.sessionReadoutElement) {
+      const carry = this.carriedIn > 0 ? `${this.carriedIn} lengths carried in` : 'bare ground';
+      this.sessionReadoutElement.textContent = `Shift ${this.shiftNumber} · ${carry} · ${this.state.arenaId}`;
+    }
+
     if (this.arenaSelectElement) {
       this.arenaSelectElement.value = this.state.arenaId;
     }

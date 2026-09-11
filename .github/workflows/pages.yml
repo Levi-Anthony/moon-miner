@@ -1,0 +1,48 @@
+name: Playtest preview (GitHub Pages)
+
+# Builds this branch and publishes the static site to the `gh-pages` branch, so
+# it can be played from a URL and every push refreshes the live preview. This
+# "deploy from a branch" method works from any source branch (no github-pages
+# environment branch policy to fight).
+#
+# One-time repo setting: Settings -> Pages -> Source: "Deploy from a branch",
+# Branch: gh-pages, folder: / (root).
+
+on:
+  push:
+    branches:
+      - claude/current-state-report-a81tov
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages-branch
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Project Pages serve under /<repo>/, so the bundle needs that base or its
+      # absolute asset URLs 404. .nojekyll stops Pages mangling the assets dir.
+      - run: npx vite build --base=/moon-miner/
+      - run: touch dist/.nojekyll
+      - name: Publish dist to gh-pages
+        run: |
+          cd dist
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Deploy ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
