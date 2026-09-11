@@ -729,7 +729,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.droneRailLab = this.loadStoredDroneRailLab();
     this.viewMode = this.cameraLab.viewMode;
     this.debugOverlayVisible = this.shouldOpenDebugOverlay();
-    this.debugModeAvailable = this.debugOverlayVisible;
+    // Always show the on-screen toggle so the panel is reachable on a phone
+    // (no ~ key) without needing ?debug=1 in the URL. The panel still starts
+    // closed unless ?debug=1 opened it.
+    this.debugModeAvailable = true;
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
