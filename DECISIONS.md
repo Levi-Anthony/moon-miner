@@ -1,5 +1,29 @@
 # Decisions
 
+## 2026-09-15: Kill the straight-line jitter; fast straights, eased bends
+
+Playtest: "even normal driving straight still kind of jitters the vehicle left
+to right" and "fast on straights would be good."
+
+### Jitter (fixed)
+Driving straight on prepared ground, the only thing steering you was the sim's
+field magnet. Its heading correction is noisy — the set of nearby fields shifts
+frame to frame — and it was amplified ×9 by `railHeadingSnap`, so tiny noise
+became a visible left/right saw. The magnet is redundant now the cured-road
+slide is the road feel, so for presentation play it is **suppressed entirely**:
+on the cured road you get the smooth slide, off it plain steady driving, neither
+wobbles. Self-play/tests pass no `assistSteer` and keep the magnet unchanged.
+Verified: straight-line frame wobble ~0.007 rad (was a visible saw).
+
+### Fast straights, eased bends (done)
+The slide speed is now eased by the **curvature of the road ahead** (net bend
+over the look-ahead walk, smoothed and measured ahead so it eases before the
+bend). Straights run to the top (`ROAD_SLIDE_MAX` 0.62 → 1.0, ~railSpeed); bends
+ease toward a 0.5 floor (~174) so the carry can always hold the line. Fast where
+it is safe, slower where it is not — instead of the one flat compromise speed
+the previous change settled for. Verified: on a curved loop the scale eases to
+~0.52 (speed ~155–178) and the carry still holds you around it hands-off.
+
 ## 2026-09-15: The road as a rescue slide (stop fighting it)
 
 Playtest: "The road should feel like a rescue slide home almost. I'm still
