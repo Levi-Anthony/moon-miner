@@ -1,5 +1,30 @@
 # Decisions
 
+## 2026-09-15: Make the loop legible — the expedition frame (DEV-27)
+
+Playtest: "other parts of the game don't make enough sense now to actually judge
+the driving." Investigation found the moment-to-moment guidance and the whole
+shift system (overnight road carry, seam depletion/regrowth, chained shifts,
+end-of-shift banner) already existed — but the run had **no frame**: shifts
+incremented forever with no goal, no cumulative score, no finish, so nothing
+told you what the driving was *for*. Owner chose "make the loop make sense."
+
+DECISION (fixed-N, matching the owner's earlier DEV-27 lean): a run is an
+**expedition of `EXPEDITION_SHIFTS = 3`** shifts, then it ends and is scored.
+- Cumulative **banked ore** accrues across won shifts (persisted with the
+  carried road) and shows live in the HUD: "SHIFT n OF 3 · X ore banked".
+- **Finale:** after shift 3 the end banner becomes an expedition summary (total
+  banked, a one-line grade) with "new expedition" instead of incrementing to a
+  shift 4; R / tap then wipes for a fresh expedition.
+- Endless play stays available (New Game / `?shift=0`) for playtesting.
+- Built entirely on the existing banner/shift-save machinery; driving untouched.
+
+### Still open (the rest of "make it make sense")
+- **Crawl can strand you:** running out of nanobots drops you to speed 16, which
+  reads as a soft-lock rather than a tension. Next.
+- **Mining legibility:** how ore accrues ("speed and line are the yield") is not
+  obviously readable. Next.
+
 ## 2026-09-15: Road feel take 3 — lay slow, cured road is fast and holds
 
 Playtest, verbatim: "It's fast when I'm laying down new road, and the road
