@@ -25,6 +25,11 @@ export interface ContinuousInput {
   driveIntent?: boolean;
   pivotIntent?: boolean;
   reverseIntent?: boolean;
+  // Road-follow turn rate (rad/s) supplied by the presentation layer, computed
+  // by pure pursuit over the rover's driven road trail. When present it drives
+  // the carry/slide feel and replaces the sim's own field-based grip; when
+  // absent (self-play, tests) the sim falls back to getPreparedGrip.
+  assistSteer?: number;
 }
 
 export interface RoverMotionState extends Vec2 {
@@ -1102,21 +1107,23 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   // a single grip strength scales with how much connected track is under the
   // machine: a stub nudges, a long run holds firmly, and the player's wheel is
   // ALWAYS applied on top, so active steering can leave at any grip.
-  const grip = getPreparedGrip(state);
   const activeSteer = Math.abs(input.steer) > 0.06;
   // Steering into the groove keeps full authority; steering against it meets a
-  // rail that resists before it lets go, never one that holds you on.
-  const gripAuthority = grip.strength * (activeSteer ? state.tuning.gripActiveSteerFactor : 1);
-
-  // Heading help expressed as a turn rate, capped below TURN_RATE so grip can
-  // never out-turn a full manual lock -- the structural guarantee that this is a
-  // magnet and not a rail you cannot leave. The correction already aims at "run
-  // along the track AND drift onto its centreline", so a single heading pull
-  // both holds a passive line and resists an active turn off it, with no
-  // separate positional snap fighting the wheel. Smoothed, because the drone
-  // projection reads turnRate and one jittery frame should not swing where the
-  // drone is allowed to go.
-  const gripTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * gripAuthority;
+  // rail that resists before it lets go, never one that holds you on. Capped
+  // below a full manual lock so the road can carry you yet never trap you.
+  let gripTurn: number;
+  if (input.assistSteer !== undefined) {
+    // Presentation-supplied road follow (pure pursuit over the driven trail).
+    const authority = activeSteer ? state.tuning.gripActiveSteerFactor : 1;
+    gripTurn = clamp(input.assistSteer, -TURN_RATE, TURN_RATE) * authority;
+  } else {
+    // Fallback for self-play / tests: the sim's own field-based grip.
+    const grip = getPreparedGrip(state);
+    const gripAuthority = grip.strength * (activeSteer ? state.tuning.gripActiveSteerFactor : 1);
+    gripTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * gripAuthority;
+  }
+  // Smoothed, because the drone projection reads turnRate and one jittery frame
+  // should not swing where the drone is allowed to go.
   state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + gripTurn) * 0.3;
   state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + gripTurn) * deltaSeconds);
 

@@ -56,6 +56,10 @@ const DESKTOP_HUD_HEIGHT = 86;
 const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
 const FIELD_DECK_COLOR = 0x6d8f89;
+// Road-follow feel (the sandbox slide/carry), computed over the driven trail.
+const ROAD_FOLLOW_STEER = 2.1; // rad/s carry toward the road; the sim caps at TURN_RATE
+const ROAD_FOLLOW_LOOKAHEAD_MULT = 1.4; // pure-pursuit aim distance, * fieldRadius
+const ROAD_TRAIL_SPACING = 6; // world units between sampled trail points
 
 function mixColor(from: number, to: number, t: number): number {
   const lerp = (shift: number) => {
@@ -1207,9 +1211,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.stopSelfPlay(true);
     }
 
+    // Road-follow assist: the presentation layer computes a pure-pursuit turn
+    // over the driven trail and hands it to the sim, which applies it (capped
+    // below TURN_RATE, eased against active steer) in place of the field grip.
+    // Self-play returned above without it, so tests keep the getPreparedGrip
+    // path. Only forward driving gets carried -- reverse and on-the-spot pivots
+    // must stay in the driver's hands.
+    const assistSteer = this.roadFollow();
+
     if (mobileDriveInput) {
       this.clearPointerTarget();
-      return mobileDriveInput;
+      return mobileDriveInput.driveIntent ? { ...mobileDriveInput, assistSteer } : mobileDriveInput;
     }
 
     if (layout.mode === 'mobilePortrait' && !manualHeld) {
@@ -1239,7 +1251,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       brake: false,
       reverseIntent: reversing,
       driveIntent: reversing ? false : driveIntent,
-      pivotIntent: reversing || (!driveIntent && Math.abs(steer) > 0.001)
+      pivotIntent: reversing || (!driveIntent && Math.abs(steer) > 0.001),
+      assistSteer: reversing ? undefined : assistSteer
     };
   }
 
@@ -3675,16 +3688,74 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
+  // How many freshly-laid tail points to ignore when asking "am I on OLD road".
+  private roadTrailTailSkip(): number {
+    return Math.ceil((this.state.tuning.fieldRadius * 1.6) / ROAD_TRAIL_SPACING);
+  }
+
+  // Nearest trail point to the rover, skipping the recent tail. Linear scan;
+  // the trail is capped so this stays cheap.
+  private nearestTrailIndex(excludeTail: number): { index: number; dist: number } {
+    const trail = this.roadTrail;
+    const limit = trail.length - excludeTail;
+    const rover = this.state.rover;
+    let bestDist = Infinity;
+    let index = -1;
+    for (let i = 0; i < limit; i += 1) {
+      const point = trail[i];
+      const d = Math.hypot(point.x - rover.x, point.y - rover.y);
+      if (d < bestDist) {
+        bestDist = d;
+        index = i;
+      }
+    }
+    return { index, dist: bestDist };
+  }
+
+  // The carry/slide feel: pure pursuit over the driven trail. Returns a turn
+  // rate (rad/s) toward a look-ahead point along the road, or 0 when off road.
+  // The sim applies it (capped, eased under active steer) in place of its own
+  // field grip.
+  private roadFollow(): number {
+    const trail = this.roadTrail;
+    const tuning = this.state.tuning;
+    const excludeTail = this.roadTrailTailSkip();
+    const limit = trail.length - excludeTail;
+    if (limit < 2) return 0;
+    const near = this.nearestTrailIndex(excludeTail);
+    if (near.index < 1 || near.dist >= tuning.fieldRadius) return 0;
+    const rover = this.state.rover;
+    const a = trail[Math.max(0, near.index - 1)];
+    const b = trail[Math.min(limit - 1, near.index + 1)];
+    let tangent = Math.atan2(b.y - a.y, b.x - a.x);
+    if (Math.cos(tangent) * Math.cos(rover.heading) + Math.sin(tangent) * Math.sin(rover.heading) < 0) {
+      tangent += Math.PI;
+    }
+    const centre = trail[near.index];
+    const lookahead = tuning.fieldRadius * ROAD_FOLLOW_LOOKAHEAD_MULT;
+    const desired = Math.atan2(
+      centre.y + Math.sin(tangent) * lookahead - rover.y,
+      centre.x + Math.cos(tangent) * lookahead - rover.x
+    );
+    return clamp(angleDifference(desired, rover.heading) / 0.5, -1, 1) * ROAD_FOLLOW_STEER;
+  }
+
   // Record where the rover actually drives while laying or on road. Crawl
-  // (starved, no road laid) leaves a gap; idle adds nothing. World coords.
+  // (starved) adds nothing. NON-OVERLAP: if the rover is already on old road,
+  // do not stack a second ribbon -- re-driving your own road is a slide, not
+  // new road. World coords.
   private sampleRoadTrail(): void {
     if (this.state.speedState === 'crawl') return;
     const rover = this.state.rover;
     const last = this.roadTrail[this.roadTrail.length - 1];
-    if (!last || Math.hypot(rover.x - last.x, rover.y - last.y) >= 6) {
-      this.roadTrail.push({ x: rover.x, y: rover.y });
-      if (this.roadTrail.length > 4000) this.roadTrail.shift();
+    if (last && Math.hypot(rover.x - last.x, rover.y - last.y) < ROAD_TRAIL_SPACING) return;
+    const excludeTail = this.roadTrailTailSkip();
+    if (this.roadTrail.length - excludeTail >= 2) {
+      const near = this.nearestTrailIndex(excludeTail);
+      if (near.index >= 0 && near.dist < this.state.tuning.fieldRadius) return;
     }
+    this.roadTrail.push({ x: rover.x, y: rover.y });
+    if (this.roadTrail.length > 4000) this.roadTrail.shift();
   }
 
   private drawFields(): void {
