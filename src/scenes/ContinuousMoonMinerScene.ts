@@ -3891,21 +3891,25 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const rover = this.state.rover;
     const last = this.roadTrail[this.roadTrail.length - 1];
     if (last && Math.hypot(rover.x - last.x, rover.y - last.y) < ROAD_TRAIL_SPACING) return;
-    // NON-OVERLAP against CURED road, but only when driving ALONG it: re-driving
-    // a road you laid earlier is a slide, not new road, so do not stack a second
-    // ribbon on it. Crossing a cured road square is an INTERSECTION -- lay
-    // through it so the crossing exists. The uncured stroke you are laying now is
-    // never checked, so ordinary laying proceeds.
+    // NON-OVERLAP against cured road. Lay nothing if you are re-driving existing
+    // road, in either of two ways:
+    //  - ALONG it: near a cured point and roughly aligned with it (a slide).
+    //  - ON it: physically on top of the ribbon (within half a field radius),
+    //    whatever the angle. This is the junction case -- driving along road A
+    //    through where road B crosses, the NEAREST cured point is B's and it
+    //    reads as "not aligned", which used to lay a second layer of A right on
+    //    the crossing. Being on the ribbon is enough to skip.
+    // A transverse crossing of NEW road still lays right up to the road it meets
+    // (only the ~half-radius on top of the crossing is skipped), so the
+    // intersection exists and is clean rather than doubled.
     const limit = this.curedTrailLimit();
     if (limit >= 2) {
       const near = this.nearestTrailIndex(limit);
-      if (
-        near.index >= 0 &&
-        near.dist < this.state.tuning.fieldRadius &&
-        this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN
-      ) {
-        return;
-      }
+      const radius = this.state.tuning.fieldRadius;
+      const onRibbon = near.index >= 0 && near.dist < radius * 0.5;
+      const alongRoad =
+        near.index >= 0 && near.dist < radius && this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN;
+      if (onRibbon || alongRoad) return;
     }
     this.roadTrail.push({ x: rover.x, y: rover.y, t: this.state.elapsedSeconds });
     if (this.roadTrail.length > 4000) this.roadTrail.shift();
