@@ -19,9 +19,25 @@ DECISION (fixed-N, matching the owner's earlier DEV-27 lean): a run is an
 - Endless play stays available (New Game / `?shift=0`) for playtesting.
 - Built entirely on the existing banner/shift-save machinery; driving untouched.
 
+### Crawl stranding (fixed)
+Running out of nanobots dropped you to speed 16 with recovery at 0.1/s toward a
+2.6 ceiling against a 2.0 exit — ~20s of near-stopped limping to claw out, and
+with no loose end for the drone and no prepared road within reach it read as a
+soft-lock. Kept crawl as the overextension penalty but removed the dead-end
+(active preset only, STABLE_FIRST_RUN):
+- crawlSpeed 16 → 34 (an unmistakable limp, under half fabricating's 74, but it
+  still carries you toward road / ore / home).
+- crawlRecoveryPerSecond 0.1 → 0.3, ceiling 2.6 → 3.6: claw out in ~7s, not ~20.
+- Left `preparedRefillPerSecond` at 0 (the drone stays the primary refill, per
+  its deliberate design note); reaching prepared/cured road still flips you out
+  of crawl instantly (a speedState change), which the raised crawl speed makes
+  reachable.
+Verified headless: enter crawl at speed 34, recover within a few seconds (drove
+back onto cured road → prepared/74), never pinned. Updated the crawl test's
+magnitude bound (was `< 30`, encoding the old 16) to `< 40`, preserving its
+intent (a limp, not a hard stop, well under fabricating).
+
 ### Still open (the rest of "make it make sense")
-- **Crawl can strand you:** running out of nanobots drops you to speed 16, which
-  reads as a soft-lock rather than a tension. Next.
 - **Mining legibility:** how ore accrues ("speed and line are the yield") is not
   obviously readable. Next.
 

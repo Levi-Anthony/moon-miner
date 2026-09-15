@@ -542,9 +542,19 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   railRunwayForFullSpeed: 210,
   gripFloor: 0.2,
   gripActiveSteerFactor: 0.5,
-  crawlRecoveryPerSecond: 0.1,
-  crawlRecoveryCeiling: 2.6,
-  crawlSpeed: 16,
+  // Crawl is the overextension penalty, but at 0.1/s toward a 2.6 ceiling with a
+  // 2.0 exit it took ~20s of near-stopped limping to claw back out -- and with no
+  // loose end for the drone and no prepared road within reach, that read as a
+  // soft-lock rather than a setback. Faster recovery (0.3/s to a 3.6 ceiling)
+  // gets you out in ~7s; the consequence stays (you slowed to a limp and lost
+  // that time) without stranding. The drone is still the primary refill, and
+  // reaching prepared road still flips you out of crawl instantly.
+  crawlRecoveryPerSecond: 0.3,
+  crawlRecoveryCeiling: 3.6,
+  // 16 read as frozen. 34 is an unmistakable limp -- under half fabricating --
+  // but it still moves you toward your road, the ore, or home instead of pinning
+  // you in place.
+  crawlSpeed: 34,
   fabricatingSpeed: 74,
   // 96, not the 132 this wanted to be. The self-play routes are timed waypoint
   // scripts calibrated to the speeds they were written against: at 104 they

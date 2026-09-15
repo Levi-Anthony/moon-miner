@@ -559,7 +559,11 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(next.phase).toBe('playing');
     expect(next.speedState).toBe('crawl');
-    expect(next.rover.speed).toBeLessThan(30);
+    // Crawl is a limp, not a hard stop and not full speed. The magnitude was
+    // raised (16 -> 34) so crawl stops stranding the player, but it stays well
+    // under fabricating speed (74) so it is still the overextension penalty.
+    expect(next.rover.speed).toBeGreaterThan(0);
+    expect(next.rover.speed).toBeLessThan(40);
     expect(next.nanobots).toBeGreaterThan(0);
   });
 
