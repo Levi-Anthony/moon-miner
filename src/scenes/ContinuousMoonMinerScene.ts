@@ -95,6 +95,10 @@ const DRONE_URGENCY_RATIO = 0.32;
 const DELIVERY_READOUT_MS = 1260;
 const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v5';
 const CARRIED_ROAD_STORAGE_KEY = 'moon-miner-carried-road-v1';
+// An expedition is a fixed run of shifts with a scored end, so the driving has
+// a point past "another shift forever". Endless play stays available via New
+// Game / ?shift=0 for playtesting.
+const EXPEDITION_SHIFTS = 3;
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
 const DRONE_RAIL_LAB_STORAGE_KEY = 'moon-miner-drone-rail-lab-v1';
@@ -849,7 +853,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // reads as start-over rather than continue -- so the day after was there
     // and unreachable. Tap anywhere, or press R.
     if (this.state.phase !== 'playing') {
-      this.resetRun();
+      if (this.expeditionComplete()) this.startNewGame();
+      else this.resetRun();
       return;
     }
 
@@ -907,7 +912,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.R)) {
-      this.resetRun();
+      if (this.state.phase !== 'playing' && this.expeditionComplete()) this.startNewGame();
+      else this.resetRun();
     }
 
     if (this.escapeKey && Phaser.Input.Keyboard.JustDown(this.escapeKey)) {
@@ -966,6 +972,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private carriedDepletion: Record<string, number> = {};
   private saveDiagnostic: 'loaded' | 'absent' | 'empty' | 'unreadable' | 'off' = 'off';
   private survivedTheNight = 0;
+  private bankedOre = 0; // ore delivered across completed shifts this expedition
 
   // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
   // caution about a documented deferral, and the result was that the next day
@@ -1054,11 +1061,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.shiftNumber = save.shift;
     this.carriedIn = save.fields.length;
     this.carriedDepletion = save.depletion;
+    this.bankedOre = save.banked;
     return save.fields;
   }
 
-  private loadShiftSave(): { shift: number; fields: FieldPatch[]; depletion: Record<string, number> } {
-    if (!this.isShiftModeEnabled()) return { shift: 1, fields: [], depletion: {} };
+  private loadShiftSave(): { shift: number; fields: FieldPatch[]; depletion: Record<string, number>; banked: number } {
+    if (!this.isShiftModeEnabled()) return { shift: 1, fields: [], depletion: {}, banked: 0 };
 
     try {
       const raw = window.localStorage.getItem(CARRIED_ROAD_STORAGE_KEY);
@@ -1069,31 +1077,46 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       // next occurrence diagnose itself instead of being argued about.
       this.saveDiagnostic = raw === null ? 'absent' : raw.length < 3 ? 'empty' : 'loaded';
       const parsed = raw
-        ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[]; depletion?: Record<string, number> })
+        ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[]; depletion?: Record<string, number>; banked?: number })
         : undefined;
       return {
         shift: typeof parsed?.shift === 'number' ? parsed.shift : 1,
         fields: Array.isArray(parsed?.fields) ? parsed.fields : [],
-        depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {}
+        depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {},
+        banked: typeof parsed?.banked === 'number' ? parsed.banked : 0
       };
     } catch {
       this.saveDiagnostic = 'unreadable';
-      return { shift: 1, fields: [], depletion: {} };
+      return { shift: 1, fields: [], depletion: {}, banked: 0 };
     }
+  }
+
+  // The just-completed shift was the last of the expedition, so the next action
+  // is a fresh expedition rather than another shift. False in endless mode.
+  private expeditionComplete(): boolean {
+    return this.isShiftModeEnabled() && this.shiftNumber >= EXPEDITION_SHIFTS;
   }
 
   private saveCarriedRoad(): void {
     if (!this.isShiftModeEnabled()) return;
 
+    // Bank the ore this shift actually delivered (a lost shift delivers none).
+    // In memory so the end-of-shift and expedition summary can show the total.
+    this.bankedOre += this.state.phase === 'won' ? this.state.rover.ore : 0;
+
     try {
       const carried = carryFieldsOvernight(this.state.fields, this.state.tuning);
       this.survivedTheNight = carried.length;
+      // The last shift carries nothing forward -- the next action is a new
+      // expedition, which wipes the board.
+      if (this.expeditionComplete()) return;
       window.localStorage.setItem(
         CARRIED_ROAD_STORAGE_KEY,
         JSON.stringify({
           shift: this.shiftNumber + 1,
           fields: carried,
-          depletion: carryDepletionOvernight(this.state.fertileZones)
+          depletion: carryDepletionOvernight(this.state.fertileZones),
+          banked: this.bankedOre
         })
       );
     } catch {
@@ -1375,6 +1398,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.shiftNumber = 1;
     this.carriedIn = 0;
     this.carriedDepletion = {};
+    this.bankedOre = 0;
     this.saveDiagnostic = 'off';
     this.state = createContinuousWorld(`new-game-${Date.now()}`, this.state.tuning, this.state.arenaId, [], {});
     this.cameraHeading = this.state.rover.heading;
@@ -4870,7 +4894,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       layout.vitals[0].x,
       layout.hudHeight + 16,
       this.isShiftModeEnabled()
-        ? `SHIFT ${this.shiftNumber}${this.carriedIn > 0 ? ` · ${this.carriedIn} lengths inherited` : ' · bare ground'}`
+        ? `SHIFT ${this.shiftNumber} OF ${EXPEDITION_SHIFTS} · ${
+            this.bankedOre > 0
+              ? `${this.bankedOre.toFixed(0)} ore banked`
+              : this.carriedIn > 0
+                ? `${this.carriedIn} lengths inherited`
+                : 'bare ground'
+          }`
         : '',
       11,
       '#8fa3ba'
@@ -5521,19 +5551,40 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     const won = this.state.phase === 'won';
+    // The expedition is over once the last shift ends, win or lose. It reads as
+    // a scored finish, not another shift.
+    const finale = this.expeditionComplete();
+    const quota = this.state.arena.extraction?.oreRequired ?? this.state.targetOre ?? 12;
+    const target = quota * EXPEDITION_SHIFTS;
+    const grade =
+      this.bankedOre >= target * 1.25
+        ? 'Outstanding expedition'
+        : this.bankedOre >= target
+          ? 'Expedition target cleared'
+          : this.bankedOre >= target * 0.5
+            ? 'A lean expedition'
+            : 'The expedition came up short';
+    // On the finale, colour by the run's overall result, not this one shift.
+    const good = finale ? this.bankedOre >= target * 0.5 : won;
     const width = Math.min(layout.width - 48, 524);
     const height = layout.mode === 'mobilePortrait' ? 132 : 116;
     const x = (layout.width - width) / 2;
     const y = layout.mode === 'mobilePortrait' ? layout.hudHeight + 150 : 276;
-    this.graphics.fillStyle(won ? 0x12382f : 0x441d26, 0.94);
+    this.graphics.fillStyle(good ? 0x12382f : 0x441d26, 0.94);
     this.graphics.fillRoundedRect(x, y, width, height, 8);
-    this.graphics.lineStyle(2, won ? 0x77f2ca : 0xff8491, 1);
+    this.graphics.lineStyle(2, good ? 0x77f2ca : 0xff8491, 1);
     this.graphics.strokeRoundedRect(x, y, width, height, 8);
     this.drawStaticText(
       'phase-title',
       layout.width / 2,
       y + 36,
-      won && this.state.arena.extraction ? 'EXTRACTION REACHED' : won ? 'EXTRACTION QUOTA MET' : 'RUN FAILED',
+      finale
+        ? 'EXPEDITION COMPLETE'
+        : won && this.state.arena.extraction
+          ? 'EXTRACTION REACHED'
+          : won
+            ? 'EXTRACTION QUOTA MET'
+            : 'RUN FAILED',
       layout.mode === 'mobilePortrait' ? 20 : 25,
       '#ffffff',
       0.5
@@ -5543,9 +5594,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       'phase-shift',
       layout.width / 2,
       y + height + 24,
-      this.isShiftModeEnabled()
-        ? `${this.survivedTheNight} lengths of rail survive the night`
-        : '',
+      finale
+        ? `${this.bankedOre.toFixed(0)} ore banked over ${EXPEDITION_SHIFTS} shifts — ${grade}`
+        : this.isShiftModeEnabled()
+          ? `${this.survivedTheNight} lengths of rail survive the night`
+          : '',
       layout.mode === 'mobilePortrait' ? 13 : 15,
       '#9fb3c8',
       0.5
@@ -5564,7 +5617,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       'phase-cta',
       layout.width / 2,
       ctaY + 22,
-      this.isShiftModeEnabled() ? `Tap or press R for shift ${this.shiftNumber + 1}` : 'Tap or press R to run again',
+      finale
+        ? 'Tap or press R for a new expedition'
+        : this.isShiftModeEnabled()
+          ? `Tap or press R for shift ${this.shiftNumber + 1}`
+          : 'Tap or press R to run again',
       layout.mode === 'mobilePortrait' ? 15 : 17,
       '#ecfffa',
       0.5
