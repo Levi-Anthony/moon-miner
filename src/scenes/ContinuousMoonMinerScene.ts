@@ -60,6 +60,12 @@ const FIELD_DECK_COLOR = 0x6d8f89;
 const ROAD_FOLLOW_STEER = 2.1; // rad/s carry toward the road; the sim caps at TURN_RATE
 const ROAD_FOLLOW_LOOKAHEAD_MULT = 1.4; // pure-pursuit aim distance, * fieldRadius
 const ROAD_TRAIL_SPACING = 6; // world units between sampled trail points
+// Road-speed momentum. Settle onto prepared road and you accelerate toward
+// railSpeed over the ramp; leave it and you drop back over the (shorter) decay.
+// This is the felt "magnetic acceleration" -- reliable, because it keys off the
+// field-coverage detection that actually fires in play, not rail capture.
+const ROAD_BOOST_RAMP_SECONDS = 1.1;
+const ROAD_BOOST_DECAY_SECONDS = 0.45;
 
 function mixColor(from: number, to: number, t: number): number {
   const lerp = (shift: number) => {
@@ -707,6 +713,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // and contiguous, unlike the lattice fields (which no longer carry prevId
   // links, so chaining them beaded). Sampled in world coords while laying.
   private roadTrail: Vec2[] = [];
+  private roadBoost = 0; // 0..1 road-speed momentum, fed to the sim as roadRunway
   private cameraLabElement?: HTMLElement;
   private droneRailLabElement?: HTMLElement;
   private droneRailDiagnosticsElement?: HTMLElement;
@@ -805,6 +812,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     this.state = tickContinuousWorld(this.state, this.readInput(), deltaSeconds);
     this.sampleRoadTrail();
+    this.updateRoadBoost(deltaSeconds);
     this.updateCamera(deltaSeconds);
     recordContinuousLoopTick(this.loopTrace, previousState, this.state, deltaSeconds);
     this.captureTransitions(
@@ -1217,11 +1225,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // Self-play returned above without it, so tests keep the getPreparedGrip
     // path. Only forward driving gets carried -- reverse and on-the-spot pivots
     // must stay in the driver's hands.
-    const assistSteer = this.roadFollow();
+    const carry = this.roadCarry();
 
     if (mobileDriveInput) {
       this.clearPointerTarget();
-      return mobileDriveInput.driveIntent ? { ...mobileDriveInput, assistSteer } : mobileDriveInput;
+      return mobileDriveInput.driveIntent
+        ? { ...mobileDriveInput, assistSteer: carry.steer, roadRunway: this.roadBoost }
+        : mobileDriveInput;
     }
 
     if (layout.mode === 'mobilePortrait' && !manualHeld) {
@@ -1252,7 +1262,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       reverseIntent: reversing,
       driveIntent: reversing ? false : driveIntent,
       pivotIntent: reversing || (!driveIntent && Math.abs(steer) > 0.001),
-      assistSteer: reversing ? undefined : assistSteer
+      assistSteer: reversing ? undefined : carry.steer,
+      roadRunway: reversing ? undefined : this.roadBoost
     };
   }
 
@@ -1335,6 +1346,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.selfPlay = undefined;
     this.effects = [];
     this.roadTrail = [];
+    this.roadBoost = 0;
     this.eventMessage = undefined;
     this.previousDroneStatus = this.state.drone.status;
     this.previousSpeedState = this.state.speedState;
@@ -1369,6 +1381,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.selfPlay = undefined;
     this.effects = [];
     this.roadTrail = [];
+    this.roadBoost = 0;
     this.eventMessage = undefined;
     this.previousDroneStatus = this.state.drone.status;
     this.previousSpeedState = this.state.speedState;
@@ -1450,6 +1463,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.selfPlay = undefined;
     this.effects = [];
     this.roadTrail = [];
+    this.roadBoost = 0;
     this.eventMessage = undefined;
     this.previousDroneStatus = this.state.drone.status;
     this.previousSpeedState = this.state.speedState;
@@ -3712,32 +3726,64 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return { index, dist: bestDist };
   }
 
-  // The carry/slide feel: pure pursuit over the driven trail. Returns a turn
-  // rate (rad/s) toward a look-ahead point along the road, or 0 when off road.
-  // The sim applies it (capped, eased under active steer) in place of its own
-  // field grip.
-  private roadFollow(): number {
+  // The carry/slide feel AND the on-road speed, from one read of the visible
+  // trail. Returns a follow turn rate (rad/s) toward a look-ahead point along
+  // the road, and `runway` in [0,1] -- how much laid road continues ahead in
+  // the travel direction. Both are 0 when off road. The sim uses steer for the
+  // carry and runway to speed you up. This is the single source of truth the
+  // player can see: on the visible road you are carried and fast; laying fresh
+  // road (the recent tail is excluded) you are neither.
+  private roadCarry(): { steer: number; runway: number } {
+    const off = { steer: 0, runway: 0 };
     const trail = this.roadTrail;
     const tuning = this.state.tuning;
     const excludeTail = this.roadTrailTailSkip();
     const limit = trail.length - excludeTail;
-    if (limit < 2) return 0;
+    if (limit < 2) return off;
     const near = this.nearestTrailIndex(excludeTail);
-    if (near.index < 1 || near.dist >= tuning.fieldRadius) return 0;
+    if (near.index < 1 || near.dist >= tuning.fieldRadius) return off;
     const rover = this.state.rover;
     const a = trail[Math.max(0, near.index - 1)];
     const b = trail[Math.min(limit - 1, near.index + 1)];
     let tangent = Math.atan2(b.y - a.y, b.x - a.x);
-    if (Math.cos(tangent) * Math.cos(rover.heading) + Math.sin(tangent) * Math.sin(rover.heading) < 0) {
-      tangent += Math.PI;
-    }
+    // Which way along the trail is "ahead" for the direction we are travelling.
+    const forward = Math.cos(tangent) * Math.cos(rover.heading) + Math.sin(tangent) * Math.sin(rover.heading) >= 0 ? 1 : -1;
+    if (forward < 0) tangent += Math.PI;
     const centre = trail[near.index];
     const lookahead = tuning.fieldRadius * ROAD_FOLLOW_LOOKAHEAD_MULT;
     const desired = Math.atan2(
       centre.y + Math.sin(tangent) * lookahead - rover.y,
       centre.x + Math.cos(tangent) * lookahead - rover.x
     );
-    return clamp(angleDifference(desired, rover.heading) / 0.5, -1, 1) * ROAD_FOLLOW_STEER;
+    const steer = clamp(angleDifference(desired, rover.heading) / 0.5, -1, 1) * ROAD_FOLLOW_STEER;
+    // Walk the trail in the travel direction, summing distance while the road
+    // stays contiguous (no big gap), and normalise to a target run length.
+    let covered = 0;
+    let prev = centre;
+    const maxRun = tuning.fieldRadius * 5;
+    for (let i = near.index + forward; i >= 0 && i < limit; i += forward) {
+      const p = trail[i];
+      const step = Math.hypot(p.x - prev.x, p.y - prev.y);
+      if (step > tuning.fieldRadius) break;
+      covered += step;
+      prev = p;
+      if (covered >= maxRun) break;
+    }
+    const runway = clamp(covered / (tuning.fieldRadius * 3), 0, 1);
+    return { steer, runway };
+  }
+
+  // Road-speed momentum: build while the rover is on prepared road (the
+  // field-coverage detection that reliably fires in play -- unlike rail
+  // capture), bleed off quickly when it leaves. Fed to the sim as roadRunway,
+  // which ramps speed from preparedSpeed toward railSpeed. This is the felt
+  // acceleration of settling onto a road: drive straight out laying fresh road
+  // and you stay slow; get onto road that already exists and you wind up.
+  private updateRoadBoost(deltaSeconds: number): void {
+    const onRoad =
+      getPreparedCoverage(this.state, this.state.rover) >= this.state.tuning.preparedCoverageThreshold;
+    const rate = onRoad ? deltaSeconds / ROAD_BOOST_RAMP_SECONDS : -deltaSeconds / ROAD_BOOST_DECAY_SECONDS;
+    this.roadBoost = clamp(this.roadBoost + rate, 0, 1);
   }
 
   // Record where the rover actually drives while laying or on road. Crawl

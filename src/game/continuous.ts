@@ -27,9 +27,16 @@ export interface ContinuousInput {
   reverseIntent?: boolean;
   // Road-follow turn rate (rad/s) supplied by the presentation layer, computed
   // by pure pursuit over the rover's driven road trail. When present it drives
-  // the carry/slide feel and replaces the sim's own field-based grip; when
-  // absent (self-play, tests) the sim falls back to getPreparedGrip.
+  // the carry/slide feel on top of the sim's field grip; when absent (self-play,
+  // tests) the sim uses getPreparedGrip alone.
   assistSteer?: number;
+  // How much laid road continues ahead of the rover along the visible trail, in
+  // [0,1], supplied by the presentation layer. The aged-field coverage that
+  // gates the sim's own prepared state reads ~0 while you drive forward laying
+  // road, so it never sped you up in normal play; the visible trail is the road
+  // the player actually sees and drives on, so when they are ON it we raise
+  // speed toward railSpeed by this much. Absent for self-play/tests.
+  roadRunway?: number;
 }
 
 export interface RoverMotionState extends Vec2 {
@@ -1136,13 +1143,26 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   const railRunway = state.rail
     ? clamp(state.rail.runwayAhead / state.tuning.railRunwayForFullSpeed, 0, 1)
     : 0;
-  const baseSpeed = state.rail
+  let baseSpeed = state.rail
     ? state.tuning.preparedSpeed + (state.tuning.railSpeed - state.tuning.preparedSpeed) * railRunway
     : state.speedState === 'prepared'
       ? state.tuning.preparedSpeed
       : state.speedState === 'fabricating'
         ? state.tuning.fabricatingSpeed
         : state.tuning.crawlSpeed;
+  // Driving on the visible road speeds you up, reliably. The field-coverage
+  // path above almost never fires in normal play (you are ahead of the road you
+  // are laying and it must age first), so the felt payoff lived only on a
+  // precise re-drive that never happened. The presentation layer measures the
+  // road continuing ahead along the trail the player can see; when they are on
+  // it, ramp from preparedSpeed toward railSpeed. max() so this only ever adds
+  // speed, never slows what the field path already granted.
+  if (input.roadRunway !== undefined && input.roadRunway > 0) {
+    const onRoadSpeed =
+      state.tuning.preparedSpeed +
+      (state.tuning.railSpeed - state.tuning.preparedSpeed) * clamp(input.roadRunway, 0, 1);
+    baseSpeed = Math.max(baseSpeed, onRoadSpeed);
+  }
   const throttleFactor = input.brake ? 0.28 : 0.38 + input.throttle * 0.62;
   const speed = baseSpeed * throttleFactor;
   state.rover.speed = speed;
@@ -2329,7 +2349,12 @@ function normalizeInput(input: ContinuousInput): ContinuousInput {
     brake,
     reverseIntent,
     driveIntent,
-    pivotIntent: input.pivotIntent ?? (!driveIntent && Math.abs(steer) > 0.001)
+    pivotIntent: input.pivotIntent ?? (!driveIntent && Math.abs(steer) > 0.001),
+    // Carry the presentation-supplied road signals through. These were being
+    // dropped here, which silently no-op'd both the steering carry (assistSteer)
+    // and the on-road speed-up (roadRunway) -- the reason neither was ever felt.
+    assistSteer: input.assistSteer,
+    roadRunway: input.roadRunway
   };
 }
 
