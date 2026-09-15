@@ -875,9 +875,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private handleKeyboardEvent(event: KeyboardEvent): void {
-    if (!import.meta.env.DEV) return;
     if (event.repeat) return;
 
+    // The tuning panel toggles in every build; the backtick hides or shows it.
+    // The remaining keys are dev-only diagnostics.
     if (event.key === '`' || event.key === '~') {
       event.preventDefault();
       this.debugOverlayVisible = !this.debugOverlayVisible;
@@ -885,6 +886,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       return;
     }
 
+    if (!import.meta.env.DEV) return;
     if (this.isTypingInForm(event.target)) return;
 
     if (event.key.toLowerCase() === 'v') {
@@ -1069,7 +1071,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private shouldOpenDebugOverlay(): boolean {
-    if (!import.meta.env.DEV) return false;
+    // A built game opens with the tuning panel showing: it cannot be toggled on
+    // through a published artifact any other way. Dev keeps it opt-in behind
+    // ?debug=1 so the smoke default stays hidden.
+    if (!import.meta.env.DEV) return true;
 
     try {
       const params = new URLSearchParams(window.location.search);
@@ -1401,8 +1406,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private createTuningPanel(): void {
-    if (!import.meta.env.DEV) return;
-
+    // The tuning panel ships in every build, not just dev. It is the only place
+    // a player can retune a published build, and an artifact host cannot pass
+    // ?debug=1 through to turn it on. The camera and drone-rail labs below stay
+    // dev only -- they are diagnostic surfaces, not player controls.
     const existing = document.getElementById('moon-miner-tuning-panel');
     const panel = existing ?? document.createElement('aside');
     panel.id = 'moon-miner-tuning-panel';
@@ -1781,7 +1788,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private syncDebugOverlayVisibility(): void {
-    if (!import.meta.env.DEV) return;
     if (!this.tuningPanelElement && !this.cameraLabElement && !this.droneRailLabElement) return;
 
     for (const panel of [this.tuningPanelElement, this.cameraLabElement, this.droneRailLabElement]) {
