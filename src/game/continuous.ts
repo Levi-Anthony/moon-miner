@@ -37,6 +37,11 @@ export interface ContinuousInput {
   // the player actually sees and drives on, so when they are ON it we raise
   // speed toward railSpeed by this much. Absent for self-play/tests.
   roadRunway?: number;
+  // The rover is on cured road and travelling along it (the presentation's
+  // isOnLaidRoad). Turns the carry into a rescue slide: the road takes over the
+  // wheel, a light touch is subsumed, only a firm steer breaks you off. Absent
+  // for self-play/tests, so their steering model is unchanged.
+  onRoad?: boolean;
 }
 
 export interface RoverMotionState extends Vec2 {
@@ -1126,27 +1131,33 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   // ALWAYS applied on top, so active steering can leave at any grip.
   const activeSteer = Math.abs(input.steer) > 0.06;
   const authority = activeSteer ? state.tuning.gripActiveSteerFactor : 1;
-  // The field magnet is the PRIMARY grip: it pulls toward any prepared ground
-  // under the machine -- freshly laid or old -- which is the "medium magnetic"
-  // feel the design asks for. The presentation-supplied trail follow
-  // (assistSteer, pure pursuit over the driven ribbon) is an EXTRA carry that
-  // only fires when you re-drive road you already laid; on its own it left the
-  // magnet off during ordinary driving. Take whichever pulls harder toward the
-  // road so the two never stack into an over-turn. Self-play/tests pass no
-  // assistSteer and get the field grip alone, unchanged. Steering into the
-  // groove keeps full authority; against it the grip resists then lets go,
-  // capped below a full manual lock so the road carries you yet never traps you.
+  // The field magnet is the base grip on prepared ground -- the "medium magnetic"
+  // pull. Self-play/tests get this alone (they pass no assistSteer/onRoad), so
+  // their steering model is unchanged. Steering into it keeps full authority;
+  // against it it resists then lets go.
   const grip = getPreparedGrip(state);
-  const fieldTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * grip.strength;
-  // The carry is allowed to turn harder than a manual lock (1.35x) so it can
-  // out-correct drift and genuinely hold you to the line, not merely suggest it.
-  const assistCap = TURN_RATE * 1.6;
-  const assistTurn = input.assistSteer !== undefined ? clamp(input.assistSteer, -assistCap, assistCap) : 0;
-  const gripTurn = (Math.abs(assistTurn) > Math.abs(fieldTurn) ? assistTurn : fieldTurn) * authority;
+  const fieldTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * grip.strength * authority;
+
+  // On cured road, the carry is a RESCUE SLIDE, not an assist you fight. The
+  // road takes over the wheel: it may turn well past a manual lock (2.6x) so it
+  // holds a curve at speed instead of flinging you off the outside; a light
+  // touch on the wheel is subsumed so a resting finger does not saw against the
+  // line; and only a firm, deliberate steer (past railBreakSteer) eases the
+  // carry and passes your wheel through, to break off at a junction or seam.
+  let gripTurn = fieldTurn;
+  let steerScale = 1;
+  if (input.onRoad && input.assistSteer !== undefined) {
+    const firmSteer = Math.abs(input.steer) >= state.tuning.railBreakSteer;
+    const carryCap = TURN_RATE * 2.6;
+    const carry = clamp(input.assistSteer, -carryCap, carryCap) * (firmSteer ? 0.3 : 1);
+    gripTurn = Math.abs(carry) > Math.abs(fieldTurn) ? carry : fieldTurn;
+    steerScale = firmSteer ? 1 : 0.25;
+  }
+  const playerAppliedTurn = playerTurn * steerScale;
   // Smoothed, because the drone projection reads turnRate and one jittery frame
   // should not swing where the drone is allowed to go.
-  state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + gripTurn) * 0.3;
-  state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + gripTurn) * deltaSeconds);
+  state.rover.turnRate = state.rover.turnRate * 0.7 + (playerAppliedTurn + gripTurn) * 0.3;
+  state.rover.heading = wrapAngle(state.rover.heading + (playerAppliedTurn + gripTurn) * deltaSeconds);
 
   // Rail speed is earned by the road ahead, not by the patch underneath. Ramped
   // over railRunwayForFullSpeed so a short stub hands you back to ordinary
@@ -2369,7 +2380,8 @@ function normalizeInput(input: ContinuousInput): ContinuousInput {
     // dropped here, which silently no-op'd both the steering carry (assistSteer)
     // and the on-road speed-up (roadRunway) -- the reason neither was ever felt.
     assistSteer: input.assistSteer,
-    roadRunway: input.roadRunway
+    roadRunway: input.roadRunway,
+    onRoad: input.onRoad
   };
 }
 

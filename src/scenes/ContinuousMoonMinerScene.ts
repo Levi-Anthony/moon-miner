@@ -57,14 +57,14 @@ const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
 const FIELD_DECK_COLOR = 0x6d8f89;
 // Road-follow feel (the sandbox slide/carry), computed over the driven trail.
-const ROAD_FOLLOW_STEER = 4.0; // rad/s carry toward the road; the sim caps at ~1.6x TURN_RATE
+const ROAD_FOLLOW_STEER = 5.5; // rad/s carry toward the road; the sim caps the slide at ~2.6x TURN_RATE
 // |cos| of the angle between heading and the road under you, above which you
 // count as driving ALONG that road (grip, boost, and "re-drive = don't restack"
 // all apply). Below it you are crossing the road, not on it -- so crossings lay
 // a real intersection instead of being suppressed, and the carry lets you cut
 // straight through instead of yanking you onto the crossing road. ~0.6 = 53deg.
 const ROAD_ALIGN_MIN = 0.6;
-const ROAD_FOLLOW_LOOKAHEAD_MULT = 1.4; // pure-pursuit aim distance, * fieldRadius
+const ROAD_FOLLOW_LOOKAHEAD_MULT = 2.4; // pure-pursuit aim distance, * fieldRadius -- long, so it anticipates bends and glides on rather than sawing
 const ROAD_TRAIL_SPACING = 6; // world units between sampled trail points
 // How long after laying a stretch it "cures" into pre-laid road: fast + holds
 // you. Below this age it is the stroke you are laying right now, so it neither
@@ -76,6 +76,11 @@ const ROAD_CURE_SECONDS = 1.2;
 // field-coverage detection that actually fires in play, not rail capture.
 const ROAD_BOOST_RAMP_SECONDS = 1.1;
 const ROAD_BOOST_DECAY_SECONDS = 0.45;
+// The slide tops out here (0..1 of the way from fabricating toward railSpeed),
+// short of full rail. Full rail was fast enough that the carry could not hold
+// the road's own tight curves and flung you off -- the "fighting". Capping the
+// slide speed keeps it a firm, holdable rescue-slide rather than a launch.
+const ROAD_SLIDE_MAX = 0.62;
 
 function mixColor(from: number, to: number, t: number): number {
   const lerp = (shift: number) => {
@@ -1259,11 +1264,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // path. Only forward driving gets carried -- reverse and on-the-spot pivots
     // must stay in the driver's hands.
     const carry = this.roadCarry();
+    const onRoad = this.isOnLaidRoad();
 
     if (mobileDriveInput) {
       this.clearPointerTarget();
       return mobileDriveInput.driveIntent
-        ? { ...mobileDriveInput, assistSteer: carry.steer, roadRunway: this.roadBoost }
+        ? { ...mobileDriveInput, assistSteer: carry.steer, roadRunway: this.roadBoost, onRoad }
         : mobileDriveInput;
     }
 
@@ -1296,7 +1302,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       driveIntent: reversing ? false : driveIntent,
       pivotIntent: reversing || (!driveIntent && Math.abs(steer) > 0.001),
       assistSteer: reversing ? undefined : carry.steer,
-      roadRunway: reversing ? undefined : this.roadBoost
+      roadRunway: reversing ? undefined : this.roadBoost,
+      onRoad: reversing ? false : onRoad
     };
   }
 
@@ -3797,7 +3804,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       centre.y + Math.sin(tangent) * lookahead - rover.y,
       centre.x + Math.cos(tangent) * lookahead - rover.x
     );
-    const steer = clamp(angleDifference(desired, rover.heading) / 0.15, -1, 1) * ROAD_FOLLOW_STEER;
+    const steer = clamp(angleDifference(desired, rover.heading) / 0.25, -1, 1) * ROAD_FOLLOW_STEER;
     // Walk the trail in the travel direction, summing distance while the road
     // stays contiguous (no big gap), and normalise to a target run length.
     let covered = 0;
@@ -3825,7 +3832,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private updateRoadBoost(deltaSeconds: number): void {
     const onRoad = this.isOnLaidRoad();
     const rate = onRoad ? deltaSeconds / ROAD_BOOST_RAMP_SECONDS : -deltaSeconds / ROAD_BOOST_DECAY_SECONDS;
-    this.roadBoost = clamp(this.roadBoost + rate, 0, 1);
+    this.roadBoost = clamp(this.roadBoost + rate, 0, ROAD_SLIDE_MAX);
   }
 
   // Is the rover on road it laid on an EARLIER pass -- the driven ribbon minus
