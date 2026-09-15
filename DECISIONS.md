@@ -1,5 +1,34 @@
 # Decisions
 
+## 2026-09-15: The road as a rescue slide (stop fighting it)
+
+Playtest: "The road should feel like a rescue slide home almost. I'm still
+fighting it." Raising grip strength hadn't worked because the fight was
+STRUCTURAL, not weak grip:
+- Any steer > 0.06 halved the carry (`authority`), so touching the wheel to
+  follow a curve made the road let go.
+- Player steer was always ADDED on top, so a resting finger sawed the line.
+- The 1.6× turn cap couldn't hold a curve at the 236 slide speed → you slid off
+  the outside and fought back on.
+
+Reworked the on-road steering into an actual slide. New `onRoad` input from the
+presentation (`isOnLaidRoad`, aligned + on cured road); self-play/tests pass
+none, so their steering model is byte-unchanged.
+- Carry may turn up to **2.6× a manual lock** so it holds the road's own curves.
+- A light touch is **subsumed** — player steer scaled to 0.25 while carried — so
+  incidental input no longer fights; only a firm steer past `railBreakSteer`
+  eases the carry (to 0.3) and passes the wheel through, to break off.
+- **Slide speed ceiling** lowered (`ROAD_SLIDE_MAX = 0.62` → ~174, was ramping to
+  236) so the carry can always hold the line; **longer look-ahead** (1.4 → 2.4×
+  radius) and a gentler response (divisor 0.15 → 0.25) so it glides on, not saws.
+- Traded some top speed for control — deliberate: the owner now prioritises the
+  slide feel over raw top speed. Curvature-aware speed (fast straights + slow
+  bends) is the refinement if they want the top speed back.
+
+Verified headless: on cured road, release the wheel and the carry holds you
+around your own laid curve for ~2 laps (13.8 rad turned hands-off) at a steady
+174.
+
 ## 2026-09-15: Grip harder, intersections, less text
 
 Playtest: "still needs to grip the road more and allow intersections. Also too
