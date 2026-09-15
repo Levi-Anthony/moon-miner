@@ -1,5 +1,30 @@
 # Decisions
 
+## 2026-09-15: Fix the second-layer overlap at junctions
+
+Playtest (distinguishing questions): the overlap is "a second layer on re-drive"
+and "messy junctions", happening "at crossings/intersections". Cause: the
+non-overlap skip fired only when the nearest cured point was roughly ALIGNED
+with heading. Driving along road A through where road B crosses, the nearest
+cured point is B's — perpendicular — so it read as "not aligned" and laid a
+second layer of A right on the crossing.
+
+Fix: skip laying in EITHER case, not just the aligned one:
+- ALONG a road — near a cured point and aligned (`alongRoad`), as before.
+- ON the ribbon — physically on top of existing road, within half a field
+  radius, whatever the angle (`onRibbon`). Catches the junction, where you are
+  on A even though the nearest road is the B you are crossing.
+A transverse crossing of NEW road still lays right up to the road it meets (only
+the ~half-radius directly over the crossing is skipped), so the intersection
+still forms and the render bridges the short gap into a clean junction rather
+than a doubled lump.
+
+Known remaining overlap case (not this one): re-driving your OWN road within the
+1.2s cure window (a fast tight loop) still doubles, because the skip checks only
+cured points and cannot tell "a previous lap's fresh road" from "the stroke I am
+laying right now". The owner flagged crossings, not fast loops, so this is left
+for later.
+
 ## 2026-09-15: Kill the straight-line jitter; fast straights, eased bends
 
 Playtest: "even normal driving straight still kind of jitters the vehicle left
