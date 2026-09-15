@@ -1011,11 +1011,45 @@ validated road into the real scene; sandbox removed.
 The repeated blind breakage came from shipping renders I could not see. Now:
 **screenshot the render in headless Chromium and inspect it before pushing.**
 
+### Feel transplant (done) — the road carries you
+The sandbox slide/follow is now in the real game. Architecture DECIDED to
+minimise sim/test regressions:
+- The **presentation layer** computes the carry (`roadFollow`): pure pursuit
+  over the rover's driven trail — find the nearest non-recent trail point,
+  take the road tangent there, aim at a look-ahead point along it, return a
+  turn rate toward it (0 when off road).
+- The **sim** takes that as a new optional `assistSteer` on `ContinuousInput`
+  and applies it in place of the field grip, capped below `TURN_RATE` and
+  eased by `gripActiveSteerFactor` under active steer — so hands-off you slide
+  down the road's own curve, and a deliberate steer still leaves it.
+- REJECTED: computing the follow inside the sim. It would have needed the
+  trail geometry in the sim and would have moved every self-play/test route.
+  Instead self-play and tests set no `assistSteer`, so they keep the existing
+  `getPreparedGrip` fallback byte-for-byte — the 5 red tests are unchanged by
+  this work.
+- Forward driving only: reverse and on-the-spot pivots pass no assist and stay
+  fully in the driver's hands.
+
+### Non-overlap (DECIDED + done) — proximity-skip
+Problem: re-driving over road you already laid must not stack a second ribbon
+(doubled fill, bubbling at crossings). Options weighed:
+- REJECTED **lattice-snap**: quantise trail points to a grid so re-drives land
+  on the same cells. Reintroduces the tile substrate whose wobble we just left.
+- REJECTED **graph-weld**: detect crossings and merge nodes into a road graph.
+  Correct but heavy — a spatial index and merge logic for a feel we can get
+  more cheaply.
+- ADOPTED **proximity-skip**: `sampleRoadTrail` refuses to add a point within
+  `fieldRadius` of an existing, non-recent trail point (recent tail excluded so
+  the road you are actively laying doesn't reject itself). One spatial check
+  does triple duty — prevents overlap, answers "am I on old road" for the
+  carry, and gates the follow-assist. Screenshot-verified: a loop that crosses
+  its own road stays a single clean ribbon at the crossing.
+
 ### Known follow-ups (not yet done)
-- Steering FEEL in the real game is still the old magnet/rail; the sandbox
-  slide/follow has NOT yet been transplanted (render only).
-- Authored and carried-overnight road is not yet drawn as ribbon (only the
-  rover's own trail is).
+- Authored and carried-overnight road is not yet drawn as ribbon, and the
+  follow-assist only engages on the rover's own trail (both derive from the
+  same trail, so render and feel stay coherent; extending to authored road is
+  the next step).
 - 5 self-play/route tests remain red pending the loop retune (DEV-23).
 
 ### Linear
