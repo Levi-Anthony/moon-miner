@@ -57,7 +57,13 @@ const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
 const FIELD_DECK_COLOR = 0x6d8f89;
 // Road-follow feel (the sandbox slide/carry), computed over the driven trail.
-const ROAD_FOLLOW_STEER = 3.4; // rad/s carry toward the road; the sim caps at ~1.35x TURN_RATE
+const ROAD_FOLLOW_STEER = 4.0; // rad/s carry toward the road; the sim caps at ~1.6x TURN_RATE
+// |cos| of the angle between heading and the road under you, above which you
+// count as driving ALONG that road (grip, boost, and "re-drive = don't restack"
+// all apply). Below it you are crossing the road, not on it -- so crossings lay
+// a real intersection instead of being suppressed, and the carry lets you cut
+// straight through instead of yanking you onto the crossing road. ~0.6 = 53deg.
+const ROAD_ALIGN_MIN = 0.6;
 const ROAD_FOLLOW_LOOKAHEAD_MULT = 1.4; // pure-pursuit aim distance, * fieldRadius
 const ROAD_TRAIL_SPACING = 6; // world units between sampled trail points
 // How long after laying a stretch it "cures" into pre-laid road: fast + holds
@@ -3775,6 +3781,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (limit < 2) return off;
     const near = this.nearestTrailIndex(limit);
     if (near.index < 1 || near.dist >= tuning.fieldRadius) return off;
+    // Only carry along road you are roughly travelling ALONG. Crossing a road
+    // square is an intersection, not a lane to be pulled onto -- pass through it.
+    if (this.roadAlignmentAt(near.index, limit) < ROAD_ALIGN_MIN) return off;
     const rover = this.state.rover;
     const a = trail[Math.max(0, near.index - 1)];
     const b = trail[Math.min(limit - 1, near.index + 1)];
@@ -3788,7 +3797,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       centre.y + Math.sin(tangent) * lookahead - rover.y,
       centre.x + Math.cos(tangent) * lookahead - rover.x
     );
-    const steer = clamp(angleDifference(desired, rover.heading) / 0.22, -1, 1) * ROAD_FOLLOW_STEER;
+    const steer = clamp(angleDifference(desired, rover.heading) / 0.15, -1, 1) * ROAD_FOLLOW_STEER;
     // Walk the trail in the travel direction, summing distance while the road
     // stays contiguous (no big gap), and normalise to a target run length.
     let covered = 0;
@@ -3826,7 +3835,25 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const limit = this.curedTrailLimit();
     if (limit < 2) return false;
     const near = this.nearestTrailIndex(limit);
-    return near.index >= 1 && near.dist < this.state.tuning.fieldRadius;
+    // On the road only when driving along it, not when crossing it.
+    return (
+      near.index >= 1 &&
+      near.dist < this.state.tuning.fieldRadius &&
+      this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN
+    );
+  }
+
+  // |cos| of the angle between the rover's heading and the road tangent at a
+  // cured trail index. 1 = driving along the road, 0 = crossing it square.
+  private roadAlignmentAt(index: number, limit: number): number {
+    const trail = this.roadTrail;
+    const a = trail[Math.max(0, index - 1)];
+    const b = trail[Math.min(limit - 1, index + 1)];
+    const tx = b.x - a.x;
+    const ty = b.y - a.y;
+    const len = Math.hypot(tx, ty) || 1;
+    const h = this.state.rover.heading;
+    return Math.abs((tx / len) * Math.cos(h) + (ty / len) * Math.sin(h));
   }
 
   // Record where the rover actually drives while laying or on road. Crawl
@@ -3838,13 +3865,21 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const rover = this.state.rover;
     const last = this.roadTrail[this.roadTrail.length - 1];
     if (last && Math.hypot(rover.x - last.x, rover.y - last.y) < ROAD_TRAIL_SPACING) return;
-    // NON-OVERLAP against CURED road only: re-driving road you laid earlier is a
-    // slide, not new road, so do not stack a second ribbon on it. The uncured
-    // stroke you are laying now is not checked, so ordinary laying proceeds.
+    // NON-OVERLAP against CURED road, but only when driving ALONG it: re-driving
+    // a road you laid earlier is a slide, not new road, so do not stack a second
+    // ribbon on it. Crossing a cured road square is an INTERSECTION -- lay
+    // through it so the crossing exists. The uncured stroke you are laying now is
+    // never checked, so ordinary laying proceeds.
     const limit = this.curedTrailLimit();
     if (limit >= 2) {
       const near = this.nearestTrailIndex(limit);
-      if (near.index >= 0 && near.dist < this.state.tuning.fieldRadius) return;
+      if (
+        near.index >= 0 &&
+        near.dist < this.state.tuning.fieldRadius &&
+        this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN
+      ) {
+        return;
+      }
     }
     this.roadTrail.push({ x: rover.x, y: rover.y, t: this.state.elapsedSeconds });
     if (this.roadTrail.length > 4000) this.roadTrail.shift();
@@ -5537,7 +5572,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.eventMessage = undefined;
     }
     const guidance = getContinuousGuidance(this.state);
-    return `${guidance.objective}. ${guidance.nudge}`;
+    // Less prose. The two-sentence objective+nudge taught the controls in the
+    // opening seconds and still speaks on real events (the transient messages
+    // above); but narrating a full how-to line every steady-state frame was the
+    // "too much text". After the intro, the persistent line is just the short
+    // objective -- a reminder, not a paragraph. Phase end keeps its full say.
+    if (this.state.elapsedSeconds < 7 || this.state.phase !== 'playing') {
+      return `${guidance.objective}. ${guidance.nudge}`;
+    }
+    return guidance.objective;
   }
 
   private drawPhaseBanner(): void {
