@@ -1,5 +1,38 @@
 # Decisions
 
+## 2026-09-15: Road feel take 3 — lay slow, cured road is fast and holds
+
+Playtest, verbatim: "It's fast when I'm laying down new road, and the road
+doesn't hold me on it." Both from keying speed/carry off the wrong signal.
+
+### Fast while laying (fixed)
+On-road detection used the field data, which lights up on the road being laid
+RIGHT NOW (your own fresh field under you), so it sped you up while laying — and
+the sim's own prepared/rail speed did the same on fresh road. DECISION: the
+presentation owns drive speed whenever it supplies `roadRunway` — laying (or off
+road) holds fabricating speed, and only pre-laid road winds toward railSpeed.
+The sim's own prepared/rail speed path is kept only for self-play/tests (which
+supply no `roadRunway`). Verified headless: laying is a steady 74, not a surge.
+
+### Didn't hold / no reliable speed on pre-laid road (fixed)
+Detection was DISTANCE-based (a fixed index skip along the trail, ~78 units). A
+tight loop (turn radius ~33) can never get that far "behind" itself, so it
+almost never fired. DECISION: **time-based cure** — a stretch of road becomes
+fast-and-holding road `ROAD_CURE_SECONDS` (2s) after it is laid, independent of
+turn radius. Trail points now carry a timestamp; the cured points are the trail
+prefix. One check (`isOnLaidRoad`) drives BOTH the speed momentum and the carry,
+and it matches what the player sees. Firmed the carry response (tighter angle
+divisor, higher follow rate). Verified headless: road cures at ~2s; re-driving
+it ramps speed 74→236 (3.2× laying) and engages the carry.
+- REJECTED continuing to key off field coverage (fires on fresh road) and off
+  trail *distance* (radius-dependent, unreliable). Time is the robust axis.
+
+### Note on verification
+The headless sim runs at ~1/6 real-time (rAF throttled), so validating
+re-driving cured road needs a long wall-clock drive (~48s → ~8 game-s, ~2
+loops). Earlier short probes only simulated ~1s of game time and never cured or
+looped — a testing artifact, not a logic bug.
+
 ## 2026-09-15: Road feel take 2 — the flashing, and why nothing was felt
 
 ### Flashing (fixed)
