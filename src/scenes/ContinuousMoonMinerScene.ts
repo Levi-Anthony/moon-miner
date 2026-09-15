@@ -4636,9 +4636,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
                 : 0xc6b2ff;
         width = this.state.arms.helper.duty === 'miningAssist' ? 5 : 3;
       } else if (role === 'building') {
-        target = this.pointFromHeading(rover, rover.heading + angle * 0.28, this.state.speedState === 'crawl' ? 34 : 64);
+        // Laying track: arms punched out long and pumping, so "driving on new
+        // ground" is unmistakably busy next to a stowed cruise.
+        const reach = this.state.speedState === 'crawl' ? 34 : 72 + Math.sin(this.time.now / 85 + index * 1.3) * 12;
+        target = this.pointFromHeading(rover, rover.heading + angle * 0.28, reach);
         color = 0x68f3ff;
-        width = 4;
+        width = 5;
       } else if (role === 'mining') {
         const miningTarget = fertile
           ? this.closestPointOnFertileZone(fertile, this.pointFromHeading(rover, rover.heading + angle * 0.24, 70))
@@ -4661,7 +4664,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         color = 0xff765f;
         width = 2.6;
       } else {
-        target = this.pointFromHeading(rover, rover.heading + angle, 40);
+        // Stowed (cruising on road, or parked on bare ground): arms folded tight
+        // to the chassis and dim, so the machine reads as idle -- the wide,
+        // legible contrast with laying track and mining.
+        target = this.pointFromHeading(rover, rover.heading + angle, 15);
+        color = 0x5c6a7d;
+        width = 2;
       }
 
       // Screen-space depth: anything whose tip lands below the chassis centre is

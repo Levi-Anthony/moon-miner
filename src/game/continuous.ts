@@ -344,6 +344,11 @@ export interface ContinuousCommandResult {
 const WORLD_WIDTH = 1040;
 const WORLD_HEIGHT = 720;
 const INDUSTRIAL_ARMS = 7;
+// Per-arm mining rate factor while stopped in a seam. Mining is now a flat,
+// legible "park and the arms extract" -- no speed or vein-alignment coupling,
+// because you mine standing still. Chosen so all seven arms together give about
+// the throughput parked mining had before (7 * 0.4 vs the old 7 * ~0.35).
+const STOP_MINE_EFFICIENCY = 0.4;
 const UTILITY_ARMS = 1;
 const TOTAL_ARMS = INDUSTRIAL_ARMS + UTILITY_ARMS;
 const TURN_RATE = 2.25;
@@ -358,7 +363,6 @@ const TURN_RATE = 2.25;
 const REVERSE_SPEED_RATIO = 0.62;
 // Full lock in a little over a quarter second.
 const STEER_RAMP_PER_SECOND = 4.6;
-const STATIONARY_MINING_FLOW_MULTIPLIER = 0.25;
 const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
 export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -1312,13 +1316,11 @@ function runMiningSystem(
   if (state.speedState === 'crawl') return;
   if (!fertileZone || state.arms.mining <= 0) return;
 
-  const preparedMultiplier = state.speedState === 'prepared' ? 1.08 : 1;
+  // Flat rate: richness x arms x mineRate x efficiency. No speed or vein-line
+  // coupling any more -- you mine parked, so those inputs were both zero-ish and
+  // the source of the "speed and line are the yield" illegibility.
   const industrialYieldRate =
-    fertileZone.richness *
-    state.arms.mining *
-    state.tuning.mineRate *
-    preparedMultiplier *
-    getFertileZoneMiningFlowMultiplier(state, fertileZone);
+    fertileZone.richness * state.arms.mining * state.tuning.mineRate * STOP_MINE_EFFICIENCY;
   const mined = Math.min(fertileZone.remaining, industrialYieldRate * deltaSeconds);
 
   fertileZone.remaining -= mined;
@@ -1351,10 +1353,11 @@ function runMiningSystem(
 }
 
 function getHelperMiningAssistRate(state: ContinuousWorldState, industrialMined: number, deltaSeconds: number): number {
+  // The utility arm no longer joins the dig -- mining is the seven industrial
+  // arms, stopped. Kept returning 0 so the mining path has no hidden helper
+  // contribution to reason about.
   if (industrialMined <= 0 || deltaSeconds <= 0) return 0;
   if (state.arms.helper.duty !== 'miningAssist') return 0;
-  if (state.speedState !== 'prepared') return 0;
-  if (state.drone.status === 'returning') return 0;
   return (industrialMined / deltaSeconds) * HELPER_ARM_MINE_ASSIST_RATIO;
 }
 
@@ -1960,6 +1963,16 @@ function getPreparedFieldTangent(fields: FieldPatch[], index: number): Vec2 | un
   };
 }
 
+// The arms do exactly ONE job at a time, and the job is read straight off what
+// the machine is doing -- so the posture tells you the activity at a glance, and
+// you mine only when stopped:
+//   - crawl                : all arms are emergency reclaim legs.
+//   - moving on new ground : all arms lay track (fabricating).
+//   - moving on road       : nothing to lay, all arms stowed (cruising).
+//   - stopped in a seam    : all arms mine.
+//   - stopped elsewhere    : all arms stowed.
+// Switching is instant because it is recomputed every tick from the same
+// condition the movement and field systems use.
 function allocateArms(
   speedState: SpeedState,
   inFertileZone: boolean,
@@ -1967,49 +1980,37 @@ function allocateArms(
   droneStatus: DroneStatus = 'ready'
 ): ArmAllocation {
   if (speedState === 'crawl') {
-    return createArmAllocation(1, 0, 0, 6, 'emergency', 'utility arm is clearing jams and keeping crawl alive');
+    return createArmAllocation(0, 0, 0, INDUSTRIAL_ARMS, 'emergency', 'reclaim legs are dragging the machine along');
   }
 
-  if (!driveIntent) {
-    const helperCanAssist = speedState === 'prepared' && inFertileZone && droneStatus !== 'returning';
-    return createArmAllocation(
-      0,
-      inFertileZone ? INDUSTRIAL_ARMS : 0,
-      inFertileZone ? 0 : INDUSTRIAL_ARMS,
-      0,
-      droneStatus === 'returning' ? 'droneDocking' : helperCanAssist ? 'miningAssist' : inFertileZone ? 'systems' : 'scan',
-      droneStatus === 'returning'
-        ? 'utility arm is braced for drone docking'
-        : helperCanAssist
-          ? 'utility arm has a clean support window'
-          : inFertileZone
-            ? 'utility arm is managing seam systems'
-            : 'utility arm is scanning and stabilizing'
-    );
+  if (driveIntent) {
+    if (speedState === 'fabricating') {
+      return createArmAllocation(INDUSTRIAL_ARMS, 0, 0, 0, 'fabricationSupport', 'every arm is laying track');
+    }
+    // Cruising on prepared road: not laying, not mining -- arms stowed.
+    return createArmAllocation(0, 0, INDUSTRIAL_ARMS, 0, 'scan', 'cruising on road, arms stowed');
   }
 
-  if (speedState === 'prepared') {
+  // Stopped in a seam: the seven industrial arms mine. The utility arm stays
+  // utility (seam systems / drone docking) -- it is not a mining arm.
+  if (inFertileZone) {
     return createArmAllocation(
-      1,
-      inFertileZone ? 5 : 2,
-      inFertileZone ? 1 : 4,
       0,
-      droneStatus === 'returning' ? 'droneDocking' : inFertileZone ? 'miningAssist' : 'scan',
-      droneStatus === 'returning'
-        ? 'utility arm is catching the returning drone'
-        : inFertileZone
-          ? 'utility arm is opportunistically stealing a ridiculous pocket'
-          : 'utility arm is scanning ahead'
+      INDUSTRIAL_ARMS,
+      0,
+      0,
+      droneStatus === 'returning' ? 'droneDocking' : 'systems',
+      droneStatus === 'returning' ? 'utility arm is braced for drone docking' : 'utility arm is managing seam systems'
     );
   }
 
   return createArmAllocation(
-    inFertileZone ? 3 : 4,
-    inFertileZone ? 3 : 1,
-    inFertileZone ? 1 : 2,
     0,
-    'fabricationSupport',
-    'utility arm is managing fabrication support'
+    0,
+    INDUSTRIAL_ARMS,
+    0,
+    droneStatus === 'returning' ? 'droneDocking' : 'scan',
+    droneStatus === 'returning' ? 'utility arm is braced for drone docking' : 'stopped, arms stowed'
   );
 }
 
@@ -2347,30 +2348,6 @@ function isPointInFertileZone(zone: FertileZone, point: Vec2): boolean {
   }
 
   return distance(point, zone) <= zone.radius;
-}
-
-function getFertileZoneMiningFlowMultiplier(state: ContinuousWorldState, zone: FertileZone): number {
-  if (!zone.vein) return 1;
-  if (state.rover.speed < 1) return STATIONARY_MINING_FLOW_MULTIPLIER;
-
-  const veinDx = zone.vein.to.x - zone.vein.from.x;
-  const veinDy = zone.vein.to.y - zone.vein.from.y;
-  const veinLength = Math.hypot(veinDx, veinDy);
-  if (veinLength <= 0.001) return 1;
-
-  const heading = {
-    x: Math.cos(state.rover.heading),
-    y: Math.sin(state.rover.heading)
-  };
-  const alignment = Math.abs((heading.x * veinDx + heading.y * veinDy) / veinLength);
-  const alignmentMultiplier = 0.18 + alignment * alignment * 1.34;
-  // The cap matters more than it looks. Yield is rate times time in the zone,
-  // and crossing a seam faster shrinks the time; if the rate stops rising at
-  // 1.45 while the machine keeps getting quicker, going faster on road means
-  // mining less. That coupling -- not the self-play fixtures -- is why raising
-  // prepared speed kept costing ore.
-  const speedMultiplier = clamp(state.rover.speed / state.tuning.fabricatingSpeed, 0.35, state.tuning.miningFlowSpeedCap);
-  return alignmentMultiplier * speedMultiplier;
 }
 
 function normalizeInput(input: ContinuousInput): ContinuousInput {
