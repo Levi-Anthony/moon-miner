@@ -944,3 +944,81 @@ than committed to. That is worth having -- thefts 15% to 8%, with launches
 slightly up rather than down -- and it is worth naming correctly, because a
 mechanic described as something it is not is how the next person tunes the wrong
 number.
+
+## 2026-09-15: The Road Rework — substrate, feel, and render (full decision trail)
+
+Trigger: first-feel playtest of the continuous build. Verdicts, in the owner's
+words: grip had "no magnetic feel"; the loop was "~15% acceptable"; the road was
+"wobbly hexes… transparent… multiple kinds… don't lay together… nothing says
+road." Driving itself was fine.
+
+### Root cause
+The road's problems are inherent to its **hex/lattice tile substrate**: tile
+centres are snapped to a lattice, so any line through them zig-zags (the
+"wobble"), and the render layered multiple tinted tile passes (the "transparent,
+multiple kinds"). This directly contradicts the repo's own 2026-06-29 decision
+("Prepared Field Should Read As Continuous Surface — connected ribbon lanes, not
+tiles"). The code had drifted to lattice tiles against its own doctrine.
+
+### Grip (DEV-22)
+Unified the two overlapping steering systems (magnet + rail-lock) into one
+`getPreparedGrip`. Finding: the rail lock almost never captured, because
+`tileSize` (16) is far below the laid-patch spacing (~42), so most lanes failed
+the neighbour test — the felt grip lived in a magnet that was itself squeezed to
+nothing. Shipped; left 5 self-play/route tests red (calibrated to old dynamics)
+pending the loop retune (DEV-23). ACCEPTED red tests as a deliberate,
+feel-first tradeoff.
+
+### The owner's decoupling idea (previously unexplored)
+Lay a lane ~2.5 car widths wide so ordinary driving sits in a free middle band
+untouched by the road, with constraint only near the edges — you steer to a
+boundary to leave. Width, not tile shape, is the mechanism. This became the
+basis of the sandbox.
+
+### Sandbox (built, then rejected as the destination)
+Built a standalone `?sandbox=1` scene: drive + continuous ribbon road + slide +
+pure-pursuit follow + live sliders. Feel iterations:
+- REJECTED: neutral middle + edge-only push — read as twitchy/"weird".
+- ADOPTED: the road *carries* you (pure pursuit toward a look-ahead point), so
+  hands-off you slide down it; leaving takes a deliberate steer (follow capped
+  below manual turn). Owner: "Better."
+- ADJUSTED: raised follow strength + added corner-braking so it takes hard
+  corners; widened slider ranges; added M2 nanobots (lay spends / slide
+  recovers) as the first economy layer.
+- REJECTED (owner): the sandbox as the product — "I hate the sandbox" (a bare
+  toy on a separate URL). 
+
+### Direction fork
+Considered: (A) rebuild the road inside Moon Miner vs (B) grow the sandbox into
+the game (DEV-48). Owner first chose B, then reversed to **"good road into real
+Moon Miner"** and to delete the sandbox. Final decision: transplant the
+validated road into the real scene; sandbox removed.
+
+### Render transplant (the bugs, in the order they were hit)
+1. Connected fields in **id order** + drew **raw world coords with no
+   projection** → big lines slashed random screen positions, real road
+   off-screen/invisible. SHIPPED AND BROKE; reverted immediately.
+2. Walked `fieldSections` (prevId chains) + projected → right place, but the
+   lattice rewrite no longer populates `prevId`, so every field was its own
+   section and drew as a single disc → a string of beads.
+3. Per-segment quads + joint circles at alpha < 1 → translucent bubbles.
+4. FIX (verified): draw from the rover's **actual driven trail** (scene-tracked,
+   ordered, contiguous) → project each point → Chaikin smooth → fill as one
+   solid outline polygon at full alpha, width clamped by camera zoom. Reads as a
+   clean connected road.
+
+### Process change (adopted)
+The repeated blind breakage came from shipping renders I could not see. Now:
+**screenshot the render in headless Chromium and inspect it before pushing.**
+
+### Known follow-ups (not yet done)
+- Steering FEEL in the real game is still the old magnet/rail; the sandbox
+  slide/follow has NOT yet been transplanted (render only).
+- Authored and carried-overnight road is not yet drawn as ribbon (only the
+  rover's own trail is).
+- 5 self-play/route tests remain red pending the loop retune (DEV-23).
+
+### Linear
+DEV-22 grip unify · DEV-25 mobile launch-button · DEV-26 control panel / live
+tuning / New Game · DEV-27 define "1 game" (fixed-N) · DEV-47 vehicle classes →
+road-type presets (backlog) · DEV-48 rebuild-on-sandbox plan.
