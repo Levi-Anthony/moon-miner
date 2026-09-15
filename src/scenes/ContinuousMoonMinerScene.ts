@@ -699,6 +699,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // Whether the control panel is reachable this session (?debug=1, or ~ pressed).
   // Gates the floating on-screen toggle so a plain player never sees it.
   private debugModeAvailable = false;
+  // The road, drawn from the rover's ACTUAL driven path -- guaranteed ordered
+  // and contiguous, unlike the lattice fields (which no longer carry prevId
+  // links, so chaining them beaded). Sampled in world coords while laying.
+  private roadTrail: Vec2[] = [];
   private cameraLabElement?: HTMLElement;
   private droneRailLabElement?: HTMLElement;
   private droneRailDiagnosticsElement?: HTMLElement;
@@ -796,6 +800,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const deltaSeconds = Math.min(deltaMs / 1000, 0.08);
 
     this.state = tickContinuousWorld(this.state, this.readInput(), deltaSeconds);
+    this.sampleRoadTrail();
     this.updateCamera(deltaSeconds);
     recordContinuousLoopTick(this.loopTrace, previousState, this.state, deltaSeconds);
     this.captureTransitions(
@@ -1316,6 +1321,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.mobileDrive = undefined;
     this.selfPlay = undefined;
     this.effects = [];
+    this.roadTrail = [];
     this.eventMessage = undefined;
     this.previousDroneStatus = this.state.drone.status;
     this.previousSpeedState = this.state.speedState;
@@ -1349,6 +1355,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.mobileDrive = undefined;
     this.selfPlay = undefined;
     this.effects = [];
+    this.roadTrail = [];
     this.eventMessage = undefined;
     this.previousDroneStatus = this.state.drone.status;
     this.previousSpeedState = this.state.speedState;
@@ -1429,6 +1436,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.preSelfPlayPointerTarget = undefined;
     this.selfPlay = undefined;
     this.effects = [];
+    this.roadTrail = [];
     this.eventMessage = undefined;
     this.previousDroneStatus = this.state.drone.status;
     this.previousSpeedState = this.state.speedState;
@@ -3667,39 +3675,118 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  private drawFields(): void {
-    const fields = [...this.state.fields].sort((a, b) => a.id - b.id);
-    const ordinary = fields.filter((field) => !field.reservedByDrone);
-    const reserved = fields.filter((field) => field.reservedByDrone);
-
-    // Your road is one thing and it is painted one colour. It used to be split
-    // live into "protected" and "spendable", and that reads as inscrutable
-    // because both of those are measured from the rover: the corridor runs to
-    // extraction from wherever you are, and the forward arc follows your
-    // heading. So a stretch of road flipped between cyan and amber as you drove
-    // past it, changing for reasons tied to your own motion rather than to
-    // anything about the road. Road that repaints itself while you look at it
-    // is not road.
-    //
-    // The distinction still exists and still matters, so it is shown at the
-    // only moment it is a decision: the cluster the drone would actually lift
-    // is highlighted while the launch is available. That is a targeting
-    // reticle, which is allowed to move, rather than a property of the ground,
-    // which is not.
-    const preview = getReclaimPreview(this.state);
-    const targeted = new Set<number>();
-    if (preview) {
-      for (const field of ordinary) {
-        if (Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius) {
-          targeted.add(field.id);
-        }
-      }
+  // Record where the rover actually drives while laying or on road. Crawl
+  // (starved, no road laid) leaves a gap; idle adds nothing. World coords.
+  private sampleRoadTrail(): void {
+    if (this.state.speedState === 'crawl') return;
+    const rover = this.state.rover;
+    const last = this.roadTrail[this.roadTrail.length - 1];
+    if (!last || Math.hypot(rover.x - last.x, rover.y - last.y) >= 6) {
+      this.roadTrail.push({ x: rover.x, y: rover.y });
+      if (this.roadTrail.length > 4000) this.roadTrail.shift();
     }
+  }
 
-    this.drawFieldRibbon(ordinary.filter((field) => !targeted.has(field.id)), 0x6cf5dd, false);
-    this.drawFieldRibbon(ordinary.filter((field) => targeted.has(field.id)), 0xd8a24a, false);
-    this.drawFieldRibbon(reserved, 0xffa06c, true);
-    this.drawFieldBirthMarkers(ordinary);
+  private drawFields(): void {
+    // One road, drawn from the rover's actual driven trail -- an ordered,
+    // contiguous path -- projected world->screen and filled as one continuous
+    // band. Earlier attempts failed because they drew from the lattice fields:
+    // by id order they slashed random lines across unrelated patches, and even
+    // in the right order the fields no longer carry prevId links so they beaded
+    // into a string of discs. The rover trail sidesteps all of that.
+    if (this.roadTrail.length < 2) return;
+
+    // Split defensively on any big jump (a reset clears the trail, so this
+    // should not fire -- but never draw a straight slash across a gap).
+    const runs: Vec2[][] = [];
+    let run: Vec2[] = [];
+    const gap = this.state.tuning.fieldRadius * 3;
+    for (const point of this.roadTrail) {
+      const prev = run[run.length - 1];
+      if (prev && Math.hypot(point.x - prev.x, point.y - prev.y) > gap) {
+        if (run.length > 1) runs.push(run);
+        run = [];
+      }
+      run.push(point);
+    }
+    if (run.length > 1) runs.push(run);
+
+    const hw = clamp(this.state.tuning.fieldRadius * this.getCameraZoom() * 0.5, 7, 20);
+    for (const worldRun of runs) {
+      const smooth = this.smoothPolyline(worldRun.map((point) => this.project(point)), 2);
+      this.fillRoadRibbon(smooth, 0x1b2a29, hw + 3, 0.5);
+      this.fillRoadRibbon(smooth, mixColor(FIELD_DECK_COLOR, 0x59c7b4, 0.5), hw, 1);
+      this.strokeRoadRibbon(smooth, 0x8fd9c9, 2, 0.55);
+    }
+  }
+
+  // A solid, flat road ribbon: a filled quad per segment with a round joint, at
+  // full alpha so overlaps disappear into one shape instead of stacking as
+  // translucent discs.
+  private fillRoadRibbon(points: Vec2[], color: number, halfWidth: number, alpha: number): void {
+    if (points.length === 0) return;
+    this.graphics.fillStyle(color, alpha);
+    if (points.length === 1) {
+      this.graphics.fillCircle(points[0].x, points[0].y, halfWidth);
+      return;
+    }
+    // Offset the centreline by +/- halfWidth using a central-difference normal at
+    // each point, then fill the whole band as ONE polygon. Per-segment quads plus
+    // joint circles beaded when the point spacing was near the width; a single
+    // outline is a clean, continuous road.
+    const left: Vec2[] = [];
+    const right: Vec2[] = [];
+    for (let i = 0; i < points.length; i += 1) {
+      const prev = points[Math.max(0, i - 1)];
+      const next = points[Math.min(points.length - 1, i + 1)];
+      const dx = next.x - prev.x;
+      const dy = next.y - prev.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = (-dy / len) * halfWidth;
+      const ny = (dx / len) * halfWidth;
+      left.push({ x: points[i].x + nx, y: points[i].y + ny });
+      right.push({ x: points[i].x - nx, y: points[i].y - ny });
+    }
+    this.graphics.fillPoints(left.concat(right.reverse()), true);
+    // Rounded ends so the road does not stop with a hard flat cut.
+    this.graphics.fillCircle(points[0].x, points[0].y, halfWidth);
+    this.graphics.fillCircle(points[points.length - 1].x, points[points.length - 1].y, halfWidth);
+  }
+
+  // Chaikin corner-cutting in screen space: rounds the lattice zig-zag of the
+  // laid-field centres into a smooth centreline.
+  private smoothPolyline(points: Vec2[], iterations: number): Vec2[] {
+    let pts = points;
+    for (let iter = 0; iter < iterations && pts.length >= 3; iter += 1) {
+      const out: Vec2[] = [pts[0]];
+      for (let i = 0; i < pts.length - 1; i += 1) {
+        const a = pts[i];
+        const b = pts[i + 1];
+        out.push({ x: a.x * 0.75 + b.x * 0.25, y: a.y * 0.75 + b.y * 0.25 });
+        out.push({ x: a.x * 0.25 + b.x * 0.75, y: a.y * 0.25 + b.y * 0.75 });
+      }
+      out.push(pts[pts.length - 1]);
+      pts = out;
+    }
+    return pts;
+  }
+
+  // Stroke a screen-space polyline as a road ribbon. Width is in screen pixels
+  // (points are already projected), so there is no world-units blow-up.
+  private strokeRoadRibbon(points: Vec2[], color: number, width: number, alpha: number): void {
+    if (points.length === 0) return;
+    if (points.length === 1) {
+      this.graphics.fillStyle(color, alpha);
+      this.graphics.fillCircle(points[0].x, points[0].y, width / 2);
+      return;
+    }
+    this.graphics.lineStyle(width, color, alpha);
+    this.graphics.beginPath();
+    this.graphics.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      this.graphics.lineTo(points[i].x, points[i].y);
+    }
+    this.graphics.strokePath();
   }
 
   // Track is drawn as the tiles it is: one flat-top hex per occupied cell, at
