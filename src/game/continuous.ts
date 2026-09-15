@@ -1128,7 +1128,10 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   // capped below a full manual lock so the road carries you yet never traps you.
   const grip = getPreparedGrip(state);
   const fieldTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * grip.strength;
-  const assistTurn = input.assistSteer !== undefined ? clamp(input.assistSteer, -TURN_RATE, TURN_RATE) : 0;
+  // The carry is allowed to turn harder than a manual lock (1.35x) so it can
+  // out-correct drift and genuinely hold you to the line, not merely suggest it.
+  const assistCap = TURN_RATE * 1.35;
+  const assistTurn = input.assistSteer !== undefined ? clamp(input.assistSteer, -assistCap, assistCap) : 0;
   const gripTurn = (Math.abs(assistTurn) > Math.abs(fieldTurn) ? assistTurn : fieldTurn) * authority;
   // Smoothed, because the drone projection reads turnRate and one jittery frame
   // should not swing where the drone is allowed to go.

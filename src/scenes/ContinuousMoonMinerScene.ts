@@ -57,13 +57,13 @@ const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
 const FIELD_DECK_COLOR = 0x6d8f89;
 // Road-follow feel (the sandbox slide/carry), computed over the driven trail.
-const ROAD_FOLLOW_STEER = 2.6; // rad/s carry toward the road; the sim caps at TURN_RATE
+const ROAD_FOLLOW_STEER = 3.4; // rad/s carry toward the road; the sim caps at ~1.35x TURN_RATE
 const ROAD_FOLLOW_LOOKAHEAD_MULT = 1.4; // pure-pursuit aim distance, * fieldRadius
 const ROAD_TRAIL_SPACING = 6; // world units between sampled trail points
 // How long after laying a stretch it "cures" into pre-laid road: fast + holds
 // you. Below this age it is the stroke you are laying right now, so it neither
 // speeds you up nor grabs you. Time-based, so it is independent of turn radius.
-const ROAD_CURE_SECONDS = 2;
+const ROAD_CURE_SECONDS = 1.2;
 // Road-speed momentum. Settle onto prepared road and you accelerate toward
 // railSpeed over the ramp; leave it and you drop back over the (shorter) decay.
 // This is the felt "magnetic acceleration" -- reliable, because it keys off the
@@ -3764,7 +3764,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       centre.y + Math.sin(tangent) * lookahead - rover.y,
       centre.x + Math.cos(tangent) * lookahead - rover.x
     );
-    const steer = clamp(angleDifference(desired, rover.heading) / 0.35, -1, 1) * ROAD_FOLLOW_STEER;
+    const steer = clamp(angleDifference(desired, rover.heading) / 0.22, -1, 1) * ROAD_FOLLOW_STEER;
     // Walk the trail in the travel direction, summing distance while the road
     // stays contiguous (no big gap), and normalise to a target run length.
     let covered = 0;
