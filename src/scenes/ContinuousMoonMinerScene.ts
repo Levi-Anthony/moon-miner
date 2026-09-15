@@ -76,11 +76,16 @@ const ROAD_CURE_SECONDS = 1.2;
 // field-coverage detection that actually fires in play, not rail capture.
 const ROAD_BOOST_RAMP_SECONDS = 1.1;
 const ROAD_BOOST_DECAY_SECONDS = 0.45;
-// The slide tops out here (0..1 of the way from fabricating toward railSpeed),
-// short of full rail. Full rail was fast enough that the carry could not hold
-// the road's own tight curves and flung you off -- the "fighting". Capping the
-// slide speed keeps it a firm, holdable rescue-slide rather than a launch.
-const ROAD_SLIDE_MAX = 0.62;
+// The slide's ceiling (0..1 of the way from fabricating toward railSpeed).
+// Straights run to the top; bends are eased down from it by the curvature of the
+// road ahead (below), so the carry can always hold the line -- fast where it is
+// safe, slower where it is not, instead of one flat compromise speed.
+const ROAD_SLIDE_MAX = 1.0;
+// Net bend (radians) of the road ahead at which the slide is eased to its floor.
+// ~1.1 rad over the look-ahead walk is a firm curve; gentler bends ease
+// proportionally, straights stay at full speed.
+const ROAD_BEND_SLOW_RAD = 1.1;
+const ROAD_SLIDE_BEND_FLOOR = 0.5; // slowest the bend easing goes (~174, holdable on the tightest laid curve)
 
 function mixColor(from: number, to: number, t: number): number {
   const lerp = (shift: number) => {
@@ -733,6 +738,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // links, so chaining them beaded). Sampled in world coords while laying.
   private roadTrail: Array<{ x: number; y: number; t: number }> = []; // t = elapsedSeconds when laid
   private roadBoost = 0; // 0..1 road-speed momentum, fed to the sim as roadRunway
+  private roadCurveScale = 1; // 0..1 smoothed slide-speed easing from the road's bend ahead
   private cameraLabElement?: HTMLElement;
   private droneRailLabElement?: HTMLElement;
   private droneRailDiagnosticsElement?: HTMLElement;
@@ -1265,11 +1271,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // must stay in the driver's hands.
     const carry = this.roadCarry();
     const onRoad = this.isOnLaidRoad();
+    // Ease the slide speed by the bend of the road ahead: full toward railSpeed
+    // on straights, down to the floor into curves. Smoothed so speed glides
+    // rather than pulses, and measured ahead so it eases BEFORE the bend.
+    const targetCurveScale = clamp(1 - carry.bend / ROAD_BEND_SLOW_RAD, ROAD_SLIDE_BEND_FLOOR, 1);
+    this.roadCurveScale += (targetCurveScale - this.roadCurveScale) * 0.12;
+    const roadRunway = this.roadBoost * this.roadCurveScale;
 
     if (mobileDriveInput) {
       this.clearPointerTarget();
       return mobileDriveInput.driveIntent
-        ? { ...mobileDriveInput, assistSteer: carry.steer, roadRunway: this.roadBoost, onRoad }
+        ? { ...mobileDriveInput, assistSteer: carry.steer, roadRunway, onRoad }
         : mobileDriveInput;
     }
 
@@ -1302,7 +1314,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       driveIntent: reversing ? false : driveIntent,
       pivotIntent: reversing || (!driveIntent && Math.abs(steer) > 0.001),
       assistSteer: reversing ? undefined : carry.steer,
-      roadRunway: reversing ? undefined : this.roadBoost,
+      roadRunway: reversing ? undefined : roadRunway,
       onRoad: reversing ? false : onRoad
     };
   }
@@ -3780,8 +3792,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // carry and runway to speed you up. This is the single source of truth the
   // player can see: on the visible road you are carried and fast; laying fresh
   // road (the recent tail is excluded) you are neither.
-  private roadCarry(): { steer: number; runway: number } {
-    const off = { steer: 0, runway: 0 };
+  private roadCarry(): { steer: number; bend: number } {
+    const off = { steer: 0, bend: 0 };
     const trail = this.roadTrail;
     const tuning = this.state.tuning;
     const limit = this.curedTrailLimit();
@@ -3805,21 +3817,28 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       centre.x + Math.cos(tangent) * lookahead - rover.x
     );
     const steer = clamp(angleDifference(desired, rover.heading) / 0.25, -1, 1) * ROAD_FOLLOW_STEER;
-    // Walk the trail in the travel direction, summing distance while the road
-    // stays contiguous (no big gap), and normalise to a target run length.
+    // Walk the road ahead in the travel direction and sum how much it bends
+    // (net signed turn, so per-point jitter cancels). The caller eases the slide
+    // speed by this so straights run fast and bends slow enough for the carry to
+    // hold the line.
     let covered = 0;
     let prev = centre;
+    let prevDir = tangent;
+    let netTurn = 0;
     const maxRun = tuning.fieldRadius * 5;
     for (let i = near.index + forward; i >= 0 && i < limit; i += forward) {
       const p = trail[i];
-      const step = Math.hypot(p.x - prev.x, p.y - prev.y);
+      const dx = p.x - prev.x;
+      const dy = p.y - prev.y;
+      const step = Math.hypot(dx, dy);
       if (step > tuning.fieldRadius) break;
+      netTurn += angleDifference(Math.atan2(dy, dx), prevDir);
+      prevDir = Math.atan2(dy, dx);
       covered += step;
       prev = p;
       if (covered >= maxRun) break;
     }
-    const runway = clamp(covered / (tuning.fieldRadius * 3), 0, 1);
-    return { steer, runway };
+    return { steer, bend: Math.abs(netTurn) };
   }
 
   // Road-speed momentum, keyed to the VISIBLE road (the driven ribbon), NOT the

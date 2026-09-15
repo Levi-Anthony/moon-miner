@@ -1146,12 +1146,22 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   // carry and passes your wheel through, to break off at a junction or seam.
   let gripTurn = fieldTurn;
   let steerScale = 1;
-  if (input.onRoad && input.assistSteer !== undefined) {
-    const firmSteer = Math.abs(input.steer) >= state.tuning.railBreakSteer;
-    const carryCap = TURN_RATE * 2.6;
-    const carry = clamp(input.assistSteer, -carryCap, carryCap) * (firmSteer ? 0.3 : 1);
-    gripTurn = Math.abs(carry) > Math.abs(fieldTurn) ? carry : fieldTurn;
-    steerScale = firmSteer ? 1 : 0.25;
+  if (input.assistSteer !== undefined) {
+    // Presentation play: the trail carry is the ENTIRE road feel, so the sim's
+    // field magnet is suppressed here. The magnet jittered the machine left/right
+    // on prepared ground -- a noisy heading correction amplified by
+    // railHeadingSnap -- and it is redundant now the cured-road slide provides
+    // the grip. Off the cured road there is no grip (plain, steady driving); on
+    // it, the slide holds you. Self-play/tests pass no assistSteer and keep the
+    // magnet unchanged.
+    if (input.onRoad) {
+      const firmSteer = Math.abs(input.steer) >= state.tuning.railBreakSteer;
+      const carryCap = TURN_RATE * 2.6;
+      gripTurn = clamp(input.assistSteer, -carryCap, carryCap) * (firmSteer ? 0.3 : 1);
+      steerScale = firmSteer ? 1 : 0.25;
+    } else {
+      gripTurn = 0;
+    }
   }
   const playerAppliedTurn = playerTurn * steerScale;
   // Smoothed, because the drone projection reads turnRate and one jittery frame
