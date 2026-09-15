@@ -1108,20 +1108,21 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   // machine: a stub nudges, a long run holds firmly, and the player's wheel is
   // ALWAYS applied on top, so active steering can leave at any grip.
   const activeSteer = Math.abs(input.steer) > 0.06;
-  // Steering into the groove keeps full authority; steering against it meets a
-  // rail that resists before it lets go, never one that holds you on. Capped
-  // below a full manual lock so the road can carry you yet never trap you.
-  let gripTurn: number;
-  if (input.assistSteer !== undefined) {
-    // Presentation-supplied road follow (pure pursuit over the driven trail).
-    const authority = activeSteer ? state.tuning.gripActiveSteerFactor : 1;
-    gripTurn = clamp(input.assistSteer, -TURN_RATE, TURN_RATE) * authority;
-  } else {
-    // Fallback for self-play / tests: the sim's own field-based grip.
-    const grip = getPreparedGrip(state);
-    const gripAuthority = grip.strength * (activeSteer ? state.tuning.gripActiveSteerFactor : 1);
-    gripTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * gripAuthority;
-  }
+  const authority = activeSteer ? state.tuning.gripActiveSteerFactor : 1;
+  // The field magnet is the PRIMARY grip: it pulls toward any prepared ground
+  // under the machine -- freshly laid or old -- which is the "medium magnetic"
+  // feel the design asks for. The presentation-supplied trail follow
+  // (assistSteer, pure pursuit over the driven ribbon) is an EXTRA carry that
+  // only fires when you re-drive road you already laid; on its own it left the
+  // magnet off during ordinary driving. Take whichever pulls harder toward the
+  // road so the two never stack into an over-turn. Self-play/tests pass no
+  // assistSteer and get the field grip alone, unchanged. Steering into the
+  // groove keeps full authority; against it the grip resists then lets go,
+  // capped below a full manual lock so the road carries you yet never traps you.
+  const grip = getPreparedGrip(state);
+  const fieldTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * grip.strength;
+  const assistTurn = input.assistSteer !== undefined ? clamp(input.assistSteer, -TURN_RATE, TURN_RATE) : 0;
+  const gripTurn = (Math.abs(assistTurn) > Math.abs(fieldTurn) ? assistTurn : fieldTurn) * authority;
   // Smoothed, because the drone projection reads turnRate and one jittery frame
   // should not swing where the drone is allowed to go.
   state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + gripTurn) * 0.3;

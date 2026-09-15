@@ -3785,43 +3785,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const hw = clamp(this.state.tuning.fieldRadius * this.getCameraZoom() * 0.5, 7, 20);
     for (const worldRun of runs) {
       const smooth = this.smoothPolyline(worldRun.map((point) => this.project(point)), 2);
-      this.fillRoadRibbon(smooth, 0x1b2a29, hw + 3, 0.5);
-      this.fillRoadRibbon(smooth, mixColor(FIELD_DECK_COLOR, 0x59c7b4, 0.5), hw, 1);
+      // Thick strokes at full alpha, not a filled outline polygon. When the road
+      // loops or turns hard the outline crossed itself, and fillPoints then
+      // flipped filled/empty regions frame to frame -- the "flashing". A stroke
+      // never triangulates, and at full alpha a self-crossing just repaints the
+      // same colour, so the band stays solid through loops and hard corners.
+      this.strokeRoadRibbon(smooth, 0x1b2a29, (hw + 3) * 2, 1);
+      this.strokeRoadRibbon(smooth, mixColor(FIELD_DECK_COLOR, 0x59c7b4, 0.5), hw * 2, 1);
       this.strokeRoadRibbon(smooth, 0x8fd9c9, 2, 0.55);
     }
-  }
-
-  // A solid, flat road ribbon: a filled quad per segment with a round joint, at
-  // full alpha so overlaps disappear into one shape instead of stacking as
-  // translucent discs.
-  private fillRoadRibbon(points: Vec2[], color: number, halfWidth: number, alpha: number): void {
-    if (points.length === 0) return;
-    this.graphics.fillStyle(color, alpha);
-    if (points.length === 1) {
-      this.graphics.fillCircle(points[0].x, points[0].y, halfWidth);
-      return;
-    }
-    // Offset the centreline by +/- halfWidth using a central-difference normal at
-    // each point, then fill the whole band as ONE polygon. Per-segment quads plus
-    // joint circles beaded when the point spacing was near the width; a single
-    // outline is a clean, continuous road.
-    const left: Vec2[] = [];
-    const right: Vec2[] = [];
-    for (let i = 0; i < points.length; i += 1) {
-      const prev = points[Math.max(0, i - 1)];
-      const next = points[Math.min(points.length - 1, i + 1)];
-      const dx = next.x - prev.x;
-      const dy = next.y - prev.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const nx = (-dy / len) * halfWidth;
-      const ny = (dx / len) * halfWidth;
-      left.push({ x: points[i].x + nx, y: points[i].y + ny });
-      right.push({ x: points[i].x - nx, y: points[i].y - ny });
-    }
-    this.graphics.fillPoints(left.concat(right.reverse()), true);
-    // Rounded ends so the road does not stop with a hard flat cut.
-    this.graphics.fillCircle(points[0].x, points[0].y, halfWidth);
-    this.graphics.fillCircle(points[points.length - 1].x, points[points.length - 1].y, halfWidth);
   }
 
   // Chaikin corner-cutting in screen space: rounds the lattice zig-zag of the
@@ -3858,6 +3830,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.graphics.lineTo(points[i].x, points[i].y);
     }
     this.graphics.strokePath();
+    // Round caps so the band does not end (or the rover does not sit on) a hard
+    // flat cut. Cheap: two circles, not one per vertex.
+    if (width > 3) {
+      this.graphics.fillStyle(color, alpha);
+      this.graphics.fillCircle(points[0].x, points[0].y, width / 2);
+      this.graphics.fillCircle(points[points.length - 1].x, points[points.length - 1].y, width / 2);
+    }
   }
 
   // Track is drawn as the tiles it is: one flat-top hex per occupied cell, at
