@@ -1,5 +1,28 @@
 # Decisions
 
+## 2026-09-15: Grip harder, intersections, less text
+
+Playtest: "still needs to grip the road more and allow intersections. Also too
+much reliance on text."
+
+- **Grip:** carry response tightened (angle divisor 0.22 → 0.15) and the sim's
+  assist cap raised (1.35× → 1.6× TURN_RATE, `ROAD_FOLLOW_STEER` 3.4 → 4.0) so
+  the road grabs the line rather than leaning toward it.
+- **Intersections:** one new "aligned with the road" test — `|cos|` of heading
+  vs the road tangent, `ROAD_ALIGN_MIN = 0.6` (~53°). Driving ALONG a cured road
+  grips/boosts and counts as a re-drive (no restacking). Crossing one square is
+  now an INTERSECTION: the non-overlap skip no longer suppresses it, so the
+  crossing lays and renders, and the carry lets you cut straight through instead
+  of being yanked onto the crossing road. One rule does all three (carry gate,
+  boost gate, non-overlap gate). Screenshot-verified: loops/crossings render as
+  clean junctions.
+- **Less text (first cut):** the bottom feed narrated a full two-sentence
+  objective+nudge every steady-state frame. Now it teaches for the opening
+  seconds and on real events, then drops to just the short objective. Phase-end
+  keeps its full say. This is a first pass on "too much text" — deeper work
+  (replacing textual state like the mode chip / rail readout with visual cues)
+  is open pending the owner pointing at specific offenders.
+
 ## 2026-09-15: Make the loop legible — the expedition frame (DEV-27)
 
 Playtest: "other parts of the game don't make enough sense now to actually judge
