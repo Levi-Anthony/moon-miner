@@ -1150,18 +1150,20 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
       : state.speedState === 'fabricating'
         ? state.tuning.fabricatingSpeed
         : state.tuning.crawlSpeed;
-  // Driving on the visible road speeds you up, reliably. The field-coverage
-  // path above almost never fires in normal play (you are ahead of the road you
-  // are laying and it must age first), so the felt payoff lived only on a
-  // precise re-drive that never happened. The presentation layer measures the
-  // road continuing ahead along the trail the player can see; when they are on
-  // it, ramp from preparedSpeed toward railSpeed. max() so this only ever adds
-  // speed, never slows what the field path already granted.
-  if (input.roadRunway !== undefined && input.roadRunway > 0) {
-    const onRoadSpeed =
-      state.tuning.preparedSpeed +
-      (state.tuning.railSpeed - state.tuning.preparedSpeed) * clamp(input.roadRunway, 0, 1);
-    baseSpeed = Math.max(baseSpeed, onRoadSpeed);
+  // Presentation owns drive speed when it supplies roadRunway (manual/mobile).
+  // The sim's own prepared/rail detection above fires on the road being laid
+  // RIGHT NOW -- your own fresh field under you -- so it sped you up while
+  // laying, which is backwards. roadRunway is 0 while laying (and off road) and
+  // ramps to 1 only once you are on road laid on an earlier pass, so: laying
+  // stays at fabricating speed, and settling onto pre-laid road winds up toward
+  // railSpeed. Self-play/tests supply no roadRunway and keep the sim's own
+  // speed above unchanged.
+  if (input.roadRunway !== undefined) {
+    baseSpeed =
+      state.speedState === 'crawl'
+        ? state.tuning.crawlSpeed
+        : state.tuning.fabricatingSpeed +
+          (state.tuning.railSpeed - state.tuning.fabricatingSpeed) * clamp(input.roadRunway, 0, 1);
   }
   const throttleFactor = input.brake ? 0.28 : 0.38 + input.throttle * 0.62;
   const speed = baseSpeed * throttleFactor;

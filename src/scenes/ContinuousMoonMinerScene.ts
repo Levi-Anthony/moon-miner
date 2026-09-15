@@ -57,9 +57,13 @@ const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
 const FIELD_DECK_COLOR = 0x6d8f89;
 // Road-follow feel (the sandbox slide/carry), computed over the driven trail.
-const ROAD_FOLLOW_STEER = 2.1; // rad/s carry toward the road; the sim caps at TURN_RATE
+const ROAD_FOLLOW_STEER = 2.6; // rad/s carry toward the road; the sim caps at TURN_RATE
 const ROAD_FOLLOW_LOOKAHEAD_MULT = 1.4; // pure-pursuit aim distance, * fieldRadius
 const ROAD_TRAIL_SPACING = 6; // world units between sampled trail points
+// How long after laying a stretch it "cures" into pre-laid road: fast + holds
+// you. Below this age it is the stroke you are laying right now, so it neither
+// speeds you up nor grabs you. Time-based, so it is independent of turn radius.
+const ROAD_CURE_SECONDS = 2;
 // Road-speed momentum. Settle onto prepared road and you accelerate toward
 // railSpeed over the ramp; leave it and you drop back over the (shorter) decay.
 // This is the felt "magnetic acceleration" -- reliable, because it keys off the
@@ -712,7 +716,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // The road, drawn from the rover's ACTUAL driven path -- guaranteed ordered
   // and contiguous, unlike the lattice fields (which no longer carry prevId
   // links, so chaining them beaded). Sampled in world coords while laying.
-  private roadTrail: Vec2[] = [];
+  private roadTrail: Array<{ x: number; y: number; t: number }> = []; // t = elapsedSeconds when laid
   private roadBoost = 0; // 0..1 road-speed momentum, fed to the sim as roadRunway
   private cameraLabElement?: HTMLElement;
   private droneRailLabElement?: HTMLElement;
@@ -3702,16 +3706,22 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  // How many freshly-laid tail points to ignore when asking "am I on OLD road".
-  private roadTrailTailSkip(): number {
-    return Math.ceil((this.state.tuning.fieldRadius * 1.6) / ROAD_TRAIL_SPACING);
+  // How many trail points have cured into pre-laid road. Points are laid in
+  // time order, so the cured ones are the prefix [0, limit); everything from
+  // there to the end is the stroke being laid right now. Independent of turn
+  // radius, unlike the old fixed index skip (which a tight loop could never get
+  // "far enough" behind).
+  private curedTrailLimit(): number {
+    const now = this.state.elapsedSeconds;
+    let limit = this.roadTrail.length;
+    while (limit > 0 && now - this.roadTrail[limit - 1].t < ROAD_CURE_SECONDS) limit -= 1;
+    return limit;
   }
 
-  // Nearest trail point to the rover, skipping the recent tail. Linear scan;
-  // the trail is capped so this stays cheap.
-  private nearestTrailIndex(excludeTail: number): { index: number; dist: number } {
+  // Nearest cured trail point to the rover, scanning only [0, limit). Linear
+  // scan; the trail is capped so this stays cheap.
+  private nearestTrailIndex(limit: number): { index: number; dist: number } {
     const trail = this.roadTrail;
-    const limit = trail.length - excludeTail;
     const rover = this.state.rover;
     let bestDist = Infinity;
     let index = -1;
@@ -3737,10 +3747,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const off = { steer: 0, runway: 0 };
     const trail = this.roadTrail;
     const tuning = this.state.tuning;
-    const excludeTail = this.roadTrailTailSkip();
-    const limit = trail.length - excludeTail;
+    const limit = this.curedTrailLimit();
     if (limit < 2) return off;
-    const near = this.nearestTrailIndex(excludeTail);
+    const near = this.nearestTrailIndex(limit);
     if (near.index < 1 || near.dist >= tuning.fieldRadius) return off;
     const rover = this.state.rover;
     const a = trail[Math.max(0, near.index - 1)];
@@ -3755,7 +3764,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       centre.y + Math.sin(tangent) * lookahead - rover.y,
       centre.x + Math.cos(tangent) * lookahead - rover.x
     );
-    const steer = clamp(angleDifference(desired, rover.heading) / 0.5, -1, 1) * ROAD_FOLLOW_STEER;
+    const steer = clamp(angleDifference(desired, rover.heading) / 0.35, -1, 1) * ROAD_FOLLOW_STEER;
     // Walk the trail in the travel direction, summing distance while the road
     // stays contiguous (no big gap), and normalise to a target run length.
     let covered = 0;
@@ -3773,17 +3782,27 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return { steer, runway };
   }
 
-  // Road-speed momentum: build while the rover is on prepared road (the
-  // field-coverage detection that reliably fires in play -- unlike rail
-  // capture), bleed off quickly when it leaves. Fed to the sim as roadRunway,
-  // which ramps speed from preparedSpeed toward railSpeed. This is the felt
-  // acceleration of settling onto a road: drive straight out laying fresh road
-  // and you stay slow; get onto road that already exists and you wind up.
+  // Road-speed momentum, keyed to the VISIBLE road (the driven ribbon), NOT the
+  // field data. The field detection lights up on the road being laid right now,
+  // so it sped the rover up WHILE laying -- backwards. The trail with its fresh
+  // tail excluded is "road that already existed": build momentum while on it,
+  // bleed off when leaving. Fed to the sim as roadRunway (preparedSpeed ->
+  // railSpeed). So laying fresh road stays ordinary; getting onto pre-laid road
+  // winds you up.
   private updateRoadBoost(deltaSeconds: number): void {
-    const onRoad =
-      getPreparedCoverage(this.state, this.state.rover) >= this.state.tuning.preparedCoverageThreshold;
+    const onRoad = this.isOnLaidRoad();
     const rate = onRoad ? deltaSeconds / ROAD_BOOST_RAMP_SECONDS : -deltaSeconds / ROAD_BOOST_DECAY_SECONDS;
     this.roadBoost = clamp(this.roadBoost + rate, 0, 1);
+  }
+
+  // Is the rover on road it laid on an EARLIER pass -- the driven ribbon minus
+  // the fresh tail it is laying right now? The single check behind both the
+  // speed-up and the carry, and it matches what the player sees: the road.
+  private isOnLaidRoad(): boolean {
+    const limit = this.curedTrailLimit();
+    if (limit < 2) return false;
+    const near = this.nearestTrailIndex(limit);
+    return near.index >= 1 && near.dist < this.state.tuning.fieldRadius;
   }
 
   // Record where the rover actually drives while laying or on road. Crawl
@@ -3795,12 +3814,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const rover = this.state.rover;
     const last = this.roadTrail[this.roadTrail.length - 1];
     if (last && Math.hypot(rover.x - last.x, rover.y - last.y) < ROAD_TRAIL_SPACING) return;
-    const excludeTail = this.roadTrailTailSkip();
-    if (this.roadTrail.length - excludeTail >= 2) {
-      const near = this.nearestTrailIndex(excludeTail);
+    // NON-OVERLAP against CURED road only: re-driving road you laid earlier is a
+    // slide, not new road, so do not stack a second ribbon on it. The uncured
+    // stroke you are laying now is not checked, so ordinary laying proceeds.
+    const limit = this.curedTrailLimit();
+    if (limit >= 2) {
+      const near = this.nearestTrailIndex(limit);
       if (near.index >= 0 && near.dist < this.state.tuning.fieldRadius) return;
     }
-    this.roadTrail.push({ x: rover.x, y: rover.y });
+    this.roadTrail.push({ x: rover.x, y: rover.y, t: this.state.elapsedSeconds });
     if (this.roadTrail.length > 4000) this.roadTrail.shift();
   }
 
