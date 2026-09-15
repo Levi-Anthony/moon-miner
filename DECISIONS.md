@@ -1,5 +1,50 @@
 # Decisions
 
+## 2026-09-15: Road feel take 2 — the flashing, and why nothing was felt
+
+### Flashing (fixed)
+The ribbon was filled as one outline polygon (offset the centreline left, concat
+the right reversed, `fillPoints`). On loops/hard corners that outline
+self-intersects and Phaser's fill triangulation flips filled/empty regions frame
+to frame — the flashing. FIX: draw the band as thick strokes at full alpha; a
+stroke never triangulates and a full-alpha self-crossing just repaints the same
+colour. Removed the dead `fillRoadRibbon`; added round end caps.
+
+### "No carry, speed, or anything" — the real bug
+`normalizeInput()` rebuilt the input object every tick and **dropped
+`assistSteer` and `roadRunway`**. So every road signal the presentation layer
+computed was silently discarded before the motion code ran. The carry feature
+had therefore never actually done anything since it was added, and neither could
+any speed signal. FIX: carry both fields through `normalizeInput`. LESSON: an
+input-normalisation chokepoint will silently eat new fields — verify a new input
+field reaches the consumer (a headless probe reading it inside the sim), don't
+assume the wiring.
+
+### Prepared road never sped you up (reliability)
+Even with the plumbing fixed, the sim's own prepared/rail speed almost never
+fires in play: the aged-field coverage that gates it reads ~0 while you drive
+forward laying road (you are ahead of the road, and it must age 1.25s first),
+and rail capture is finicky (`tileSize` 16 ≪ patch spacing ~42) and decays.
+DECIDED: a road-speed **momentum**, tracked in the scene from
+`getPreparedCoverage` (the detection that DOES fire reliably): on prepared road
+it ramps up over ~1.1s, off it bleeds over ~0.45s. It feeds the sim as
+`roadRunway`, which ramps speed preparedSpeed→railSpeed. Felt result
+(headless-verified): settle onto road → speed winds 96→236 (3.2× fabricating) →
+decays when you leave. This is the "magnetic acceleration."
+- REJECTED driving speed off my own trail proximity: the single polyline is a
+  narrower corridor than the overlapping field lattice, so it detected on-road
+  LESS reliably than the field coverage. The field coverage is the better
+  "am I on road" signal; the trail stays the source for the visual ribbon and
+  the steering carry.
+- Self-play/tests pass neither field → unchanged (same 5 known-red, 78 pass).
+
+### Still open
+- preparedSpeed (96) vs fabricating (74) is a mild step on its own; the momentum
+  ramp toward railSpeed (236) is what makes it felt. If the owner wants the
+  floor higher too, that's a one-line tuning bump.
+- Rail capture reliability (`tileSize` ≪ spacing) is still the DEV-22 follow-up;
+  the momentum now makes it non-blocking for the felt payoff.
+
 ## 2026-06-26: Browser First
 
 Use Phaser 3, TypeScript, and Vite so the game is easy to run, share, screenshot, test, and deploy.
