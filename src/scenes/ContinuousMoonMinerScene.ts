@@ -55,7 +55,6 @@ import {
 const DESKTOP_HUD_HEIGHT = 86;
 const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
-const FIELD_DECK_COLOR = 0x6d8f89;
 
 function mixColor(from: number, to: number, t: number): number {
   const lerp = (shift: number) => {
@@ -1030,7 +1029,18 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         : undefined;
       return {
         shift: typeof parsed?.shift === 'number' ? parsed.shift : 1,
-        fields: Array.isArray(parsed?.fields) ? parsed.fields : [],
+        // Pre-lattice saves stored a prevId chain on every tile. The lattice
+        // build has no chain, but the field would otherwise ride along in the
+        // save forever -- carryFieldsOvernight spreads it night to night -- and
+        // any code still reading prevId would reconnect tiles that are not
+        // neighbours. Scrub it on the way in so an old save cannot resurrect it.
+        fields: Array.isArray(parsed?.fields)
+          ? parsed.fields.map((field) => {
+              const clean = { ...field } as FieldPatch;
+              delete (clean as { prevId?: number }).prevId;
+              return clean;
+            })
+          : [],
         depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {}
       };
     } catch {
@@ -2984,54 +2994,22 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.fillPoints(inner, true, true);
   }
 
+  // Prepared ground is drawn as one bed per tile, matching the lattice road
+  // itself. This used to walk prevId chains and fill a quad between each linked
+  // pair. Loading a pre-lattice carry -- whose stored tiles still held prevId
+  // and old-basis coordinates -- reconnected those chains and painted long
+  // ribbons straight across the view, between tiles nowhere near each other and
+  // unmoored from where the road and camera actually are. The lattice model has
+  // no chain: adjacent tiles sit edge to edge, so their caps overlap into one
+  // continuous bed on their own.
   private drawPreparedFieldTerrainBeds(visualCalm: number): void {
-    const preparedFields = [...this.state.fields]
-      .filter((field) => {
-        return field.age >= this.state.tuning.preparedFieldMinAgeSeconds && field.value >= this.state.tuning.preparedFieldMinValue;
-      })
-      .sort((a, b) => a.id - b.id);
-    const sections = this.fieldSections(preparedFields);
-
-    for (const section of sections) {
-      if (section.length === 1) {
-        this.drawPreparedFieldTerrainCap(section[0], visualCalm);
-        continue;
-      }
-
-      for (let index = 0; index < section.length - 1; index += 1) {
-        this.drawPreparedFieldTerrainSegment(section[index], section[index + 1], visualCalm);
-      }
-      this.drawPreparedFieldTerrainCap(section[0], visualCalm);
-      this.drawPreparedFieldTerrainCap(section[section.length - 1], visualCalm);
+    const preparedFields = this.state.fields.filter(
+      (field) =>
+        field.age >= this.state.tuning.preparedFieldMinAgeSeconds && field.value >= this.state.tuning.preparedFieldMinValue
+    );
+    for (const field of preparedFields) {
+      this.drawPreparedFieldTerrainCap(field, visualCalm);
     }
-  }
-
-  private drawPreparedFieldTerrainSegment(
-    from: { x: number; y: number; radius: number; value: number },
-    to: { x: number; y: number; radius: number; value: number },
-    visualCalm: number
-  ): void {
-    const fromScreen = this.project(from);
-    const toScreen = this.project(to);
-    const dx = toScreen.x - fromScreen.x;
-    const dy = toScreen.y - fromScreen.y;
-    const length = Math.hypot(dx, dy);
-    if (length <= 0.01) return;
-
-    const normal = { x: -dy / length, y: dx / length };
-    const fromWidth = this.fieldRoadWidth(from) * 1.42;
-    const toWidth = this.fieldRoadWidth(to) * 1.42;
-    const points = [
-      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
-      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
-      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
-      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
-    ];
-
-    this.graphics.fillStyle(0x193334, 0.12 + visualCalm * 0.06);
-    this.graphics.fillPoints(points, true, true);
-    this.graphics.lineStyle(1, 0x3b5f5c, 0.18 + visualCalm * 0.1);
-    this.graphics.strokePoints(points, true, true);
   }
 
   private drawPreparedFieldTerrainCap(
@@ -3572,113 +3550,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
     void linked;
     return sections;
-  }
-
-  private drawFieldSegment(
-    from: { x: number; y: number; radius: number; value: number; age: number },
-    to: { x: number; y: number; radius: number; value: number; age: number },
-    color: number,
-    reserved: boolean
-  ): void {
-    const fromScreen = this.project(from);
-    const toScreen = this.project(to);
-    const dx = toScreen.x - fromScreen.x;
-    const dy = toScreen.y - fromScreen.y;
-    const length = Math.hypot(dx, dy);
-    if (length <= 0.01) return;
-
-    const normal = { x: -dy / length, y: dx / length };
-    const fromWidth = this.fieldRoadWidth(from);
-    const toWidth = this.fieldRoadWidth(to);
-    const points = [
-      { x: fromScreen.x + normal.x * fromWidth, y: fromScreen.y + normal.y * fromWidth },
-      { x: toScreen.x + normal.x * toWidth, y: toScreen.y + normal.y * toWidth },
-      { x: toScreen.x - normal.x * toWidth, y: toScreen.y - normal.y * toWidth },
-      { x: fromScreen.x - normal.x * fromWidth, y: fromScreen.y - normal.y * fromWidth }
-    ];
-    const alpha = Math.min(this.fieldAlpha(from), this.fieldAlpha(to));
-    const ordinaryAlpha = alpha * (0.34 + 0.24 * this.visualCalm());
-
-    const shadow = [
-      { x: fromScreen.x + normal.x * (fromWidth + 4), y: fromScreen.y + normal.y * (fromWidth + 4) },
-      { x: toScreen.x + normal.x * (toWidth + 4), y: toScreen.y + normal.y * (toWidth + 4) },
-      { x: toScreen.x - normal.x * (toWidth + 4), y: toScreen.y - normal.y * (toWidth + 4) },
-      { x: fromScreen.x - normal.x * (fromWidth + 4), y: fromScreen.y - normal.y * (fromWidth + 4) }
-    ];
-    this.graphics.fillStyle(0x14201f, alpha * 0.62);
-    this.graphics.fillPoints(shadow, true, true);
-    // The deck used to be filled with FIELD_DECK_COLOR unconditionally, so the
-    // `color` argument was thrown away for every road that is not reserved --
-    // which is nearly all of it. That is why the road read as a scuff in the
-    // regolith: 0x6d8f89 is very close to the ground it is drawn on. Tinting
-    // the deck toward the state colour is what makes the corridor rule visible
-    // at all, and it is the only reason this function takes a colour.
-    this.graphics.fillStyle(
-      reserved ? color : mixColor(FIELD_DECK_COLOR, color, 0.5),
-      reserved ? alpha * 0.5 : Math.min(0.94, ordinaryAlpha + 0.4)
-    );
-    this.graphics.fillPoints(points, true, true);
-    if (reserved) {
-      this.graphics.lineStyle(4, color, alpha * 0.88);
-      this.graphics.strokePoints(points, true, true);
-      const scanProgress = (this.time.now / 480) % 1;
-      const scan = {
-        x: Phaser.Math.Linear(fromScreen.x, toScreen.x, scanProgress),
-        y: Phaser.Math.Linear(fromScreen.y, toScreen.y, scanProgress)
-      };
-      this.graphics.fillStyle(0xffd2b7, alpha * 0.92);
-      this.graphics.fillCircle(scan.x, scan.y, 5);
-      this.graphics.lineStyle(1, 0xfff0df, alpha * 0.82);
-      this.graphics.strokeCircle(scan.x, scan.y, 10);
-    } else {
-      // The edge is where the two road states read most cheaply, so it carries
-      // the colour at full strength while the deck stays ambient.
-      this.graphics.lineStyle(3, color, Math.min(0.92, alpha * 0.95));
-      this.graphics.strokePoints(points, true, true);
-    }
-  }
-
-  private drawFieldJoint(
-    field: { x: number; y: number; radius: number; value: number; age: number },
-    reserved: boolean,
-    color: number
-  ): void {
-    if (reserved) return;
-    const center = this.project(field);
-    const width = this.fieldRoadWidth(field);
-    const yScale = this.shapeYScale();
-    const alpha = Math.min(0.94, this.fieldAlpha(field) * (0.24 + 0.18 * this.visualCalm()) + 0.4);
-    // Joints take the same tint as the segments they connect, or the ribbon
-    // reads as coloured plates strung on a grey thread.
-    this.graphics.fillStyle(mixColor(FIELD_DECK_COLOR, color, 0.5), alpha);
-    this.graphics.fillEllipse(center.x, center.y, width * 2, width * 2 * yScale);
-  }
-
-  private drawFieldCap(
-    field: { x: number; y: number; radius: number; value: number; age: number },
-    color: number,
-    reserved: boolean,
-    alpha: number
-  ): void {
-    const center = this.project(field);
-    const width = this.fieldRoadWidth(field);
-    const yScale = this.shapeYScale();
-    const ordinaryAlpha = alpha * (0.24 + 0.18 * this.visualCalm());
-    this.graphics.fillStyle(color, reserved ? alpha * 0.34 : ordinaryAlpha);
-    this.graphics.fillEllipse(center.x, center.y, width * 2.08, width * 1.2 * yScale);
-    this.graphics.lineStyle(reserved ? 4 : 2, color, reserved ? alpha * 0.9 : alpha * (0.34 + 0.24 * this.visualCalm()));
-    this.graphics.strokeEllipse(center.x, center.y, width * 2.08, width * 1.2 * yScale);
-  }
-
-  private drawFieldCenterLine<T extends Vec2>(section: T[], color: number, reserved: boolean): void {
-    if (section.length < 2) return;
-
-    this.graphics.lineStyle(reserved ? 3 : 2, color, reserved ? 0.86 : 0.38 + 0.22 * this.visualCalm());
-    for (let index = 0; index < section.length - 1; index += 1) {
-      const from = this.project(section[index]);
-      const to = this.project(section[index + 1]);
-      this.graphics.lineBetween(from.x, from.y, to.x, to.y);
-    }
   }
 
   private drawFieldBirthMarkers(fields: Array<{ x: number; y: number; radius: number; value: number; age: number }>): void {
