@@ -57,7 +57,7 @@ const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
 const FIELD_DECK_COLOR = 0x6d8f89;
 // Road-follow feel (the sandbox slide/carry), computed over the driven trail.
-const ROAD_FOLLOW_STEER = 5.5; // rad/s carry toward the road; the sim caps the slide at ~2.6x TURN_RATE
+const ROAD_FOLLOW_STEER = 7.5; // rad/s carry toward the road; the sim caps the slide at ~3.4x TURN_RATE
 // |cos| of the angle between heading and the road under you, above which you
 // count as driving ALONG that road (grip, boost, and "re-drive = don't restack"
 // all apply). Below it you are crossing the road, not on it -- so crossings lay
@@ -76,16 +76,10 @@ const ROAD_CURE_SECONDS = 1.2;
 // field-coverage detection that actually fires in play, not rail capture.
 const ROAD_BOOST_RAMP_SECONDS = 1.1;
 const ROAD_BOOST_DECAY_SECONDS = 0.45;
-// The slide's ceiling (0..1 of the way from fabricating toward railSpeed).
-// Straights run to the top; bends are eased down from it by the curvature of the
-// road ahead (below), so the carry can always hold the line -- fast where it is
-// safe, slower where it is not, instead of one flat compromise speed.
+// The slide's ceiling (0..1 of the way from fabricating toward railSpeed). Full
+// rail, on straights and corners alike -- the grip holds the line rather than
+// the speed easing to make the turn.
 const ROAD_SLIDE_MAX = 1.0;
-// Net bend (radians) of the road ahead at which the slide is eased to its floor.
-// ~1.1 rad over the look-ahead walk is a firm curve; gentler bends ease
-// proportionally, straights stay at full speed.
-const ROAD_BEND_SLOW_RAD = 1.1;
-const ROAD_SLIDE_BEND_FLOOR = 0.5; // slowest the bend easing goes (~174, holdable on the tightest laid curve)
 
 function mixColor(from: number, to: number, t: number): number {
   const lerp = (shift: number) => {
@@ -742,7 +736,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // links, so chaining them beaded). Sampled in world coords while laying.
   private roadTrail: Array<{ x: number; y: number; t: number }> = []; // t = elapsedSeconds when laid
   private roadBoost = 0; // 0..1 road-speed momentum, fed to the sim as roadRunway
-  private roadCurveScale = 1; // 0..1 smoothed slide-speed easing from the road's bend ahead
   private cameraLabElement?: HTMLElement;
   private droneRailLabElement?: HTMLElement;
   private droneRailDiagnosticsElement?: HTMLElement;
@@ -1295,12 +1288,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // must stay in the driver's hands.
     const carry = this.roadCarry();
     const onRoad = this.isOnLaidRoad();
-    // Ease the slide speed by the bend of the road ahead: full toward railSpeed
-    // on straights, down to the floor into curves. Smoothed so speed glides
-    // rather than pulses, and measured ahead so it eases BEFORE the bend.
-    const targetCurveScale = clamp(1 - carry.bend / ROAD_BEND_SLOW_RAD, ROAD_SLIDE_BEND_FLOOR, 1);
-    this.roadCurveScale += (targetCurveScale - this.roadCurveScale) * 0.12;
-    const roadRunway = this.roadBoost * this.roadCurveScale;
+    // No corner slowing: the slide runs at full speed on straights AND bends.
+    // The stronger grip (below, and the sim's raised carry cap) holds the line
+    // through the curve instead of easing speed to make the turn.
+    const roadRunway = this.roadBoost;
 
     if (mobileDriveInput) {
       this.clearPointerTarget();
@@ -3820,8 +3811,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // carry and runway to speed you up. This is the single source of truth the
   // player can see: on the visible road you are carried and fast; laying fresh
   // road (the recent tail is excluded) you are neither.
-  private roadCarry(): { steer: number; bend: number } {
-    const off = { steer: 0, bend: 0 };
+  private roadCarry(): { steer: number } {
+    const off = { steer: 0 };
     const trail = this.roadTrail;
     const tuning = this.state.tuning;
     const limit = this.curedTrailLimit();
@@ -3844,29 +3835,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       centre.y + Math.sin(tangent) * lookahead - rover.y,
       centre.x + Math.cos(tangent) * lookahead - rover.x
     );
-    const steer = clamp(angleDifference(desired, rover.heading) / 0.25, -1, 1) * ROAD_FOLLOW_STEER;
-    // Walk the road ahead in the travel direction and sum how much it bends
-    // (net signed turn, so per-point jitter cancels). The caller eases the slide
-    // speed by this so straights run fast and bends slow enough for the carry to
-    // hold the line.
-    let covered = 0;
-    let prev = centre;
-    let prevDir = tangent;
-    let netTurn = 0;
-    const maxRun = tuning.fieldRadius * 5;
-    for (let i = near.index + forward; i >= 0 && i < limit; i += forward) {
-      const p = trail[i];
-      const dx = p.x - prev.x;
-      const dy = p.y - prev.y;
-      const step = Math.hypot(dx, dy);
-      if (step > tuning.fieldRadius) break;
-      netTurn += angleDifference(Math.atan2(dy, dx), prevDir);
-      prevDir = Math.atan2(dy, dx);
-      covered += step;
-      prev = p;
-      if (covered >= maxRun) break;
-    }
-    return { steer, bend: Math.abs(netTurn) };
+    const steer = clamp(angleDifference(desired, rover.heading) / 0.18, -1, 1) * ROAD_FOLLOW_STEER;
+    return { steer };
   }
 
   // Road-speed momentum, keyed to the VISIBLE road (the driven ribbon), NOT the
@@ -4233,22 +4203,20 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     const targetScreen = this.project(preview.target);
-    const previewFields = this.state.fields.filter((field) => {
-      return Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius;
-    });
     const pulse = 0.5 + Math.sin(this.time.now / 260) * 0.5;
-    const radius = this.droneReservationRadius(targetScreen, previewFields);
-
     const previewThin = preview.netPayload < preview.payload * 0.55;
-    this.graphics.fillStyle(previewThin ? 0x8a6a5c : 0xffb36d, 0.05 + pulse * 0.03);
-    this.graphics.fillCircle(targetScreen.x, targetScreen.y, radius + 10 + pulse * 3);
-    this.graphics.lineStyle(2, previewThin ? 0x8a6a5c : 0xffb36d, 0.38 + pulse * 0.18);
-    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + pulse * 4);
-    this.graphics.lineStyle(1, 0xffeddf, 0.28 + pulse * 0.14);
-    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, radius + 12);
 
-    const labelPoint = this.clampScreenPoint({ x: targetScreen.x + radius + 16, y: targetScreen.y - radius - 8 }, 118, 28);
-    const thin = preview.netPayload < preview.payload * 0.55;
+    // A small, quiet marker where the drone would grab -- a dot and one thin
+    // ring -- instead of the big stack of concentric rings that used to sit over
+    // the road and the machine and hide what they were doing.
+    const color = previewThin ? 0x8a6a5c : 0xffb36d;
+    this.graphics.lineStyle(2, color, 0.4 + pulse * 0.2);
+    this.graphics.strokeCircle(targetScreen.x, targetScreen.y, 9 + pulse * 2);
+    this.graphics.fillStyle(color, 0.55);
+    this.graphics.fillCircle(targetScreen.x, targetScreen.y, 2.6);
+
+    const labelPoint = this.clampScreenPoint({ x: targetScreen.x + 16, y: targetScreen.y - 16 }, 118, 28);
+    const thin = previewThin;
     this.drawStaticText(
       'drone-preview-readout',
       labelPoint.x,
@@ -4508,11 +4476,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // every arm behind the body left only the far ones visible, so they read as
     // roof antennae instead of limbs wrapped around a machine.
     this.drawArms(fertile, 'front');
-
-    if (preparedCoverage > 0.2) {
-      this.graphics.lineStyle(3, 0x78f7df, 0.4 + preparedCoverage * 0.5);
-      this.graphics.strokeEllipse(roverScreen.x, roverScreen.y + 2, 82 * scale, 46 * yScale * scale);
-    }
   }
 
   // A machine with a front, a back and treads, in the one warm colour on a cold
@@ -4620,14 +4583,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
           ? 0.18 + pulse * 0.12
           : 0.3 + pulse * 0.2;
 
-    this.graphics.fillStyle(color, alpha * 0.18);
-    this.graphics.fillEllipse(roverScreen.x, roverScreen.y + 5, radius * 1.7 * scale, radius * yScale * scale);
-    this.graphics.lineStyle(this.state.speedState === 'crawl' ? 4 : 2, color, alpha);
-    this.graphics.strokeEllipse(roverScreen.x, roverScreen.y + 5, radius * 1.7 * scale, radius * yScale * scale);
-    if (this.state.speedState === 'fabricating') {
-      this.graphics.lineStyle(2, 0xc7eeff, 0.24 + pulse * 0.22);
-      this.graphics.strokeEllipse(roverScreen.x, roverScreen.y + 5, radius * 2.05 * scale, radius * 1.16 * yScale * scale);
-    }
+    // Just a faint state tint under the machine -- no stroked rings. The rings
+    // that used to circle the rover (and a second one while fabricating) read as
+    // "weird UI circles" once the arms and the road ribbon started telling you
+    // the state directly; they only hid the arms.
+    this.graphics.fillStyle(color, alpha * 0.16);
+    this.graphics.fillEllipse(roverScreen.x, roverScreen.y + 5, radius * 1.5 * scale, radius * 0.9 * yScale * scale);
   }
 
   private drawArms(fertile: FertileZone | undefined, layer: 'behind' | 'front'): void {

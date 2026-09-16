@@ -1160,7 +1160,7 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     // magnet unchanged.
     if (input.onRoad) {
       const firmSteer = Math.abs(input.steer) >= state.tuning.railBreakSteer;
-      const carryCap = TURN_RATE * 2.6;
+      const carryCap = TURN_RATE * 3.4;
       gripTurn = clamp(input.assistSteer, -carryCap, carryCap) * (firmSteer ? 0.3 : 1);
       steerScale = firmSteer ? 1 : 0.25;
     } else {
