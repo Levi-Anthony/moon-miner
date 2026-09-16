@@ -2985,9 +2985,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.showEventMessage(this.state.message, 1800, timeMs, 2);
     }
 
-    if (this.state.rover.ore > previousOre + 0.02) {
-      this.addEffect('mine', this.state.rover.x, this.state.rover.y, 260);
-    }
+    // The old expanding "mine" rings fired on every ore tick and just strobed
+    // over the machine. The mining arms (reaching into the seam, tips
+    // sparkling) are the read now, so there is no separate circle.
 
     if (previousPhase !== this.state.phase) {
       this.addEffect(this.state.phase === 'won' ? 'win' : 'loss', this.state.rover.x, this.state.rover.y, 1200);
@@ -5107,7 +5107,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.graphics.lineStyle(width, color, alpha);
       this.graphics.strokeCircle(center.x, center.y, radius * scale);
 
-      if (effect.kind === 'mine' || effect.kind === 'recovery') {
+      if (effect.kind === 'recovery') {
         this.graphics.fillStyle(color, 0.12 * alpha);
         this.graphics.fillCircle(center.x, center.y, 28 * scale);
       }

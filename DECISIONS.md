@@ -1,5 +1,28 @@
 # Decisions
 
+## 2026-09-16: Mining fix — the band matches the drawn seam; drop the strobing mine rings
+
+Playtest: "you can be stopped on top of a visual ore seam and not be mining at
+all for some reason. Also take away the older shortcut UI mining indicator
+circles."
+
+- **Root cause of the no-mining bug:** mining detection (`isPointInFertileZone`,
+  vein zones) counted only points within `vein.width/2` of the bare vein line,
+  but the seam is DRAWN inflated — ore pulse at `width+24`, bed at `width+34`. So
+  a ring of visibly-gold ground read as "not in the seam" and the arms stowed.
+- **Fix:** mining band = `vein.width/2 + SEAM_MINE_REACH` (20), matching the drawn
+  ore. Parked on the gold now always mines. The directional-band guardrail still
+  holds (out at the circle radius still yields nothing), and a new regression test
+  locks "parked just past the bare vein, still on the gold, mines."
+- **Removed the mine indicator circles:** the expanding "mine" rings fired on
+  every ore tick and strobed over the machine. Deleted the effect and its render.
+  The mining ARMS — reaching into the seam, tips sparkling — are the read now.
+- Stationary throughput unchanged (flat `mineRate × arms × STOP_MINE_EFFICIENCY`);
+  `mineRate` remains a panel knob, so yield is player-tunable rather than hardcoded.
+- The turbo "railboosted slurp" mode (zoom the middle third of a seam, collect it
+  all at once) is the deferred next step, per Levi's "don't have to do this
+  immediately."
+
 ## 2026-09-16: Day/shift/game loop, per-day economy, bigger regenerating level — all player-tunable
 
 Standing directive captured this session (ECB taste pref): **wherever possible,

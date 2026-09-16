@@ -358,6 +358,13 @@ const INDUSTRIAL_ARMS = 7;
 // because you mine standing still. Chosen so all seven arms together give about
 // the throughput parked mining had before (7 * 0.4 vs the old 7 * ~0.35).
 const STOP_MINE_EFFICIENCY = 0.4;
+// The mining band around a vein reaches this far BEYOND the vein's own
+// half-width, so "parked on the visibly gold seam" always mines. The seam is
+// drawn inflated (ore pulse at width+24, bed at width+34), so the old
+// exactly-width/2 detection left a ring of visible ore you could sit on without
+// the arms engaging -- the "stopped on a seam and not mining" bug. This matches
+// the drawn ore, not the bare geometric vein.
+const SEAM_MINE_REACH = 20;
 const UTILITY_ARMS = 1;
 const TOTAL_ARMS = INDUSTRIAL_ARMS + UTILITY_ARMS;
 const TURN_RATE = 2.25;
@@ -2385,7 +2392,7 @@ function estimateActiveDroneRefillEta(state: ContinuousWorldState): number {
 
 function isPointInFertileZone(zone: FertileZone, point: Vec2): boolean {
   if (zone.vein) {
-    return distanceToSegment(point, zone.vein.from, zone.vein.to) <= zone.vein.width / 2;
+    return distanceToSegment(point, zone.vein.from, zone.vein.to) <= zone.vein.width / 2 + SEAM_MINE_REACH;
   }
 
   return distance(point, zone) <= zone.radius;

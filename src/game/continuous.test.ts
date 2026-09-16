@@ -224,6 +224,27 @@ describe('continuous Moon Miner spike rules', () => {
     expect(tickContinuousWorld(world, idleInput, 0.1).lastYieldRate).toBe(0);
   });
 
+  it('mines when parked on the visibly gold seam just outside the bare vein line', () => {
+    const world = createContinuousWorld();
+    const seam = world.fertileZones[1];
+    const vein = seam.vein!;
+    // Perpendicular to the vein, out past the bare half-width but still on the
+    // drawn seam (the ore bed is inflated well beyond the geometric vein). This
+    // is the "stopped on a gold seam and not mining" spot; it must now mine.
+    const dx = vein.to.x - vein.from.x;
+    const dy = vein.to.y - vein.from.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const px = -dy / len;
+    const py = dx / len;
+    const offset = vein.width / 2 + 12;
+    world.rover.x = vein.from.x + px * offset;
+    world.rover.y = vein.from.y + py * offset;
+
+    const next = tickContinuousWorld(world, idleInput, 0.1);
+    expect(next.lastYieldRate).toBeGreaterThan(0);
+    expect(next.arms.mining).toBeGreaterThan(0);
+  });
+
   it('idles on barren raw terrain without moving, printing field, or mining when there is no drive intent', () => {
     const world = createContinuousWorld();
     world.fields = [];
