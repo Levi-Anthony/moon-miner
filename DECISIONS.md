@@ -1,5 +1,41 @@
 # Decisions
 
+## 2026-09-16: Prepared road is a LOCK — forward follows any squiggle, only a full-stick leaves
+
+Playtest ask, verbatim intent: "Forward stick on prepared road should lock you
+onto the road and accelerate you just past the point where you could ever steer
+around those corners, and it will faithfully follow any squiggly path that's laid
+out. In order to drive off the road at full speed you have to take the stick all
+the way to 90° left or right."
+
+### What was wrong
+The on-road carry was still a soft *assist you fight*, not a lock: a partial wheel
+was only scaled to 0.25 (so a resting/half-committed stick still sawed against the
+line), and a light 0.34 steer already eased the carry and passed your wheel
+through — so the road never felt like it held you, and you slid off it too easily.
+Authority was never the bottleneck: `TURN_RATE` is 2.25, so the old 3.4× cap
+(7.65) already exceeded the carry's own 7.5 max output.
+
+### Decision
+Prepared road under forward drive is a **lock**, not a magnet:
+- **Partial stick fully subsumed** — `steerScale` 0.25 → **0** below the break. A
+  resting or half-committed wheel does nothing to the line; forward alone follows
+  the ribbon.
+- **Break only at full deflection** — new `ROAD_CARRY_BREAK_STEER = 0.9` (its own
+  threshold, separate from the sim's `railBreakSteer` 0.34, which self-play/tests
+  keep). Only taking the stick ~all the way over drops the carry and passes 100%
+  of your wheel through, to leave at a junction or seam. On keyboard this is clean:
+  **W follows the road, A/D leaves it.**
+- **Hug squiggles at boosted speed** — carry cap `3.4×` → `ROAD_CARRY_TURN_MULT =
+  5×` TURN_RATE and `ROAD_FOLLOW_STEER` 7.5 → 9, giving the lock real headroom to
+  track tight laid bends at full railSpeed (236) — speed you could never corner by
+  hand, which is the point.
+
+Speed itself unchanged (already boosts preparedSpeed → railSpeed on road). No draw
+changes. Verified: typecheck + build clean, unit suite unchanged (74 pass / same 9
+DEV-23 reds, none related), boot-and-drive screenshot renders and lays ribbon. The
+lock/break *feel* is a playtest judgement — cap/threshold are one-number tunes.
+
 ## 2026-09-16: Full-speed corners + more grip; strip the obscuring rover rings
 
 Playtest: don't slow on corners, increase grip, reduce the weird UI circles that

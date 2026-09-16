@@ -363,6 +363,15 @@ const TURN_RATE = 2.25;
 const REVERSE_SPEED_RATIO = 0.62;
 // Full lock in a little over a quarter second.
 const STEER_RAMP_PER_SECOND = 4.6;
+// Forward on prepared road LOCKS the machine onto the ribbon: the carry owns the
+// wheel and faithfully follows the laid path however it squiggles, and a partial
+// stick is fully subsumed (a resting or half-committed wheel does nothing). The
+// only way off at speed is to take the stick ALL THE WAY over -- a near-90-degree
+// deflection -- which passes your wheel straight through and drops the carry.
+const ROAD_CARRY_BREAK_STEER = 0.9;
+// The rail may out-turn a manual lock by this much so it holds a squiggly line at
+// full boosted speed -- speed the driver could never corner by hand.
+const ROAD_CARRY_TURN_MULT = 5;
 const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
 export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -1142,12 +1151,13 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   const grip = getPreparedGrip(state);
   const fieldTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * grip.strength * authority;
 
-  // On cured road, the carry is a RESCUE SLIDE, not an assist you fight. The
-  // road takes over the wheel: it may turn well past a manual lock (2.6x) so it
-  // holds a curve at speed instead of flinging you off the outside; a light
-  // touch on the wheel is subsumed so a resting finger does not saw against the
-  // line; and only a firm, deliberate steer (past railBreakSteer) eases the
-  // carry and passes your wheel through, to break off at a junction or seam.
+  // On cured road, forward LOCKS you onto the ribbon -- the carry is the whole
+  // wheel, not an assist you fight. It out-turns a manual lock (ROAD_CARRY_TURN_MULT)
+  // so it faithfully follows any squiggle the road makes, at a boosted speed you
+  // could never corner by hand; a partial stick is fully subsumed (steerScale 0),
+  // so a resting or half-committed wheel does nothing to the line. Only taking the
+  // stick ALL THE WAY over (ROAD_CARRY_BREAK_STEER, ~90 degrees) drops the carry
+  // and passes your wheel straight through, to leave the road at a junction or seam.
   let gripTurn = fieldTurn;
   let steerScale = 1;
   if (input.assistSteer !== undefined) {
@@ -1159,10 +1169,10 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     // it, the slide holds you. Self-play/tests pass no assistSteer and keep the
     // magnet unchanged.
     if (input.onRoad) {
-      const firmSteer = Math.abs(input.steer) >= state.tuning.railBreakSteer;
-      const carryCap = TURN_RATE * 3.4;
-      gripTurn = clamp(input.assistSteer, -carryCap, carryCap) * (firmSteer ? 0.3 : 1);
-      steerScale = firmSteer ? 1 : 0.25;
+      const breakingOff = Math.abs(input.steer) >= ROAD_CARRY_BREAK_STEER;
+      const carryCap = TURN_RATE * ROAD_CARRY_TURN_MULT;
+      gripTurn = breakingOff ? 0 : clamp(input.assistSteer, -carryCap, carryCap);
+      steerScale = breakingOff ? 1 : 0;
     } else {
       gripTurn = 0;
     }

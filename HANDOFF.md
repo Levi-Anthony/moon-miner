@@ -146,8 +146,13 @@ you out of crawl instantly.
   laying right now) and trail-*distance* (radius-dependent). Accepted:
   **time-based cure**.
 - **Carry:** rejected "assist you fight" (steer halved the carry; player steer
-  always added). Accepted: rescue-slide — on cured road the road takes the
-  wheel; only a firm steer leaves.
+  always added) and then rejected the softer rescue-slide too (partial steer
+  scaled to 0.25 still sawed the line; a light 0.34 steer left too easily).
+  Accepted: prepared road under forward is a **LOCK** — partial stick fully
+  subsumed (`steerScale` 0), the carry owns the wheel and hugs any laid squiggle
+  at boosted speed, and only a **full ~90° deflection** (`ROAD_CARRY_BREAK_STEER`
+  0.9, its own threshold) drops it and passes your wheel through. On keyboard: W
+  follows the road, A/D leaves it.
 - **Speed:** first accepted a curvature-eased slide (fast straights, slowed
   bends), then **reversed it** on playtest — "Don't slow down on corners.
   Increase grip." Current accepted model: **full-speed corners** (no curvature

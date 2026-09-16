@@ -57,7 +57,7 @@ const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
 const FIELD_DECK_COLOR = 0x6d8f89;
 // Road-follow feel (the sandbox slide/carry), computed over the driven trail.
-const ROAD_FOLLOW_STEER = 7.5; // rad/s carry toward the road; the sim caps the slide at ~3.4x TURN_RATE
+const ROAD_FOLLOW_STEER = 9; // rad/s carry toward the road; the sim caps the lock at 5x TURN_RATE so this hugs squiggly paths
 // |cos| of the angle between heading and the road under you, above which you
 // count as driving ALONG that road (grip, boost, and "re-drive = don't restack"
 // all apply). Below it you are crossing the road, not on it -- so crossings lay
