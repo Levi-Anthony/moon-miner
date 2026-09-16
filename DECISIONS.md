@@ -1,5 +1,24 @@
 # Decisions
 
+## 2026-09-16: Text verbosity knob (default Minimal) + eased economy defaults
+
+Two playtest asks handled together.
+
+**Cut the text.** Persistent steady-state prose ("Your own road...", the constant
+objective/how-to line) was the repeated "too much reliance on text." Added a
+`textVerbosity` knob — **Off / Minimal / Full**, default **Minimal** — in the
+panel. Minimal shows the opening controls hint (first 7s) and only important
+events briefly (priority ≥ 2: out of stock, last light, extraction now,
+deliveries); it stays quiet in steady state (the HUD + mode chip carry state).
+Full restores the constant guidance; Off shows nothing but the end-of-run banner
+(never suppressed). Gated in `getEventFeedText`.
+
+**Ease the economy.** The run lived at LOW/crawl — frantic by default not by
+choice. Stable/default preset eased: `startingNanobots` 6→9, `fabricateCostPerSecond`
+1→0.85, `crawlRecoveryPerSecond` 0.3→0.45. All three stay panel knobs; classic
+preset untouched; two stable-default guardrail assertions updated (drain-math
+tests use explicit values, unaffected).
+
 ## 2026-09-16: Road is ≥2 car-widths and one width drives everything (clean maze, no pinch/overlap)
 
 Playtest ask: "The road needs to be at least two car widths wide and have strong

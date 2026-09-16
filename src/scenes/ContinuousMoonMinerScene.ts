@@ -130,6 +130,7 @@ interface LoopConfig {
   hardFailRoadResetPct: number; // fraction of carried road wiped on a sunset (hard) fail (0..1)
   arenaScale: number; // level size multiplier (1 = original)
   roadWidthCars: number; // road width in rover-widths (>=2 keeps it comfortably drivable)
+  textVerbosity: number; // 0 = off, 1 = minimal (events only), 2 = full (steady-state coaching)
 }
 const DEFAULT_LOOP_CONFIG: LoopConfig = {
   daysPerShift: 3,
@@ -139,8 +140,10 @@ const DEFAULT_LOOP_CONFIG: LoopConfig = {
   underQuotaFeePct: 0.5,
   hardFailRoadResetPct: 0,
   arenaScale: 1.35,
-  roadWidthCars: 2.2
+  roadWidthCars: 2.2,
+  textVerbosity: 1
 };
+const TEXT_VERBOSITY_LABELS = ['Off', 'Minimal', 'Full'];
 interface LoopConfigControlDefinition {
   key: keyof LoopConfig;
   label: string;
@@ -158,7 +161,8 @@ const LOOP_CONFIG_CONTROLS: LoopConfigControlDefinition[] = [
   { key: 'underQuotaFeePct', label: 'Under-quota fee', min: 0, max: 0.9, step: 0.05, precision: 2, hint: 'Fraction the company skims off an under-quota return (soft fail).' },
   { key: 'hardFailRoadResetPct', label: 'Sunset road wipe', min: 0, max: 1, step: 0.05, precision: 2, hint: 'Fraction of your carried road lost if you miss sunset (hard fail). 0 keeps it all.' },
   { key: 'arenaScale', label: 'Level size', min: 1, max: 2, step: 0.05, precision: 2, hint: 'How far the seams spread. Bigger = longer routes. Applies on the next regen/new game.' },
-  { key: 'roadWidthCars', label: 'Road width (cars)', min: 1.5, max: 4, step: 0.1, precision: 1, hint: 'Road width in rover-widths. Drives the visible ribbon, the drivable band, and how close parallel tracks merge into one lane. Applies live.' }
+  { key: 'roadWidthCars', label: 'Road width (cars)', min: 1.5, max: 4, step: 0.1, precision: 1, hint: 'Road width in rover-widths. Drives the visible ribbon, the drivable band, and how close parallel tracks merge into one lane. Applies live.' },
+  { key: 'textVerbosity', label: 'Text', min: 0, max: 2, step: 1, hint: 'On-screen coaching text: 0 Off, 1 Minimal (only real events, briefly), 2 Full (constant steady-state guidance). The opening controls hint always shows briefly.' }
 ];
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
@@ -2357,7 +2361,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       const controls = this.loopConfigControls.get(definition.key);
       if (!controls) continue;
       const value = this.loopConfig[definition.key];
-      const formatted = definition.precision !== undefined ? value.toFixed(definition.precision) : String(value);
+      const formatted =
+        definition.key === 'textVerbosity'
+          ? (TEXT_VERBOSITY_LABELS[value] ?? String(value))
+          : definition.precision !== undefined
+            ? value.toFixed(definition.precision)
+            : String(value);
       controls.range.value = String(value);
       controls.number.value = formatted;
       controls.value.textContent = formatted;
@@ -5828,22 +5837,35 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private getEventFeedText(): string {
+    // Verbosity knob (Off / Minimal / Full). The end-of-run banner is separate
+    // (drawPhaseBanner), so it is never suppressed here.
+    const verbosity = this.loopConfig.textVerbosity;
+    // The opening controls hint always shows briefly, even at Off/Minimal, so a
+    // first-time player learns W/A/D/S before the text goes quiet.
+    const inIntro = this.state.elapsedSeconds < 7 && this.state.phase === 'playing';
+
     if (this.eventMessage && this.time.now <= this.eventMessage.expiresAtMs) {
-      return this.eventMessage.text;
+      // Full shows every event; Minimal shows only the important ones
+      // (priority >= 2: out of stock, last light, extraction now, deliveries);
+      // Off shows none. The intro line still comes through below.
+      if (verbosity >= 2 || (verbosity === 1 && this.eventMessage.priority >= 2)) {
+        return this.eventMessage.text;
+      }
     }
     if (this.eventMessage && this.time.now > this.eventMessage.expiresAtMs) {
       this.eventMessage = undefined;
     }
+
     const guidance = getContinuousGuidance(this.state);
-    // Less prose. The two-sentence objective+nudge taught the controls in the
-    // opening seconds and still speaks on real events (the transient messages
-    // above); but narrating a full how-to line every steady-state frame was the
-    // "too much text". After the intro, the persistent line is just the short
-    // objective -- a reminder, not a paragraph. Phase end keeps its full say.
-    if (this.state.elapsedSeconds < 7 || this.state.phase !== 'playing') {
+    if (inIntro) {
       return `${guidance.objective}. ${guidance.nudge}`;
     }
-    return guidance.objective;
+    // Steady-state persistent objective line only at Full. Minimal/Off stay
+    // quiet between events -- the HUD (ore, sun, stock, mode chip) carries state.
+    if (verbosity >= 2 && this.state.phase === 'playing') {
+      return guidance.objective;
+    }
+    return '';
   }
 
   private drawPhaseBanner(): void {
