@@ -73,13 +73,26 @@ describe('continuous Moon Miner spike rules', () => {
       'east-saddle',
       'south-east-pocket'
     ]);
-    expect(world.fertileZones[0].x).toBeGreaterThan(world.rover.x);
-    expect(world.fertileZones[1].x).toBeGreaterThan(world.fertileZones[0].x + 300);
-    expect(world.fertileZones[1].y).toBeLessThan(world.fertileZones[0].y - 120);
-    expect(world.fertileZones[2].y).toBeGreaterThan(world.fertileZones[0].y + 130);
-    expect(world.fertileZones[4].x).toBeGreaterThan(800);
+    // Layout is shuffled per seed now, so assert the shuffle INVARIANTS rather
+    // than fixed coordinates: every seam is inside the field, clear of the depot
+    // and the extraction, and keeps its vein.
+    const inBounds = (zone: (typeof world.fertileZones)[number]) =>
+      zone.x >= 140 && zone.x <= 910 && zone.y >= 190 && zone.y <= 620;
+    expect(world.fertileZones.every(inBounds)).toBe(true);
+    expect(
+      world.fertileZones.every(
+        (zone) => Math.hypot(zone.x - world.arena.start.x, zone.y - world.arena.start.y) >= 150
+      )
+    ).toBe(true);
+    if (world.arena.extraction) {
+      const extraction = world.arena.extraction;
+      expect(
+        world.fertileZones.every(
+          (zone) => Math.hypot(zone.x - extraction.x, zone.y - extraction.y) >= extraction.radius + 80
+        )
+      ).toBe(true);
+    }
     expect(world.fertileZones.every((zone) => zone.vein)).toBe(true);
-    expect(world.fertileZones[1].vein?.to.x).toBeGreaterThan(world.fertileZones[1].vein?.from.x ?? 0);
     expect(world.arena.beats.length).toBeGreaterThanOrEqual(6);
     expect(world.arena.beats.map((beat) => beat.label)).not.toContain('prepared runway');
     expect(world.arena.ridges.length).toBeLessThanOrEqual(3);
@@ -138,7 +151,8 @@ describe('continuous Moon Miner spike rules', () => {
     // distinct, which the seam assertions below carry.
     expect(readable.fields).toHaveLength(6);
     expect(tight.fields).toEqual([]);
-    expect(readable.fertileZones[1].x).toBeGreaterThan(tight.fertileZones[1].x);
+    // The two variants lay out differently (each arena seeds its own shuffle).
+    expect(readable.fertileZones[1].x).not.toBe(tight.fertileZones[1].x);
     expect(readable.fertileZones[1].vein).not.toEqual(tight.fertileZones[1].vein);
   });
 
