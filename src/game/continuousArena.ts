@@ -545,9 +545,21 @@ export function createArenaStarterFields(
 // genuinely different map to read (New Game reshuffles; a shift keeps its seed
 // so carried road still fits). Falls back to the authored position only if
 // sampling cannot find a spot.
-export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: string): FertileZone[] {
+export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: string, layoutScale = 1): FertileZone[] {
   const random = seededRandom(`${seed}:${arena.id}:layout-v2`);
-  const bounds = { minX: 150, maxX: 900, minY: 200, maxY: 610 };
+  // Bigger level = the seams scatter across a wider area (reachability rules
+  // below still hold, so they stay reachable -- just farther). Scale the base
+  // bounds around their centre, clamped to the world so nothing lands off-map.
+  const base = { minX: 150, maxX: 900, minY: 200, maxY: 610 };
+  const scale = Math.max(1, layoutScale);
+  const cx = (base.minX + base.maxX) / 2;
+  const cy = (base.minY + base.maxY) / 2;
+  const bounds = {
+    minX: Math.max(40, cx - (cx - base.minX) * scale),
+    maxX: Math.min(1000, cx + (base.maxX - cx) * scale),
+    minY: Math.max(90, cy - (cy - base.minY) * scale),
+    maxY: Math.min(700, cy + (base.maxY - cy) * scale)
+  };
   const start = arena.start;
   const extraction = arena.extraction;
   const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);

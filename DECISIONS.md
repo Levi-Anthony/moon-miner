@@ -1,5 +1,54 @@
 # Decisions
 
+## 2026-09-16: Day/shift/game loop, per-day economy, bigger regenerating level — all player-tunable
+
+Standing directive captured this session (ECB taste pref): **wherever possible,
+turn a request into an option the player controls.** Every new lever below is a
+control-panel knob, defaulted to the value Levi specified.
+
+### Time structure (all tunable, defaults in parens)
+- **day = one excursion** (one sunset run). **shift = D days** (D=3). **game = S
+  shifts** (S=4). A single counter `dayNumber` is the source of truth; shift and
+  day-in-shift derive from it and the config. HUD now reads `DAY d/D · SHIFT s/S`.
+
+### Road persistence + regenerating level
+- **Road persists day-to-day WITHIN a shift and resets at each shift boundary**
+  (carried only when the next day stays in the same shift).
+- **The map regenerates every N shifts** (N=2) and on New Game. Implemented as a
+  derived block seed: `${gameSeed}:blk${floor((shift-1)/N)}` — stable within a
+  block, fresh across blocks. Road wipes every shift regardless of N.
+- **Bigger level** via `arenaScale` (1.35): `createArenaFertileZones` scales its
+  seam-scatter bounds around centre (clamped to the world), so seams spread
+  farther and routes get longer. Reachability rules unchanged. Threaded through
+  `createContinuousWorld(..., layoutScale)`.
+
+### Per-day economy (answers from Levi)
+- **Quota Q=12 and the sunset deadline are per-DAY.** Quota is a live knob that
+  overrides the arena's `oreRequired` on a per-state arena clone (never mutating
+  the shared arena def).
+- **Under quota but made it back = SOFT fail:** the return still delivers, but the
+  company skims an `underQuotaFeePct` (0.5) processing fee off the banked ore.
+- **Missed sunset = HARD fail:** you lose only this run's haul (banked from prior
+  days survives — Levi's choice), and a tweakable `hardFailRoadResetPct` (default
+  0 = keep all) sheds that fraction of carried road.
+- Sim change enabling the soft fail: a **`leftExtraction` latch**. A day ends by
+  RETURNING to the depot, and the run starts parked on it, so "made it back" only
+  counts once you've actually left. This also guards the depot against ending the
+  day at t=0. Win now fires on returning regardless of quota, flagged
+  `returnedUnderQuota` for the scene to apply the fee. Guardrail test updated (a
+  direct-placement win now sets `leftExtraction=true`); the self-play/economy
+  tests that returning-under-quota-as-win shifts are the existing DEV-23 re-cut
+  bucket (still 74 pass / same 9 red; no NEW failures).
+
+### Panel
+Control panel now opens with a **Loop & Economy** group (7 knobs, each with a
+tooltip) above a collapsed **Drive Feel** group, so the loop shape and fail rules
+are reachable without scrolling past the physics sliders. Config persists to
+localStorage.
+
+Verified: typecheck + build clean, unit suite unchanged (74/9), screenshot of the
+panel + HUD ("Day 1/3 · Shift 1/4"), zero page errors.
+
 ## 2026-09-16: Prepared road is a LOCK — forward follows any squiggle, only a full-stick leaves
 
 Playtest ask, verbatim intent: "Forward stick on prepared road should lock you

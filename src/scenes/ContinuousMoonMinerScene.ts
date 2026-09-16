@@ -104,15 +104,56 @@ const LOW_NANOBOT_RATIO = 0.18;
 const DRONE_URGENCY_RATIO = 0.32;
 const DELIVERY_READOUT_MS = 1260;
 const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v5';
-const CARRIED_ROAD_STORAGE_KEY = 'moon-miner-carried-road-v1';
-// The seed that shuffles the seam layout. Persisted so an expedition keeps one
-// map across its shifts and reloads (carried road still fits), and New Game
-// stamps a fresh one for a brand-new map. First ever boot generates one.
+// v2: stores { day, fields, depletion, banked }. The day is the total days
+// played this game (1-based); shift/day-in-shift derive from it and the loop
+// config. Bumped from v1 (which stored a raw shift number) so an old save does
+// not read as a huge day count.
+const CARRIED_ROAD_STORAGE_KEY = 'moon-miner-carried-road-v2';
+// The base seed for a whole GAME. Block seeds derive from it so the map
+// regenerates every N shifts (and New Game stamps a fresh one). Persisted so a
+// reload keeps the same game map and the carried road still fits.
 const EXPEDITION_SEED_KEY = 'moon-miner-expedition-seed-v1';
-// An expedition is a fixed run of shifts with a scored end, so the driving has
-// a point past "another shift forever". Endless play stays available via New
-// Game / ?shift=0 for playtesting.
-const EXPEDITION_SHIFTS = 3;
+// Player-tunable loop shape (all exposed in the control panel). A day is one
+// excursion (one sunset run); DAYS_PER_SHIFT days make a shift; SHIFTS_PER_GAME
+// shifts make a game. Road persists day-to-day within a shift and resets each
+// shift; the map regenerates every ARENA_REGEN_SHIFTS shifts and on New Game.
+const LOOP_CONFIG_STORAGE_KEY = 'moon-miner-loop-config-v1';
+interface LoopConfig {
+  daysPerShift: number; // D
+  shiftsPerGame: number; // S
+  arenaRegenShifts: number; // N -- regenerate the map every N shifts
+  quota: number; // Q -- ore required per day to avoid the under-quota fee
+  underQuotaFeePct: number; // company processing fee on an under-quota return (0..1)
+  hardFailRoadResetPct: number; // fraction of carried road wiped on a sunset (hard) fail (0..1)
+  arenaScale: number; // level size multiplier (1 = original)
+}
+const DEFAULT_LOOP_CONFIG: LoopConfig = {
+  daysPerShift: 3,
+  shiftsPerGame: 4,
+  arenaRegenShifts: 2,
+  quota: 12,
+  underQuotaFeePct: 0.5,
+  hardFailRoadResetPct: 0,
+  arenaScale: 1.35
+};
+interface LoopConfigControlDefinition {
+  key: keyof LoopConfig;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  precision?: number;
+  hint: string;
+}
+const LOOP_CONFIG_CONTROLS: LoopConfigControlDefinition[] = [
+  { key: 'daysPerShift', label: 'Days / shift', min: 1, max: 8, step: 1, hint: 'How many excursions (days) make up one shift. Road persists across a shift.' },
+  { key: 'shiftsPerGame', label: 'Shifts / game', min: 1, max: 10, step: 1, hint: 'How many shifts make one game before the final score.' },
+  { key: 'arenaRegenShifts', label: 'Regen every N shifts', min: 1, max: 10, step: 1, hint: 'The map (seam layout) regenerates this often, and on New Game.' },
+  { key: 'quota', label: 'Daily quota (Q)', min: 1, max: 40, step: 1, hint: 'Ore to deliver each day. Come back under it and the company charges a processing fee.' },
+  { key: 'underQuotaFeePct', label: 'Under-quota fee', min: 0, max: 0.9, step: 0.05, precision: 2, hint: 'Fraction the company skims off an under-quota return (soft fail).' },
+  { key: 'hardFailRoadResetPct', label: 'Sunset road wipe', min: 0, max: 1, step: 0.05, precision: 2, hint: 'Fraction of your carried road lost if you miss sunset (hard fail). 0 keeps it all.' },
+  { key: 'arenaScale', label: 'Level size', min: 1, max: 2, step: 0.05, precision: 2, hint: 'How far the seams spread. Bigger = longer routes. Applies on the next regen/new game.' }
+];
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
 const DRONE_RAIL_LAB_STORAGE_KEY = 'moon-miner-drone-rail-lab-v1';
@@ -744,6 +785,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private droneRailPresetSelectElement?: HTMLSelectElement;
   private arenaSelectElement?: HTMLSelectElement;
   private tuningControls = new Map<TuningKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
+  private loopConfigControls = new Map<keyof LoopConfig, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
   private droneRailNumericControls = new Map<NumericTuningKey, { range: HTMLInputElement; number: HTMLInputElement; value: HTMLElement }>();
   private droneRailBooleanControls = new Map<BooleanTuningKey, HTMLInputElement>();
   private droneRailOverlayControls = new Map<DroneRailOverlayKey, HTMLInputElement>();
@@ -761,7 +803,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.state = createContinuousWorld(this.loadExpeditionSeed(), this.loadStoredTuning(), this.loadStoredArenaId(), this.loadCarriedRoad(), this.carriedDepletion);
+    this.loopConfig = this.loadLoopConfig();
+    this.gameSeed = this.loadExpeditionSeed();
+    const carried = this.loadCarriedRoad();
+    this.buildWorld(this.gameSeed, carried, this.carriedDepletion);
     this.cameraLab = this.loadInitialCameraLab();
     this.droneRailLab = this.loadStoredDroneRailLab();
     this.viewMode = this.cameraLab.viewMode;
@@ -981,12 +1026,40 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  private shiftNumber = 1;
+  // The total days (excursions) played this game, 1-based. Shift and
+  // day-in-shift derive from it via the loop config.
+  private dayNumber = 1;
+  // The base seed for the whole game (block variation applied in worldSeedFor).
+  private gameSeed = 'apollo-17';
   private carriedIn = 0;
   private carriedDepletion: Record<string, number> = {};
   private saveDiagnostic: 'loaded' | 'absent' | 'empty' | 'unreadable' | 'off' = 'off';
   private survivedTheNight = 0;
-  private bankedOre = 0; // ore delivered across completed shifts this expedition
+  private bankedOre = 0; // ore banked (after fees) across completed days this game
+  private loopConfig: LoopConfig = { ...DEFAULT_LOOP_CONFIG };
+
+  // 1-based shift the given day (default: current) falls in.
+  private shiftOfDay(day = this.dayNumber): number {
+    return Math.floor((day - 1) / Math.max(1, this.loopConfig.daysPerShift)) + 1;
+  }
+  // 1-based day-within-shift.
+  private dayInShiftOf(day = this.dayNumber): number {
+    return ((day - 1) % Math.max(1, this.loopConfig.daysPerShift)) + 1;
+  }
+  // The arena-regen block a shift belongs to; the map is shared within a block
+  // and changes when the block does (every N shifts).
+  private blockOfShift(shift: number): number {
+    return Math.floor((shift - 1) / Math.max(1, this.loopConfig.arenaRegenShifts));
+  }
+  // The world seed for the current day: game seed + its regen block, so the map
+  // is stable within a block and fresh across blocks.
+  private worldSeedFor(day: number, gameSeed: string): string {
+    return `${gameSeed}:blk${this.blockOfShift(this.shiftOfDay(day))}`;
+  }
+  // Kept as a read-only alias so records/HUD that say "shift" stay meaningful.
+  private get shiftNumber(): number {
+    return this.shiftOfDay();
+  }
 
   // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
   // caution about a documented deferral, and the result was that the next day
@@ -1072,16 +1145,16 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
   private loadCarriedRoad(): FieldPatch[] {
     const save = this.loadShiftSave();
-    this.shiftNumber = save.shift;
+    this.dayNumber = save.day;
     this.carriedIn = save.fields.length;
     this.carriedDepletion = save.depletion;
     this.bankedOre = save.banked;
     return save.fields;
   }
 
-  // The layout seed for this expedition. Reused across the expedition's shifts
-  // and reloads (so the carried road still fits the map), regenerated by New
-  // Game. First ever boot mints and stores one.
+  // The base seed for this GAME. Reused across the game's days and reloads (so
+  // the carried road still fits), with per-block variation applied in
+  // worldSeedFor. Regenerated by New Game. First ever boot mints and stores one.
   private loadExpeditionSeed(): string {
     if (!this.isShiftModeEnabled()) return 'apollo-17';
     try {
@@ -1099,62 +1172,120 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     return `exp-${Date.now().toString(36)}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
   }
 
-  private loadShiftSave(): { shift: number; fields: FieldPatch[]; depletion: Record<string, number>; banked: number } {
-    if (!this.isShiftModeEnabled()) return { shift: 1, fields: [], depletion: {}, banked: 0 };
+  // Build the world for the current day: the game seed varied by regen block
+  // (so the map changes every N shifts), the level-size scale, and the daily
+  // quota override, applied without mutating the shared arena definition.
+  private buildWorld(gameSeed: string, carriedFields: FieldPatch[], carriedDepletion: Record<string, number>, arenaOverride?: ContinuousArenaId): void {
+    const arenaId = arenaOverride ?? this.state?.arenaId ?? this.loadStoredArenaId();
+    const tuning = this.state?.tuning ?? this.loadStoredTuning();
+    const worldSeed = this.isShiftModeEnabled() ? this.worldSeedFor(this.dayNumber, gameSeed) : gameSeed;
+    const world = createContinuousWorld(worldSeed, tuning, arenaId, carriedFields, carriedDepletion, this.loopConfig.arenaScale);
+    // Per-day quota override, on a per-state clone of the arena so the shared
+    // CONTINUOUS_ARENAS definition is never mutated.
+    if (world.arena.extraction && this.isShiftModeEnabled()) {
+      world.arena = {
+        ...world.arena,
+        extraction: { ...world.arena.extraction, oreRequired: this.loopConfig.quota }
+      };
+    }
+    this.state = world;
+  }
+
+  private loadShiftSave(): { day: number; fields: FieldPatch[]; depletion: Record<string, number>; banked: number } {
+    if (!this.isShiftModeEnabled()) return { day: 1, fields: [], depletion: {}, banked: 0 };
 
     try {
       const raw = window.localStorage.getItem(CARRIED_ROAD_STORAGE_KEY);
-      // Two runs a minute apart both recorded as shift one with nothing
-      // carried, which could be storage being cleared, storage being
-      // unreadable, or a save that was never written -- and no way to tell
-      // which from the outside. Recording what the load actually saw makes the
-      // next occurrence diagnose itself instead of being argued about.
+      // Two runs a minute apart both recorded as day one with nothing carried,
+      // which could be storage being cleared, storage being unreadable, or a
+      // save that was never written -- and no way to tell which from the
+      // outside. Recording what the load actually saw makes the next occurrence
+      // diagnose itself instead of being argued about.
       this.saveDiagnostic = raw === null ? 'absent' : raw.length < 3 ? 'empty' : 'loaded';
       const parsed = raw
-        ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[]; depletion?: Record<string, number>; banked?: number })
+        ? (JSON.parse(raw) as { day?: number; fields?: FieldPatch[]; depletion?: Record<string, number>; banked?: number })
         : undefined;
       return {
-        shift: typeof parsed?.shift === 'number' ? parsed.shift : 1,
+        day: typeof parsed?.day === 'number' && parsed.day >= 1 ? parsed.day : 1,
         fields: Array.isArray(parsed?.fields) ? parsed.fields : [],
         depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {},
         banked: typeof parsed?.banked === 'number' ? parsed.banked : 0
       };
     } catch {
       this.saveDiagnostic = 'unreadable';
-      return { shift: 1, fields: [], depletion: {}, banked: 0 };
+      return { day: 1, fields: [], depletion: {}, banked: 0 };
     }
   }
 
-  // The just-completed shift was the last of the expedition, so the next action
-  // is a fresh expedition rather than another shift. False in endless mode.
+  // The just-finished day was the last of the game (all shifts done), so the
+  // next action is a fresh game rather than another day. False in endless mode.
   private expeditionComplete(): boolean {
-    return this.isShiftModeEnabled() && this.shiftNumber >= EXPEDITION_SHIFTS;
+    return this.isShiftModeEnabled() && this.dayNumber >= this.loopConfig.daysPerShift * this.loopConfig.shiftsPerGame;
   }
 
   private saveCarriedRoad(): void {
     if (!this.isShiftModeEnabled()) return;
 
-    // Bank the ore this shift actually delivered (a lost shift delivers none).
-    // In memory so the end-of-shift and expedition summary can show the total.
-    this.bankedOre += this.state.phase === 'won' ? this.state.rover.ore : 0;
+    // Bank the day's haul. A clean win banks it all; an under-quota return is a
+    // soft fail -- the company skims its processing fee; a sunset (hard) fail
+    // delivers nothing.
+    const won = this.state.phase === 'won';
+    const feeMultiplier = this.state.returnedUnderQuota ? 1 - this.loopConfig.underQuotaFeePct : 1;
+    this.bankedOre += won ? this.state.rover.ore * feeMultiplier : 0;
 
     try {
-      const carried = carryFieldsOvernight(this.state.fields, this.state.tuning);
+      const nextDay = this.dayNumber + 1;
+      // Road persists day-to-day WITHIN a shift and resets at each shift
+      // boundary. Crossing into a new shift wipes the carried road.
+      const sameShift = this.shiftOfDay(nextDay) === this.shiftOfDay(this.dayNumber);
+      let carried = sameShift ? carryFieldsOvernight(this.state.fields, this.state.tuning) : [];
+      // Hard fail (missed sunset) additionally sheds a tweakable fraction of
+      // whatever road would have carried -- stacks with a shift-boundary wipe.
+      if (!won && carried.length > 0 && this.loopConfig.hardFailRoadResetPct > 0) {
+        const keep = Math.max(0, Math.round(carried.length * (1 - this.loopConfig.hardFailRoadResetPct)));
+        carried = carried.slice(0, keep);
+      }
       this.survivedTheNight = carried.length;
-      // The last shift carries nothing forward -- the next action is a new
-      // expedition, which wipes the board.
+      // The last day of the game carries nothing forward -- the next action is a
+      // new game, which wipes the board.
       if (this.expeditionComplete()) return;
       window.localStorage.setItem(
         CARRIED_ROAD_STORAGE_KEY,
         JSON.stringify({
-          shift: this.shiftNumber + 1,
+          day: nextDay,
           fields: carried,
           depletion: carryDepletionOvernight(this.state.fertileZones),
           banked: this.bankedOre
         })
       );
     } catch {
-      // Storage can be unavailable; the shift simply does not carry.
+      // Storage can be unavailable; the day simply does not carry.
+    }
+  }
+
+  private loadLoopConfig(): LoopConfig {
+    try {
+      const raw = window.localStorage.getItem(LOOP_CONFIG_STORAGE_KEY);
+      if (!raw) return { ...DEFAULT_LOOP_CONFIG };
+      const parsed = JSON.parse(raw) as Partial<LoopConfig>;
+      const merged = { ...DEFAULT_LOOP_CONFIG };
+      for (const control of LOOP_CONFIG_CONTROLS) {
+        const value = parsed[control.key];
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          merged[control.key] = Math.min(control.max, Math.max(control.min, value));
+        }
+      }
+      return merged;
+    } catch {
+      return { ...DEFAULT_LOOP_CONFIG };
+    }
+  }
+
+  private saveLoopConfig(): void {
+    try {
+      window.localStorage.setItem(LOOP_CONFIG_STORAGE_KEY, JSON.stringify(this.loopConfig));
+    } catch {
+      // Storage can be unavailable; the config simply does not persist.
     }
   }
 
@@ -1404,7 +1535,9 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private resetRun(): void {
-    this.state = createContinuousWorld(this.state.seed, this.state.tuning, this.state.arenaId, this.loadCarriedRoad(), this.carriedDepletion);
+    // loadCarriedRoad sets this.dayNumber, so buildWorld picks the right map
+    // block and quota for the day being (re)started.
+    this.buildWorld(this.gameSeed, this.loadCarriedRoad(), this.carriedDepletion);
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -1430,21 +1563,22 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // control -- distinct from Reset Day, which restarts the current day keeping
   // whatever road was inherited.
   private startNewGame(): void {
-    // Fresh map for the new expedition: mint and persist a new layout seed, and
-    // wipe the carried road so nothing from the old map is inherited.
+    // Fresh map for the new game: mint and persist a new base seed, and wipe the
+    // carried road so nothing from the old map is inherited.
     const seed = this.newExpeditionSeed();
+    this.gameSeed = seed;
     try {
       window.localStorage.removeItem(CARRIED_ROAD_STORAGE_KEY);
       window.localStorage.setItem(EXPEDITION_SEED_KEY, seed);
     } catch {
       // Storage can be unavailable; the new game simply starts from bare ground.
     }
-    this.shiftNumber = 1;
+    this.dayNumber = 1;
     this.carriedIn = 0;
     this.carriedDepletion = {};
     this.bankedOre = 0;
     this.saveDiagnostic = 'off';
-    this.state = createContinuousWorld(seed, this.state.tuning, this.state.arenaId, [], {});
+    this.buildWorld(seed, [], {});
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -1523,9 +1657,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private setArena(arenaId: ContinuousArenaId): void {
     if (!CONTINUOUS_ARENAS[arenaId]) return;
 
-    const tuning = this.state.tuning;
-    const seed = this.state.seed;
-    this.state = createContinuousWorld(seed, tuning, arenaId, this.loadCarriedRoad(), this.carriedDepletion);
+    this.buildWorld(this.gameSeed, this.loadCarriedRoad(), this.carriedDepletion, arenaId);
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -1680,6 +1812,59 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     panel.appendChild(arenaRow);
     this.arenaSelectElement = arenaSelect;
 
+    // Loop & economy group, folded into its own collapsible section at the top
+    // so the day/shift/game shape and the fail rules are reachable without
+    // scrolling past every physics slider. Each row carries a tooltip (title).
+    this.loopConfigControls.clear();
+    const loopSection = document.createElement('details');
+    loopSection.className = 'moon-miner-tuning__group';
+    loopSection.open = true;
+    const loopSummary = document.createElement('summary');
+    loopSummary.textContent = 'Loop & Economy';
+    loopSummary.title = 'Day = one excursion. Days make a shift, shifts make a game. Road persists across a shift and resets each shift; the map regenerates every N shifts.';
+    loopSection.appendChild(loopSummary);
+    for (const definition of LOOP_CONFIG_CONTROLS) {
+      const row = document.createElement('label');
+      row.className = 'moon-miner-tuning__row';
+      row.title = definition.hint;
+
+      const name = document.createElement('span');
+      name.className = 'moon-miner-tuning__name';
+      name.textContent = definition.label;
+      name.title = definition.hint;
+
+      const range = document.createElement('input');
+      range.type = 'range';
+      range.min = String(definition.min);
+      range.max = String(definition.max);
+      range.step = String(definition.step);
+
+      const number = document.createElement('input');
+      number.type = 'number';
+      number.min = String(definition.min);
+      number.max = String(definition.max);
+      number.step = String(definition.step);
+
+      const value = document.createElement('span');
+      value.className = 'moon-miner-tuning__value';
+
+      range.addEventListener('input', () => this.applyLoopConfigValue(definition.key, Number(range.value)));
+      number.addEventListener('change', () => this.applyLoopConfigValue(definition.key, Number(number.value)));
+
+      row.append(name, range, number, value);
+      loopSection.appendChild(row);
+      this.loopConfigControls.set(definition.key, { range, number, value });
+    }
+    panel.appendChild(loopSection);
+
+    // Physics / feel sliders, folded so the panel opens compact. Collapsed by
+    // default -- the loop knobs above are the ones a player reaches for.
+    const feelSection = document.createElement('details');
+    feelSection.className = 'moon-miner-tuning__group';
+    const feelSummary = document.createElement('summary');
+    feelSummary.textContent = 'Drive Feel';
+    feelSummary.title = 'Speeds, mining yield, stock, and the sun window.';
+    feelSection.appendChild(feelSummary);
     for (const definition of TUNING_CONTROLS) {
       const row = document.createElement('label');
       row.className = 'moon-miner-tuning__row';
@@ -1707,9 +1892,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       number.addEventListener('change', () => this.applyTuningValue(definition.key, Number(number.value)));
 
       row.append(name, range, number, value);
-      panel.appendChild(row);
+      feelSection.appendChild(row);
       this.tuningControls.set(definition.key, { range, number, value });
     }
+    panel.appendChild(feelSection);
 
     const actions = document.createElement('div');
     actions.className = 'moon-miner-tuning__actions';
@@ -2135,7 +2321,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private syncTuningPanel(): void {
     if (this.sessionReadoutElement) {
       const carry = this.carriedIn > 0 ? `${this.carriedIn} lengths carried in` : 'bare ground';
-      this.sessionReadoutElement.textContent = `Shift ${this.shiftNumber} · ${carry} · ${this.state.arenaId}`;
+      this.sessionReadoutElement.textContent = `Day ${this.dayInShiftOf()}/${this.loopConfig.daysPerShift} · Shift ${this.shiftNumber}/${this.loopConfig.shiftsPerGame} · ${carry} · ${this.state.arenaId}`;
     }
 
     if (this.arenaSelectElement) {
@@ -2152,6 +2338,36 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       controls.number.value = formatted;
       controls.value.textContent = formatted;
     }
+
+    for (const definition of LOOP_CONFIG_CONTROLS) {
+      const controls = this.loopConfigControls.get(definition.key);
+      if (!controls) continue;
+      const value = this.loopConfig[definition.key];
+      const formatted = definition.precision !== undefined ? value.toFixed(definition.precision) : String(value);
+      controls.range.value = String(value);
+      controls.number.value = formatted;
+      controls.value.textContent = formatted;
+    }
+  }
+
+  // Loop/economy knobs. Counts (days, shifts, quota) apply on the next day or
+  // regen; level size applies on the next regen/new game. Fee and road-wipe
+  // fractions apply immediately to how the next return is scored. All persist.
+  private applyLoopConfigValue(key: keyof LoopConfig, value: number): void {
+    if (!Number.isFinite(value)) return;
+    const def = LOOP_CONFIG_CONTROLS.find((control) => control.key === key);
+    if (!def) return;
+    const clamped = Math.min(def.max, Math.max(def.min, value));
+    this.loopConfig = { ...this.loopConfig, [key]: def.step >= 1 ? Math.round(clamped) : clamped };
+    this.saveLoopConfig();
+    // Quota changes should show on the current day's extraction target too.
+    if (key === 'quota' && this.state.arena.extraction && this.isShiftModeEnabled()) {
+      this.state.arena = {
+        ...this.state.arena,
+        extraction: { ...this.state.arena.extraction, oreRequired: this.loopConfig.quota }
+      };
+    }
+    this.syncTuningPanel();
   }
 
   private syncDroneRailLabPanel(): void {
@@ -4956,7 +5172,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       layout.vitals[0].x,
       layout.hudHeight + 16,
       this.isShiftModeEnabled()
-        ? `SHIFT ${this.shiftNumber} OF ${EXPEDITION_SHIFTS} · ${
+        ? `DAY ${this.dayInShiftOf()}/${this.loopConfig.daysPerShift} · SHIFT ${this.shiftNumber}/${this.loopConfig.shiftsPerGame} · ${
             this.bankedOre > 0
               ? `${this.bankedOre.toFixed(0)} ore banked`
               : this.carriedIn > 0
@@ -5625,7 +5841,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // a scored finish, not another shift.
     const finale = this.expeditionComplete();
     const quota = this.state.arena.extraction?.oreRequired ?? this.state.targetOre ?? 12;
-    const target = quota * EXPEDITION_SHIFTS;
+    const totalDays = this.loopConfig.daysPerShift * this.loopConfig.shiftsPerGame;
+    const target = quota * totalDays;
     const grade =
       this.bankedOre >= target * 1.25
         ? 'Outstanding expedition'
@@ -5665,7 +5882,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       layout.width / 2,
       y + height + 24,
       finale
-        ? `${this.bankedOre.toFixed(0)} ore banked over ${EXPEDITION_SHIFTS} shifts — ${grade}`
+        ? `${this.bankedOre.toFixed(0)} ore banked over ${this.loopConfig.shiftsPerGame} shifts — ${grade}`
         : this.isShiftModeEnabled()
           ? `${this.survivedTheNight} lengths of rail survive the night`
           : '',
@@ -5688,9 +5905,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       layout.width / 2,
       ctaY + 22,
       finale
-        ? 'Tap or press R for a new expedition'
+        ? 'Tap or press R for a new game'
         : this.isShiftModeEnabled()
-          ? `Tap or press R for shift ${this.shiftNumber + 1}`
+          ? this.dayInShiftOf(this.dayNumber + 1) === 1
+            ? `Tap or press R for shift ${this.shiftOfDay(this.dayNumber + 1)} (fresh road)`
+            : `Tap or press R for day ${this.dayInShiftOf(this.dayNumber + 1)} of shift ${this.shiftOfDay(this.dayNumber + 1)}`
           : 'Tap or press R to run again',
       layout.mode === 'mobilePortrait' ? 15 : 17,
       '#ecfffa',

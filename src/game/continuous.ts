@@ -333,6 +333,15 @@ export interface ContinuousWorldState {
   lastRoadPatchId?: number;
   fieldEmitDistance: number;
   pendingFieldValue: number;
+  // Whether the rover has left the extraction zone at least once this run. A
+  // day ends by RETURNING to the depot, and the run starts parked on it, so
+  // "made it back" only counts once you have actually left. Guards the depot
+  // against ending the day at t=0 (and lets you return under quota as a soft
+  // fail rather than being unable to end the day at all).
+  leftExtraction: boolean;
+  // True on a winning return that came in UNDER quota -- the scene reads this to
+  // charge the under-quota processing fee. Meaningless while playing.
+  returnedUnderQuota: boolean;
 }
 
 export interface ContinuousCommandResult {
@@ -640,7 +649,8 @@ export function createContinuousWorld(
   tuning: Partial<ContinuousTuning> = {},
   arenaId: ContinuousArenaId = 'first-run-readable',
   carriedFields: FieldPatch[] = [],
-  carriedDepletion: Record<string, number> = {}
+  carriedDepletion: Record<string, number> = {},
+  layoutScale = 1
 ): ContinuousWorldState {
   const resolvedTuning = resolveContinuousTuning(tuning);
   const arena = getContinuousArena(arenaId);
@@ -674,7 +684,7 @@ export function createContinuousWorld(
       liftedPatches: 0
     },
     fields,
-    fertileZones: applyCarriedDepletion(createArenaFertileZones(arena, seed), carriedDepletion),
+    fertileZones: applyCarriedDepletion(createArenaFertileZones(arena, seed, layoutScale), carriedDepletion),
     nanobots: resolvedTuning.startingNanobots,
     maxNanobots: resolvedTuning.maxNanobots,
     targetOre: resolvedTuning.targetOre,
@@ -695,11 +705,18 @@ export function createContinuousWorld(
     nextFieldId,
     fieldEmitDistance: 0,
     pendingFieldValue: 0,
-    railReleaseRemaining: 0
+    railReleaseRemaining: 0,
+    // If the run starts parked on the depot (last-light-return), the rover has
+    // not "left" yet, so touching the depot cannot end the day until it does.
+    // Arenas with no extraction never gate on this.
+    leftExtraction: false,
+    returnedUnderQuota: false
   };
 
   state.speedState = resolveSpeedState(state);
   state.arms = allocateArms(state.speedState, Boolean(findFertileZoneAt(state, state.rover)), false, state.drone.status);
+  // Starting anywhere other than on the depot counts as already having left it.
+  state.leftExtraction = !isRoverAtExtraction(state);
   return state;
 }
 
@@ -2062,17 +2079,31 @@ function describeRun(surplusRatio: number, marginSeconds: number): string {
 function applyContinuousWinLoss(state: ContinuousWorldState): void {
   if (state.arena.extraction) {
     const required = state.arena.extraction.oreRequired;
-    if (isRoverAtExtraction(state) && state.rover.ore >= required) {
+    const atExtraction = isRoverAtExtraction(state);
+    // Latch: you have to actually LEAVE the depot before returning to it can
+    // end the day. This is why the run can start parked on the depot without
+    // instantly ending, and why "made it back" means made it back.
+    if (!atExtraction) state.leftExtraction = true;
+
+    if (atExtraction && state.leftExtraction) {
+      // Returning to the depot ends the day whether or not you made quota.
+      // Over quota is a clean win; under quota still delivers, but the scene
+      // charges the company's processing fee (returnedUnderQuota tells it to).
       state.phase = 'won';
-      // A 33-ore run two seconds before sunset used to print the same shape of
-      // sentence as a 12-ore run with twenty seconds to spare. Nothing in the
-      // game distinguished them, which is a fair reading of "nothing mattered".
-      // Saying it is the least this can do; it is not yet a reason to want it.
-      const surplus = state.rover.ore - required;
       const margin = state.solarSeconds;
-      state.message =
-        `${state.rover.ore.toFixed(1)} ore delivered, ${surplus.toFixed(1)} over quota, ` +
-        `${margin.toFixed(1)}s of light left. ${describeRun(surplus / Math.max(1, required), margin)}`;
+      if (state.rover.ore >= required) {
+        state.returnedUnderQuota = false;
+        const surplus = state.rover.ore - required;
+        state.message =
+          `${state.rover.ore.toFixed(1)} ore delivered, ${surplus.toFixed(1)} over quota, ` +
+          `${margin.toFixed(1)}s of light left. ${describeRun(surplus / Math.max(1, required), margin)}`;
+      } else {
+        state.returnedUnderQuota = true;
+        const short = required - state.rover.ore;
+        state.message =
+          `Back under quota: ${state.rover.ore.toFixed(1)} of ${required} ore, ${short.toFixed(1)} short. ` +
+          `The company takes its processing fee on what you did bring.`;
+      }
       return;
     }
 
@@ -2080,7 +2111,7 @@ function applyContinuousWinLoss(state: ContinuousWorldState): void {
       state.phase = 'lost';
       state.message =
         state.rover.ore < required
-          ? `Sunset. Only ${state.rover.ore.toFixed(1)} of ${required} ore mined.`
+          ? `Sunset. Only ${state.rover.ore.toFixed(1)} of ${required} ore mined, and you never made it back.`
           : 'Sunset closed the extraction window before the rover got home.';
     }
     return;

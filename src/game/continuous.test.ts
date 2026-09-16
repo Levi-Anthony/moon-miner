@@ -964,6 +964,8 @@ describe('continuous Moon Miner spike rules', () => {
     world.rover.ore = world.arena.extraction!.oreRequired;
     world.rover.x = 900;
     world.rover.y = 535;
+    // A day ends by RETURNING to the depot, so the rover must have left it once.
+    world.leftExtraction = true;
 
     const next = tickContinuousWorld(world, idleInput, 0.1);
 
