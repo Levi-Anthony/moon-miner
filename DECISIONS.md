@@ -1,5 +1,26 @@
 # Decisions
 
+## 2026-09-16: 3D migration progress — driving feel, HUD, and the day/shift/game loop
+
+On the Three.js substrate, in dependency order, keeping the sim untouched:
+- **Driving feel** (`src/three/road.ts`): the driven trail, pure-pursuit carry
+  (lock), rail boost, on-road test, and turbo slurp, lifted out of Phaser as pure
+  math; fed to the sim as assistSteer/roadRunway/onRoad; road laid by the real
+  non-overlap/regular-gap rules and painted (raster, no flashing). Road width
+  backed down to 1.4 cars (the 2.2 was a vector-substrate workaround).
+- **HUD** (DOM): nanobots/ore/sun bars, drive-mode chip (Building/Prepared/Rail/
+  Crawl), objective line, win/lose banner. Mobile thumb-stick drive (drag
+  anywhere) since the target is phones.
+- **Loop & economy** (`src/three/loop.ts`, `Campaign`): day→shift→game (D=3,
+  S=4), per-day quota override, banked ore with the under-quota fee, sunset loss
+  banks nothing, road carried within a shift (fields + painted trail) and wiped
+  at a shift boundary, arena regen every N shifts via a block seed, level scale.
+  Its own `mm3d-*` localStorage keys. 7 unit tests cover the structure, banking,
+  and carry. Verified: HUD reads "D1/3 · S1/4", quota override live, zero errors.
+
+Remaining to parity: mining/drone feedback (#3), the control panel (#4), then
+retire Phaser (#5).
+
 ## 2026-09-16: SUBSTRATE PIVOT — rebuild the presentation in real 3D (Three.js), keep the pure sim
 
 Levi, verbatim: "If we're in the wrong substrate and all our problems are

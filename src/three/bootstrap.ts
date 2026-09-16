@@ -8,13 +8,13 @@
 // (src/game/continuous.ts) is reused untouched -- it has no engine coupling.
 import * as THREE from 'three';
 import {
-  createContinuousWorld,
   tickContinuousWorld,
   getContinuousGuidance,
   type ContinuousInput,
   type ContinuousWorldState
 } from '../game/continuous';
 import { RoadModel, type TrailPoint, type SlurpEvent } from './road';
+import { Campaign } from './loop';
 
 // --- World <-> scene mapping -------------------------------------------------
 // Sim world is x in [0,W], y in [0,H] (top-down). We lay it on the XZ ground
@@ -28,8 +28,10 @@ const PX = 1.5; // road-canvas pixels per world unit
 // feed back into the sim; the canvas below paints what it lays.
 const road = new RoadModel();
 
-// --- Sim ---------------------------------------------------------------------
-let state: ContinuousWorldState = createContinuousWorld('three-slice', {}, 'last-light-return');
+// --- Sim + campaign (day / shift / game loop, economy, carried road) ---------
+const campaign = new Campaign();
+let state!: ContinuousWorldState;
+let runEnded = false; // guards the once-per-run bank/persist
 
 // --- Renderer / scene / camera ----------------------------------------------
 const mount = document.getElementById('app3d') as HTMLDivElement;
@@ -110,29 +112,65 @@ function paintSlurp(ev: SlurpEvent): void {
   roadTexture.needsUpdate = true;
 }
 
-// --- Seams (gold discs sitting ON the ground, so the road never hides them) ---
+// --- Seams + extraction, rebuilt per world (the layout regenerates on regen
+// days), gold discs on the ground so the road never hides them. ---------------
 const seamGroup = new THREE.Group();
 scene.add(seamGroup);
-for (const zone of state.fertileZones) {
-  const disc = new THREE.Mesh(
-    new THREE.CircleGeometry(Math.max(28, zone.radius * 0.7), 24),
-    new THREE.MeshBasicMaterial({ color: 0xffcf5a, transparent: true, opacity: 0.85 })
-  );
-  disc.rotation.x = -Math.PI / 2;
-  disc.position.set(zone.x - W / 2, 1.2, zone.y - H / 2);
-  disc.userData.zoneId = zone.id;
-  seamGroup.add(disc);
+const extractionGroup = new THREE.Group();
+scene.add(extractionGroup);
+
+function clearGroup(group: THREE.Group): void {
+  for (const child of group.children) {
+    const mesh = child as THREE.Mesh;
+    mesh.geometry.dispose();
+    (mesh.material as THREE.Material).dispose();
+  }
+  group.clear();
 }
 
-// --- Extraction ring ----------------------------------------------------------
-if (state.arena.extraction) {
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(state.arena.extraction.radius - 4, state.arena.extraction.radius, 40),
-    new THREE.MeshBasicMaterial({ color: 0x77f2ca, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.set(state.arena.extraction.x - W / 2, 1.5, state.arena.extraction.y - H / 2);
-  scene.add(ring);
+function rebuildWorldMeshes(): void {
+  clearGroup(seamGroup);
+  for (const zone of state.fertileZones) {
+    const disc = new THREE.Mesh(
+      new THREE.CircleGeometry(Math.max(28, zone.radius * 0.7), 24),
+      new THREE.MeshBasicMaterial({ color: 0xffcf5a, transparent: true, opacity: 0.85 })
+    );
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.set(zone.x - W / 2, 1.2, zone.y - H / 2);
+    disc.userData.zoneId = zone.id;
+    seamGroup.add(disc);
+  }
+  clearGroup(extractionGroup);
+  if (state.arena.extraction) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(state.arena.extraction.radius - 4, state.arena.extraction.radius, 40),
+      new THREE.MeshBasicMaterial({ color: 0x77f2ca, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(state.arena.extraction.x - W / 2, 1.5, state.arena.extraction.y - H / 2);
+    extractionGroup.add(ring);
+  }
+}
+
+// Clear the ground to the lunar base and repaint an inherited road trail.
+function repaintCanvas(trail: TrailPoint[]): void {
+  rctx.fillStyle = '#3a4a55';
+  rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
+  for (const p of trail) paintRoadDab(p.x, p.y);
+  roadTexture.needsUpdate = true;
+}
+
+// Install a freshly built world (start of day, next day, or new game): adopt the
+// sim state, seed the road with the carried trail (so inherited road is drivable
+// and painted), and rebuild the seam/extraction meshes for this layout.
+function applyWorld(built: { state: ContinuousWorldState; trail: TrailPoint[] }): void {
+  state = built.state;
+  road.reset();
+  road.trail.push(...built.trail);
+  road.boost = 0;
+  repaintCanvas(built.trail);
+  rebuildWorldMeshes();
+  runEnded = false;
 }
 
 // --- Rover --------------------------------------------------------------------
@@ -270,7 +308,7 @@ function updateHud(): void {
   hud.sun.textContent = `${Math.ceil(state.solarSeconds)}s`;
   hud.sunBar.style.width = `${Math.min(100, (state.solarSeconds / Math.max(1, state.solarWindowSeconds)) * 100)}%`;
   hud.sunBar.style.background = state.solarSeconds / state.solarWindowSeconds < 0.25 ? '#ffb066' : '#8fb2ff';
-  hud.day.textContent = 'DAY 1 · S1'; // real day/shift lands with the loop migration
+  hud.day.textContent = `D${campaign.dayInShiftOf()}/${campaign.config.daysPerShift} · S${campaign.shiftOfDay()}/${campaign.config.shiftsPerGame}`;
   const onRoad = road.isOnLaidRoad(state);
   hud.mode.textContent = state.speedState === 'crawl'
     ? 'Crawl'
@@ -280,25 +318,22 @@ function updateHud(): void {
   hud.line.textContent = state.phase === 'playing' ? getContinuousGuidance(state).objective : '';
 }
 
+const cta = hud.banner.querySelector('.cta') as HTMLElement;
 function showBanner(): void {
   const won = state.phase === 'won';
+  const finale = campaign.gameComplete();
   hud.banner.className = won ? 'win' : 'lose';
   hud.banner.style.display = 'flex';
-  hud.bannerTitle.textContent = won ? 'EXTRACTION REACHED' : 'RUN OVER';
-  hud.bannerBody.textContent = state.message;
+  hud.bannerTitle.textContent = finale ? 'GAME OVER' : won ? 'EXTRACTION REACHED' : 'RUN OVER';
+  hud.bannerBody.textContent = `${state.message}  ·  ${campaign.bankedOre.toFixed(0)} ore banked`;
+  cta.textContent = finale ? 'Tap for a new game' : 'Tap for the next day';
 }
 
-function restart(): void {
-  state = createContinuousWorld('three-slice', {}, 'last-light-return');
-  road.reset();
-  rctx.fillStyle = '#3a4a55';
-  rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
-  roadTexture.needsUpdate = true;
-  for (const disc of seamGroup.children) (disc as THREE.Mesh).visible = true;
-  hud.banner.style.display = 'none';
-}
 function onContinue(): void {
-  if (state.phase !== 'playing') restart();
+  if (state.phase === 'playing') return;
+  campaign.advance();
+  applyWorld(campaign.buildWorld());
+  hud.banner.style.display = 'none';
 }
 window.addEventListener('keydown', (e) => { if (e.key.toLowerCase() === 'r') onContinue(); });
 hud.banner.addEventListener('pointerdown', onContinue);
@@ -336,13 +371,22 @@ function frame(now: number): void {
   rover.position.set(state.rover.x - W / 2, 0, state.rover.y - H / 2);
   rover.rotation.y = -state.rover.heading + Math.PI / 2; // +Z is the model's nose
 
+  // Run just ended: bank + compute carry once, then show the result banner.
+  if (state.phase !== 'playing' && !runEnded) {
+    runEnded = true;
+    campaign.endRun(state, road.trail);
+    showBanner();
+  }
+
   updateHud();
-  if (state.phase !== 'playing') showBanner();
 
   updateCamera(dt);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
+
+// Install the first day's world, then start the loop.
+applyWorld(campaign.buildWorld());
 requestAnimationFrame(frame);
 
 window.addEventListener('resize', () => {
