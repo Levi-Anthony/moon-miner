@@ -13,14 +13,22 @@ export interface CameraConfig {
 }
 export const DEFAULT_CAMERA_CONFIG: CameraConfig = { dist: 210, height: 190, fov: 55, overhead: false };
 
+export interface TerrainConfig {
+  relief: number; // 0 = flat painted-only, 1 = full displacement height
+  craterDensity: number; // scales how many craters/features the ground carries
+}
+export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 1 };
+
 export interface PanelCtx {
   campaign: Campaign;
   road: RoadModel;
   cam: CameraConfig;
+  terrain: TerrainConfig;
   getState: () => ContinuousWorldState;
   applyTuning: (patch: Partial<ContinuousTuning>) => void;
   rebuildDay: () => void;
   newGame: () => void;
+  applyTerrain: () => void; // regenerate/redraw the ground for terrain-knob changes
   save: () => void;
 }
 
@@ -114,7 +122,7 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Daily quota', min: 1, max: 40, step: 1, fmt: int, hint: 'Under it on return = processing fee.', get: () => cfg.quota, set: (v) => { cfg.quota = Math.round(v); const ex = ctx.getState().arena.extraction; if (ex) ex.oreRequired = cfg.quota; } });
   addRow({ label: 'Under-quota fee', min: 0, max: 0.9, step: 0.05, fmt: p2, get: () => cfg.underQuotaFeePct, set: (v) => (cfg.underQuotaFeePct = v) });
   addRow({ label: 'Sunset road wipe', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Fraction of road lost on a missed sunset.', get: () => cfg.hardFailRoadResetPct, set: (v) => (cfg.hardFailRoadResetPct = v) });
-  addRow({ label: 'Level size', min: 1, max: 2, step: 0.05, fmt: p2, hint: 'Applies on next regen / New Game.', get: () => cfg.arenaScale, set: (v) => (cfg.arenaScale = v) });
+  addRow({ label: 'Level size', min: 1, max: 2.4, step: 0.05, fmt: p2, hint: 'Bigger field / longer hauls. Applies on next regen / New Game.', get: () => cfg.arenaScale, set: (v) => (cfg.arenaScale = v) });
 
   const cam = ctx.cam;
   section('Camera');
@@ -122,10 +130,16 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Height', min: 60, max: 520, step: 10, fmt: int, get: () => cam.height, set: (v) => (cam.height = v) });
   addRow({ label: 'Field of view', min: 30, max: 90, step: 1, fmt: int, get: () => cam.fov, set: (v) => (cam.fov = v) });
 
+  const tc = ctx.terrain;
+  section('Terrain');
+  addRow({ label: 'Relief', min: 0, max: 1.6, step: 0.05, fmt: p2, hint: 'Height of craters/rolling ground. 0 = flat painted only.', get: () => tc.relief, set: (v) => { tc.relief = v; ctx.applyTerrain(); } });
+  addRow({ label: 'Crater density', min: 0, max: 2, step: 0.1, fmt: p2, hint: 'How many craters/rilles the ground carries.', get: () => tc.craterDensity, set: (v) => { tc.craterDensity = v; ctx.applyTerrain(); } });
+
   section('Road & Slurp');
   addRow({ label: 'Road width (cars)', min: 1, max: 4, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Applies live.', get: () => rc.roadWidthCars, set: (v) => (rc.roadWidthCars = v) });
   addRow({ label: 'Slurp band', min: 0, max: 0.8, step: 0.02, fmt: p2, hint: 'Central seam fraction a fast pass slurps. 0 = off.', get: () => rc.slurpBandPct, set: (v) => (rc.slurpBandPct = v) });
   addRow({ label: 'Slurp min boost', min: 0.1, max: 1, step: 0.05, fmt: p2, get: () => rc.slurpMinBoost, set: (v) => (rc.slurpMinBoost = v) });
+  addRow({ label: 'Slurp charge (s)', min: 0, max: 5, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Seconds at rail top speed before the slurp arms. Higher = must earn a longer run first.', get: () => rc.slurpChargeSeconds, set: (v) => (rc.slurpChargeSeconds = v) });
 
   section('Drive Feel');
   const tget = (k: keyof ContinuousTuning) => () => ctx.getState().tuning[k] as number;

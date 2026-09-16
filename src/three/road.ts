@@ -21,6 +21,7 @@ export interface RoadConfig {
   roadWidthCars: number; // road width in car-widths
   slurpBandPct: number; // central fraction of a seam a fast pass slurps (0 = off)
   slurpMinBoost: number; // rail boost needed for a slurp
+  slurpChargeSeconds: number; // sustained-top-speed time needed before a slurp arms
 }
 
 export const DEFAULT_ROAD_CONFIG: RoadConfig = {
@@ -29,7 +30,12 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
   // down to a natural road that's just comfortably wider than the rover.
   roadWidthCars: 1.4,
   slurpBandPct: 0.34,
-  slurpMinBoost: 0.55
+  slurpMinBoost: 0.55,
+  // The slurp is a REWARD for a committed high-speed run, not a park-and-grab.
+  // You have to hold rail top speed for this long before it arms, so it can
+  // never instantly swallow the pool you're sitting on -- you have to build the
+  // run first. Dropping off top speed disarms it immediately.
+  slurpChargeSeconds: 1.6
 };
 
 export interface TrailPoint { x: number; y: number; t: number }
@@ -43,6 +49,7 @@ function angleDifference(target: number, current: number): number {
 export class RoadModel {
   readonly trail: TrailPoint[] = [];
   boost = 0; // 0..1 rail momentum, fed to the sim as roadRunway
+  charge = 0; // seconds held at rail top speed; the slurp arms once it passes slurpChargeSeconds
   config: RoadConfig;
 
   constructor(config: RoadConfig = DEFAULT_ROAD_CONFIG) {
@@ -56,6 +63,7 @@ export class RoadModel {
   reset(): void {
     this.trail.length = 0;
     this.boost = 0;
+    this.charge = 0;
   }
 
   // Index up to which the trail has "cured" (points older than the cure window
@@ -146,11 +154,25 @@ export class RoadModel {
     this.boost = Math.max(0, Math.min(ROAD_SLIDE_MAX, this.boost + rate));
   }
 
+  // Accumulate "time at rail top speed". Ramps up only while the rover is
+  // genuinely at top speed; the moment it drops off, the charge hard-resets so
+  // the slurp disarms. This is what forces a slurp to be earned by a sustained
+  // run rather than granted the instant you're on road near a seam.
+  updateCharge(deltaSeconds: number, atTopSpeed: boolean): void {
+    this.charge = atTopSpeed ? Math.min(this.config.slurpChargeSeconds + 1, this.charge + deltaSeconds) : 0;
+  }
+
+  // True once a committed top-speed run has charged the slurp (and boost/band
+  // allow it at all). The renderer reads this to show the "armed" cue.
+  slurpArmed(): boolean {
+    return this.config.slurpBandPct > 0 && this.boost >= this.config.slurpMinBoost && this.charge >= this.config.slurpChargeSeconds;
+  }
+
   // Railboosted pass through a seam's middle third grabs it all at once. Mutates
   // the seam (remaining -> 0) and the rover ore; returns the event for a burst.
   slurp(state: ContinuousWorldState): SlurpEvent | null {
     const band = this.config.slurpBandPct;
-    if (band <= 0 || this.boost < this.config.slurpMinBoost) return null;
+    if (!this.slurpArmed()) return null;
     const rover = state.rover;
     const lo = 0.5 - band / 2;
     const hi = 0.5 + band / 2;

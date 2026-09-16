@@ -560,7 +560,10 @@ export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: 
   // Bigger level = the seams scatter across a wider area (reachability rules
   // below still hold, so they stay reachable -- just farther). Scale the base
   // bounds around their centre, clamped to the world so nothing lands off-map.
-  const base = { minX: 150, maxX: 900, minY: 200, maxY: 610 };
+  // Wider than the old central band so the field is a bigger place to cross:
+  // spread west/north/south into the play area (the depot sits at the east edge
+  // and you sortie into this). arenaScale expands it further, up to the clamps.
+  const base = { minX: 90, maxX: 905, minY: 150, maxY: 675 };
   const scale = Math.max(1, layoutScale);
   const cx = (base.minX + base.maxX) / 2;
   const cy = (base.minY + base.maxY) / 2;

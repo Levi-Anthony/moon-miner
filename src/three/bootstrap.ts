@@ -18,15 +18,16 @@ import {
   resolveContinuousTuning,
   type ContinuousInput,
   type ContinuousTuning,
-  type ContinuousWorldState
+  type ContinuousWorldState,
+  type Vec2
 } from '../game/continuous';
 import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type TrailPoint, type SlurpEvent } from './road';
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
-import { createPanel, DEFAULT_CAMERA_CONFIG, type CameraConfig } from './panel';
+import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type TerrainConfig } from './panel';
 
 // --- Persisted config (loop + road + sim-tuning overrides + camera) ----------
 const CONFIG_KEY = 'mm3d-config-v1';
-function loadConfig(): { loop: LoopConfig; road: RoadConfig; tuning: Partial<ContinuousTuning>; cam: CameraConfig } {
+function loadConfig(): { loop: LoopConfig; road: RoadConfig; tuning: Partial<ContinuousTuning>; cam: CameraConfig; terrain: TerrainConfig } {
   try {
     const raw = window.localStorage.getItem(CONFIG_KEY);
     const p = raw ? JSON.parse(raw) : {};
@@ -34,17 +35,19 @@ function loadConfig(): { loop: LoopConfig; road: RoadConfig; tuning: Partial<Con
       loop: { ...DEFAULT_LOOP_CONFIG, ...(p.loop ?? {}) },
       road: { ...DEFAULT_ROAD_CONFIG, ...(p.road ?? {}) },
       tuning: p.tuning ?? {},
-      cam: { ...DEFAULT_CAMERA_CONFIG, ...(p.cam ?? {}) }
+      cam: { ...DEFAULT_CAMERA_CONFIG, ...(p.cam ?? {}) },
+      terrain: { ...DEFAULT_TERRAIN_CONFIG, ...(p.terrain ?? {}) }
     };
   } catch {
-    return { loop: { ...DEFAULT_LOOP_CONFIG }, road: { ...DEFAULT_ROAD_CONFIG }, tuning: {}, cam: { ...DEFAULT_CAMERA_CONFIG } };
+    return { loop: { ...DEFAULT_LOOP_CONFIG }, road: { ...DEFAULT_ROAD_CONFIG }, tuning: {}, cam: { ...DEFAULT_CAMERA_CONFIG }, terrain: { ...DEFAULT_TERRAIN_CONFIG } };
   }
 }
 const savedConfig = loadConfig();
 const camCfg = savedConfig.cam;
+const terrainCfg = savedConfig.terrain;
 function saveConfig(): void {
   try {
-    window.localStorage.setItem(CONFIG_KEY, JSON.stringify({ loop: campaign.config, road: road.config, tuning: campaign.tuningOverrides, cam: camCfg }));
+    window.localStorage.setItem(CONFIG_KEY, JSON.stringify({ loop: campaign.config, road: road.config, tuning: campaign.tuningOverrides, cam: camCfg, terrain: terrainCfg }));
   } catch {
     /* storage may be unavailable */
   }
@@ -138,6 +141,146 @@ const ground = new THREE.Mesh(
 ground.rotation.x = -Math.PI / 2; // lie flat on XZ
 scene.add(ground);
 
+// --- Terrain features (craters, rilles, mare blotches, relief) ----------------
+// The field was an empty dark sheet. This gives it actual lunar features: a
+// seeded set of craters, hairline rilles, and broad mare/highland value patches
+// painted into the ground canvas (so they composite UNDER the road, guaranteed
+// aligned), plus an optional low-amplitude displacement of the ground mesh so
+// the same features read with real parallax against the fog. All seeded per
+// world, so each map's terrain is its own and regenerates on regen / New Game.
+interface Crater { x: number; y: number; r: number }
+interface Blotch { x: number; y: number; r: number; light: number }
+interface TerrainFeatures { craters: Crater[]; rilles: Vec2[][]; blotches: Blotch[]; sun: number }
+
+function hashSeed(s: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i += 1) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function generateTerrain(seed: string): TerrainFeatures {
+  const rnd = mulberry32(hashSeed(`${seed}:terrain-v1`));
+  const density = Math.max(0, terrainCfg.craterDensity);
+  const craters: Crater[] = [];
+  const nC = Math.round((10 + rnd() * 10) * density);
+  for (let i = 0; i < nC; i += 1) {
+    craters.push({ x: rnd() * W, y: rnd() * H, r: 14 + rnd() * rnd() * 84 }); // rnd^2 => many small, few big
+  }
+  const blotches: Blotch[] = [];
+  const nB = 4 + Math.floor(rnd() * 4);
+  for (let i = 0; i < nB; i += 1) blotches.push({ x: rnd() * W, y: rnd() * H, r: 150 + rnd() * 260, light: rnd() - 0.5 });
+  const rilles: Vec2[][] = [];
+  const nR = Math.round((2 + rnd() * 3) * Math.min(1.5, density));
+  for (let i = 0; i < nR; i += 1) {
+    const pts: Vec2[] = [];
+    let x = rnd() * W;
+    let y = rnd() * H;
+    let a = rnd() * Math.PI * 2;
+    const segs = 8 + Math.floor(rnd() * 12);
+    for (let j = 0; j < segs; j += 1) {
+      pts.push({ x, y });
+      a += (rnd() - 0.5) * 0.9;
+      const step = 26 + rnd() * 46;
+      x += Math.cos(a) * step;
+      y += Math.sin(a) * step;
+    }
+    rilles.push(pts);
+  }
+  return { craters, rilles, blotches, sun: -2.3 }; // sun bearing (lit rim direction), matches the scene key light
+}
+
+let terrainFeatures: TerrainFeatures = generateTerrain('init');
+
+// Paint the terrain into the ground canvas (called by repaintCanvas before the
+// road, so the road always sits on top).
+function paintTerrain(feat: TerrainFeatures): void {
+  // Broad mare (dark) / highland (light) value patches to break up the flat fill.
+  for (const b of feat.blotches) {
+    const g = rctx.createRadialGradient(b.x * PX, b.y * PX, 0, b.x * PX, b.y * PX, b.r * PX);
+    const rgb = b.light > 0 ? '38,50,72' : '5,8,15';
+    g.addColorStop(0, `rgba(${rgb},${0.06 + Math.abs(b.light) * 0.16})`);
+    g.addColorStop(1, `rgba(${rgb},0)`);
+    rctx.fillStyle = g;
+    rctx.beginPath();
+    rctx.arc(b.x * PX, b.y * PX, b.r * PX, 0, Math.PI * 2);
+    rctx.fill();
+  }
+  // Rilles: thin dark meandering cracks.
+  rctx.lineCap = 'round';
+  rctx.lineJoin = 'round';
+  for (const pts of feat.rilles) {
+    rctx.strokeStyle = 'rgba(3,5,10,0.75)';
+    rctx.lineWidth = 2.4 * PX;
+    rctx.beginPath();
+    rctx.moveTo(pts[0].x * PX, pts[0].y * PX);
+    for (let i = 1; i < pts.length; i += 1) rctx.lineTo(pts[i].x * PX, pts[i].y * PX);
+    rctx.stroke();
+  }
+  // Craters: a darker bowl, a shadow crescent on the far side, a faint lit rim
+  // on the sun side -- enough shading to read as a depression on flat ground.
+  for (const c of feat.craters) {
+    const cx = c.x * PX;
+    const cy = c.y * PX;
+    const rp = c.r * PX;
+    const bowl = rctx.createRadialGradient(cx, cy, rp * 0.1, cx, cy, rp);
+    bowl.addColorStop(0, 'rgba(4,7,13,0.62)');
+    bowl.addColorStop(0.7, 'rgba(7,11,19,0.34)');
+    bowl.addColorStop(1, 'rgba(20,28,42,0)');
+    rctx.fillStyle = bowl;
+    rctx.beginPath();
+    rctx.arc(cx, cy, rp, 0, Math.PI * 2);
+    rctx.fill();
+    // shadow crescent (far side, away from sun)
+    rctx.lineWidth = rp * 0.2;
+    rctx.strokeStyle = 'rgba(2,4,8,0.7)';
+    rctx.beginPath();
+    rctx.arc(cx, cy, rp * 0.86, feat.sun + 0.5, feat.sun + Math.PI * 2 - 0.5);
+    rctx.stroke();
+    // lit rim (sun side)
+    rctx.lineWidth = rp * 0.14;
+    rctx.strokeStyle = 'rgba(120,140,170,0.5)';
+    rctx.beginPath();
+    rctx.arc(cx, cy, rp * 0.95, feat.sun - 0.9, feat.sun + 0.9);
+    rctx.stroke();
+  }
+}
+
+// Displace the ground mesh so the painted features have real relief. Amplitude
+// is biased DOWNWARD (craters/rilles/mare dip below the y=0 driving plane, only
+// gentle rises), scaled by the relief knob, so the rover never visibly clips.
+const GROUND_SEG_X = 150;
+const GROUND_SEG_Z = 104;
+function applyRelief(feat: TerrainFeatures): void {
+  const geo = new THREE.PlaneGeometry(W, H, GROUND_SEG_X, GROUND_SEG_Z);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const relief = Math.max(0, terrainCfg.relief);
+  for (let i = 0; i < pos.count; i += 1) {
+    const sx = pos.getX(i) + W / 2; // sim x
+    const sy = H / 2 - pos.getY(i); // sim y (see world<->plane mapping note)
+    // Gentle rolling swell (a few offset sines), mostly shallow.
+    let h = Math.sin(sx * 0.011 + 1.3) * 2.4 + Math.sin(sy * 0.013 - 0.7) * 2.2 + Math.sin((sx + sy) * 0.006) * 1.6;
+    h -= 3; // bias the whole sheet a touch below the driving plane
+    for (const c of feat.craters) {
+      const d = Math.hypot(sx - c.x, sy - c.y);
+      if (d < c.r) h -= Math.cos((d / c.r) * (Math.PI / 2)) * c.r * 0.16; // bowl
+    }
+    pos.setZ(i, Math.min(4, h) * relief); // local Z -> world Y after the -90deg X rotation
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  ground.geometry.dispose();
+  ground.geometry = geo;
+}
+
 // Road paint: a CONTINUOUS round-capped stroke into the ground canvas -- not a
 // chain of stamped circles. Round caps/joins bridge consecutive points into a
 // smooth ribbon with no beading; the raster composite means overlaps (loops,
@@ -224,7 +367,7 @@ function rebuildWorldMeshes(): void {
       })
     );
     disc.rotation.x = -Math.PI / 2;
-    disc.position.set(zone.x - W / 2, 1.2, zone.y - H / 2);
+    disc.position.set(zone.x - W / 2, 4, zone.y - H / 2);
     disc.userData.zoneId = zone.id;
     seamGroup.add(disc);
   }
@@ -235,7 +378,7 @@ function rebuildWorldMeshes(): void {
       new THREE.MeshBasicMaterial({ color: 0x77f2ca, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
     );
     ring.rotation.x = -Math.PI / 2;
-    ring.position.set(state.arena.extraction.x - W / 2, 1.5, state.arena.extraction.y - H / 2);
+    ring.position.set(state.arena.extraction.x - W / 2, 4.5, state.arena.extraction.y - H / 2);
     extractionGroup.add(ring);
   }
 }
@@ -245,6 +388,7 @@ function rebuildWorldMeshes(): void {
 function repaintCanvas(trail: TrailPoint[]): void {
   rctx.fillStyle = GROUND_BASE;
   rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
+  paintTerrain(terrainFeatures); // features composite under the road
   if (trail.length > 0) {
     const jump = road.halfWidth() * 3;
     rctx.strokeStyle = ROAD_TEAL;
@@ -272,6 +416,8 @@ function applyWorld(built: { state: ContinuousWorldState; trail: TrailPoint[] })
   road.reset();
   road.trail.push(...built.trail);
   road.boost = 0;
+  terrainFeatures = generateTerrain(state.seed); // this world's own terrain
+  applyRelief(terrainFeatures);
   repaintCanvas(built.trail);
   rebuildWorldMeshes();
   runEnded = false;
@@ -515,7 +661,7 @@ function updateHud(): void {
     : state.speedState === 'crawl'
       ? 'Crawl'
       : onRoad && road.boost > 0.5
-        ? 'Rail'
+        ? (road.slurpArmed() ? 'Rail ⚡' : 'Rail') // ⚡ = slurp charged and armed
         : (MODE_LABEL[state.speedState] ?? state.speedState);
   const flashing = flash && performance.now() < flash.until;
   hud.line.textContent = flashing ? flash!.text : state.phase === 'playing' ? getContinuousGuidance(state).objective : '';
@@ -574,7 +720,11 @@ function frame(now: number): void {
   // Lay the road by the sim's own rules and paint what was laid.
   const added = road.sample(state);
   if (added) paintTrailPoint(added);
-  road.updateBoost(dt, road.isOnLaidRoad(state));
+  const onRoadNow = road.isOnLaidRoad(state);
+  road.updateBoost(dt, onRoadNow);
+  // Slurp charge: only builds while genuinely at rail top speed on road, so the
+  // slurp is earned by a sustained run and can't grab the pool you're sitting on.
+  road.updateCharge(dt, onRoadNow && state.rover.speed >= state.tuning.railSpeed * 0.9);
   const slurped = road.slurp(state);
   if (slurped) {
     paintSlurp(slurped);
@@ -634,14 +784,23 @@ function applyTuning(patch: Partial<ContinuousTuning>): void {
 
 // Install the first day's world, mount the control panel, then start the loop.
 applyWorld(campaign.buildWorld());
+// Terrain-knob change: regenerate this world's features and redraw the ground
+// (relief + painted craters), keeping the current road trail.
+function applyTerrain(): void {
+  terrainFeatures = generateTerrain(state.seed);
+  applyRelief(terrainFeatures);
+  repaintCanvas(road.trail);
+}
 createPanel({
   campaign,
   road,
   cam: camCfg,
+  terrain: terrainCfg,
   getState: () => state,
   applyTuning,
   rebuildDay: () => applyWorld(campaign.buildWorld()),
   newGame: () => { campaign.newGame(); applyWorld(campaign.buildWorld()); },
+  applyTerrain,
   save: saveConfig
 });
 requestAnimationFrame(frame);
