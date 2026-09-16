@@ -5,9 +5,18 @@ import type { ContinuousWorldState, ContinuousTuning } from '../game/continuous'
 import type { Campaign } from './loop';
 import type { RoadModel } from './road';
 
+export interface CameraConfig {
+  dist: number; // how far behind the rover (chase)
+  height: number; // camera height
+  fov: number; // field of view
+  overhead: boolean; // top-down (north-up) vs chase
+}
+export const DEFAULT_CAMERA_CONFIG: CameraConfig = { dist: 210, height: 190, fov: 55, overhead: false };
+
 export interface PanelCtx {
   campaign: Campaign;
   road: RoadModel;
+  cam: CameraConfig;
   getState: () => ContinuousWorldState;
   applyTuning: (patch: Partial<ContinuousTuning>) => void;
   rebuildDay: () => void;
@@ -107,6 +116,12 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Sunset road wipe', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Fraction of road lost on a missed sunset.', get: () => cfg.hardFailRoadResetPct, set: (v) => (cfg.hardFailRoadResetPct = v) });
   addRow({ label: 'Level size', min: 1, max: 2, step: 0.05, fmt: p2, hint: 'Applies on next regen / New Game.', get: () => cfg.arenaScale, set: (v) => (cfg.arenaScale = v) });
 
+  const cam = ctx.cam;
+  section('Camera');
+  addRow({ label: 'Distance', min: 80, max: 520, step: 10, fmt: int, hint: 'Also: mouse wheel / pinch to zoom.', get: () => cam.dist, set: (v) => (cam.dist = v) });
+  addRow({ label: 'Height', min: 60, max: 520, step: 10, fmt: int, get: () => cam.height, set: (v) => (cam.height = v) });
+  addRow({ label: 'Field of view', min: 30, max: 90, step: 1, fmt: int, get: () => cam.fov, set: (v) => (cam.fov = v) });
+
   section('Road & Slurp');
   addRow({ label: 'Road width (cars)', min: 1, max: 4, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Applies live.', get: () => rc.roadWidthCars, set: (v) => (rc.roadWidthCars = v) });
   addRow({ label: 'Slurp band', min: 0, max: 0.8, step: 0.02, fmt: p2, hint: 'Central seam fraction a fast pass slurps. 0 = off.', get: () => rc.slurpBandPct, set: (v) => (rc.slurpBandPct = v) });
@@ -132,7 +147,14 @@ export function createPanel(ctx: PanelCtx): void {
     b.addEventListener('click', fn);
     return b;
   };
+  const viewBtn = mk('View: Chase', () => {
+    cam.overhead = !cam.overhead;
+    viewBtn.textContent = cam.overhead ? 'View: Overhead' : 'View: Chase';
+    ctx.save();
+  });
+  viewBtn.textContent = cam.overhead ? 'View: Overhead' : 'View: Chase';
   btns.append(
+    viewBtn,
     mk('New Game', () => { ctx.newGame(); sync(); }),
     mk('Reset Day', () => { ctx.rebuildDay(); sync(); }),
     mk('Close', () => { panel.style.display = 'none'; })

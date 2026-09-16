@@ -19,27 +19,29 @@ import {
 } from '../game/continuous';
 import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type TrailPoint, type SlurpEvent } from './road';
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
-import { createPanel } from './panel';
+import { createPanel, DEFAULT_CAMERA_CONFIG, type CameraConfig } from './panel';
 
-// --- Persisted panel config (loop + road + sim-tuning overrides) -------------
+// --- Persisted config (loop + road + sim-tuning overrides + camera) ----------
 const CONFIG_KEY = 'mm3d-config-v1';
-function loadConfig(): { loop: LoopConfig; road: RoadConfig; tuning: Partial<ContinuousTuning> } {
+function loadConfig(): { loop: LoopConfig; road: RoadConfig; tuning: Partial<ContinuousTuning>; cam: CameraConfig } {
   try {
     const raw = window.localStorage.getItem(CONFIG_KEY);
     const p = raw ? JSON.parse(raw) : {};
     return {
       loop: { ...DEFAULT_LOOP_CONFIG, ...(p.loop ?? {}) },
       road: { ...DEFAULT_ROAD_CONFIG, ...(p.road ?? {}) },
-      tuning: p.tuning ?? {}
+      tuning: p.tuning ?? {},
+      cam: { ...DEFAULT_CAMERA_CONFIG, ...(p.cam ?? {}) }
     };
   } catch {
-    return { loop: { ...DEFAULT_LOOP_CONFIG }, road: { ...DEFAULT_ROAD_CONFIG }, tuning: {} };
+    return { loop: { ...DEFAULT_LOOP_CONFIG }, road: { ...DEFAULT_ROAD_CONFIG }, tuning: {}, cam: { ...DEFAULT_CAMERA_CONFIG } };
   }
 }
 const savedConfig = loadConfig();
+const camCfg = savedConfig.cam;
 function saveConfig(): void {
   try {
-    window.localStorage.setItem(CONFIG_KEY, JSON.stringify({ loop: campaign.config, road: road.config, tuning: campaign.tuningOverrides }));
+    window.localStorage.setItem(CONFIG_KEY, JSON.stringify({ loop: campaign.config, road: road.config, tuning: campaign.tuningOverrides, cam: camCfg }));
   } catch {
     /* storage may be unavailable */
   }
@@ -281,8 +283,29 @@ const stickEl = document.getElementById('stick') as HTMLDivElement;
 const knobEl = stickEl.querySelector('.knob') as HTMLDivElement;
 const STICK_RADIUS = 66;
 const touch = { active: false, id: -1, ox: 0, oy: 0, dx: 0, dy: 0 };
+// All active pointers on the canvas, so a second finger switches from driving
+// (one finger = the stick) to pinch-zoom (two fingers).
+const pointers = new Map<number, { x: number; y: number }>();
+let pinchPrev = 0;
+const pinchDist = () => {
+  const [a, b] = [...pointers.values()];
+  return Math.hypot(a.x - b.x, a.y - b.y);
+};
+function stopDrive(): void {
+  touch.active = false;
+  touch.id = -1;
+  touch.dx = 0;
+  touch.dy = 0;
+  stickEl.style.display = 'none';
+}
 
 function beginTouch(e: PointerEvent): void {
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size >= 2) {
+    stopDrive(); // second finger -> pinch, not drive
+    pinchPrev = pinchDist();
+    return;
+  }
   touch.active = true;
   touch.id = e.pointerId;
   touch.ox = e.clientX;
@@ -295,6 +318,17 @@ function beginTouch(e: PointerEvent): void {
   knobEl.style.transform = 'translate(0px, 0px)';
 }
 function moveTouch(e: PointerEvent): void {
+  const pt = pointers.get(e.pointerId);
+  if (pt) {
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+  }
+  if (pointers.size >= 2) {
+    const d = pinchDist();
+    if (pinchPrev > 0 && d > 0) zoomBy(pinchPrev / d); // spread fingers -> zoom in
+    pinchPrev = d;
+    return;
+  }
   if (!touch.active || e.pointerId !== touch.id) return;
   touch.dx = e.clientX - touch.ox;
   touch.dy = e.clientY - touch.oy;
@@ -303,12 +337,9 @@ function moveTouch(e: PointerEvent): void {
   knobEl.style.transform = `translate(${kx}px, ${ky}px)`;
 }
 function endTouch(e: PointerEvent): void {
-  if (e.pointerId !== touch.id) return;
-  touch.active = false;
-  touch.id = -1;
-  touch.dx = 0;
-  touch.dy = 0;
-  stickEl.style.display = 'none';
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinchPrev = 0;
+  if (e.pointerId === touch.id) stopDrive();
 }
 renderer.domElement.addEventListener('pointerdown', beginTouch);
 renderer.domElement.addEventListener('pointermove', moveTouch);
@@ -355,15 +386,44 @@ const camLook = new THREE.Vector3();
 function updateCamera(dt: number): void {
   const rx = state.rover.x - W / 2;
   const rz = state.rover.y - H / 2;
-  const fx = Math.cos(state.rover.heading);
-  const fz = Math.sin(state.rover.heading);
-  const target = new THREE.Vector3(rx - fx * 210, 190, rz - fz * 210);
   const k = 1 - Math.pow(0.001, dt); // smooth follow
+  let target: THREE.Vector3;
+  let look: THREE.Vector3;
+  if (camCfg.overhead) {
+    // Top-down, north-up (does not spin with the rover). Distance drives how
+    // high; a hair of Z so lookAt has a stable up vector.
+    target = new THREE.Vector3(rx, camCfg.height + camCfg.dist, rz + 0.001);
+    look = new THREE.Vector3(rx, 0, rz);
+  } else {
+    const fx = Math.cos(state.rover.heading);
+    const fz = Math.sin(state.rover.heading);
+    target = new THREE.Vector3(rx - fx * camCfg.dist, camCfg.height, rz - fz * camCfg.dist);
+    look = new THREE.Vector3(rx + fx * 120, 8, rz + fz * 120);
+  }
   camPos.lerp(target, k);
   camera.position.copy(camPos);
-  camLook.lerp(new THREE.Vector3(rx + fx * 120, 8, rz + fz * 120), k);
+  camLook.lerp(look, k);
   camera.lookAt(camLook);
+  if (camera.fov !== camCfg.fov) {
+    camera.fov = camCfg.fov;
+    camera.updateProjectionMatrix();
+  }
 }
+
+// Zoom: wheel (desktop) and pinch (mobile) scale the camera distance+height.
+function zoomBy(factor: number): void {
+  camCfg.dist = Math.max(80, Math.min(520, camCfg.dist * factor));
+  camCfg.height = Math.max(60, Math.min(520, camCfg.height * factor));
+  saveConfig();
+}
+renderer.domElement.addEventListener(
+  'wheel',
+  (e) => {
+    e.preventDefault();
+    zoomBy(e.deltaY > 0 ? 1.08 : 0.925);
+  },
+  { passive: false }
+);
 
 // --- HUD ----------------------------------------------------------------------
 const el = (id: string) => document.getElementById(id) as HTMLElement;
@@ -514,6 +574,7 @@ applyWorld(campaign.buildWorld());
 createPanel({
   campaign,
   road,
+  cam: camCfg,
   getState: () => state,
   applyTuning,
   rebuildDay: () => applyWorld(campaign.buildWorld()),
