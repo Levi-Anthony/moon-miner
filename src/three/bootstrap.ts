@@ -13,15 +13,19 @@ import {
   type ContinuousInput,
   type ContinuousWorldState
 } from '../game/continuous';
+import { RoadModel, type TrailPoint, type SlurpEvent } from './road';
 
 // --- World <-> scene mapping -------------------------------------------------
 // Sim world is x in [0,W], y in [0,H] (top-down). We lay it on the XZ ground
 // plane centred at the origin: X = x - W/2, Z = y - H/2, Y is up.
 const W = 1040;
 const H = 720;
-const CAR_WIDTH = 54;
-const ROAD_HALF = (2.2 * CAR_WIDTH) / 2; // world units, matches the sim-side road width
 const PX = 1.5; // road-canvas pixels per world unit
+
+// The road: the driven trail + carry (lock) + rail boost + slurp, ported from
+// the tuned game (engine-agnostic). It decides where the road goes and what to
+// feed back into the sim; the canvas below paints what it lays.
+const road = new RoadModel();
 
 // --- Sim ---------------------------------------------------------------------
 let state: ContinuousWorldState = createContinuousWorld('three-slice', {}, 'last-light-return');
@@ -64,16 +68,43 @@ scene.add(ground);
 
 // World (x,y) -> road-canvas pixel. Plane is centred, UVs run 0..1 across it.
 function paintRoadDab(x: number, y: number): void {
+  const half = road.halfWidth();
   const cx = x * PX;
   const cy = y * PX;
   // Dark bed, then teal deck a touch narrower so re-drives read as one lane.
   rctx.fillStyle = '#1b2a29';
   rctx.beginPath();
-  rctx.arc(cx, cy, (ROAD_HALF + 4) * PX, 0, Math.PI * 2);
+  rctx.arc(cx, cy, (half + 4) * PX, 0, Math.PI * 2);
   rctx.fill();
   rctx.fillStyle = '#4f9f92';
   rctx.beginPath();
-  rctx.arc(cx, cy, ROAD_HALF * PX, 0, Math.PI * 2);
+  rctx.arc(cx, cy, half * PX, 0, Math.PI * 2);
+  rctx.fill();
+  roadTexture.needsUpdate = true;
+}
+
+// Paint the segment from the previous trail point to a newly laid one, so fast
+// movement leaves a continuous ribbon (dabs are radius >> spacing, so they
+// overlap into a clean band; a skipped stretch simply gets no paint).
+function paintTrailPoint(added: TrailPoint): void {
+  const prev = road.trail[road.trail.length - 2];
+  if (!prev) {
+    paintRoadDab(added.x, added.y);
+    return;
+  }
+  const dist = Math.hypot(added.x - prev.x, added.y - prev.y);
+  const steps = Math.max(1, Math.ceil(dist / 6));
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    paintRoadDab(prev.x + (added.x - prev.x) * t, prev.y + (added.y - prev.y) * t);
+  }
+}
+
+// A slurp leaves a brighter gold scar on the road at the seam it emptied.
+function paintSlurp(ev: SlurpEvent): void {
+  rctx.fillStyle = '#ffe66a';
+  rctx.beginPath();
+  rctx.arc(ev.x * PX, ev.y * PX, road.halfWidth() * 0.8 * PX, 0, Math.PI * 2);
   rctx.fill();
   roadTexture.needsUpdate = true;
 }
@@ -219,27 +250,27 @@ function updateCamera(dt: number): void {
 
 // --- Loop ---------------------------------------------------------------------
 let last = performance.now();
-let lastPaint = { x: state.rover.x, y: state.rover.y };
-paintRoadDab(state.rover.x, state.rover.y);
 
 function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
 
-  state = tickContinuousWorld(state, readInput(), dt);
+  // Build the input: base drive + the road's carry/boost/onRoad (the lock),
+  // exactly what the sim expects, so the 3D drive feels like the tuned game.
+  const base = readInput();
+  const reversing = Boolean(base.reverseIntent);
+  const input: ContinuousInput = reversing
+    ? base
+    : { ...base, assistSteer: road.carrySteer(state), roadRunway: road.boost, onRoad: road.isOnLaidRoad(state) };
 
-  // Paint the road wherever the rover has moved far enough (skip while crawling
-  // -- out of nanobots lays nothing, same rule as the sim's trail).
-  const moved = Math.hypot(state.rover.x - lastPaint.x, state.rover.y - lastPaint.y);
-  if (moved >= 6 && state.speedState !== 'crawl') {
-    // Dab along the segment so fast movement leaves a continuous ribbon.
-    const steps = Math.ceil(moved / 6);
-    for (let i = 1; i <= steps; i += 1) {
-      const t = i / steps;
-      paintRoadDab(lastPaint.x + (state.rover.x - lastPaint.x) * t, lastPaint.y + (state.rover.y - lastPaint.y) * t);
-    }
-    lastPaint = { x: state.rover.x, y: state.rover.y };
-  }
+  state = tickContinuousWorld(state, input, dt);
+
+  // Lay the road by the sim's own rules and paint what was laid.
+  const added = road.sample(state);
+  if (added) paintTrailPoint(added);
+  road.updateBoost(dt, road.isOnLaidRoad(state));
+  const slurped = road.slurp(state);
+  if (slurped) paintSlurp(slurped);
 
   // Update seam visibility as ore is taken.
   for (const disc of seamGroup.children) {
@@ -265,5 +296,6 @@ window.addEventListener('resize', () => {
 // Expose for headless verification.
 (window as unknown as { __mm3d?: unknown }).__mm3d = {
   getState: () => state,
+  road,
   keys
 };
