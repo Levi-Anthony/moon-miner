@@ -1,5 +1,23 @@
 # Decisions
 
+## 2026-09-16: FLIP — the 3D build is the app; Phaser retired
+
+Levi: "Flip and continue." The player-facing parity was there (drive feel, HUD,
+day/shift/game loop + economy, mining/slurp/drone), so the 3D build becomes the
+default and Phaser is removed:
+- `index.html` now loads `src/three/bootstrap.ts` (was the Phaser entry);
+  `three.html` folded in and deleted; Vite back to a single page.
+- Deleted `src/main.ts`, `src/scenes/ContinuousMoonMinerScene.ts`,
+  `src/scenes/MoonMinerScene.ts`, orphaned `src/styles.css`.
+- Dropped the `phaser` dependency (lockfile synced). Bundle fell from ~1.6 MB
+  (Phaser) to ~570 KB (Three).
+- Replaced the Phaser-scene browser smoke with a lean 3D smoke (boots clean, HUD
+  up, driving moves the rover); it passes.
+- The gh-pages deploy (`pages.yml`, unchanged) now publishes the 3D game to
+  https://levi-anthony.github.io/moon-miner/ .
+- Sim + arena + all their tests untouched. Remaining to full parity: the control
+  panel (tunables) — the one dev-facing piece not yet ported.
+
 ## 2026-09-16: 3D migration progress — driving feel, HUD, and the day/shift/game loop
 
 On the Three.js substrate, in dependency order, keeping the sim untouched:

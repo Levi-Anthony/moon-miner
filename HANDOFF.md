@@ -1,11 +1,41 @@
 # Moon Miner — Handoff
 
-Last updated: 2026-09-16 (road-feel + loop-legibility + arms/mining + layout-shuffle arc)
+Last updated: 2026-09-16 (SUBSTRATE FLIP: presentation rebuilt in Three.js; Phaser retired)
 
 This file is the cold-start for a fresh agent: what the game is now, **how we
 work on it and why**, and what we've tried, rejected, and accepted. The blow-by-blow
 decision trail (with the reasons and the rejected options) lives in
 `DECISIONS.md` — read the last several dated sections there after this.
+
+---
+
+## 0. CURRENT SUBSTRATE — read this first
+
+The presentation was rebuilt on a **real 3D substrate (Three.js)** and **Phaser
+was retired** (see DECISIONS "SUBSTRATE PIVOT" + "FLIP"). What this means for a
+fresh agent:
+
+- **The app is `index.html` → `src/three/bootstrap.ts`** (a Three.js scene: real
+  perspective camera, a ground plane, the rover/drone as meshes). The **road is
+  PAINTED into a canvas texture on the ground** (raster decal) — never vector
+  geometry. Do **not** reintroduce per-frame `fillPoints`/stroke road drawing;
+  that was the old substrate's whole class of bugs (flashing/bowties/pinch).
+- **The simulation is unchanged and authoritative:** `src/game/**` (continuous.ts,
+  continuousArena.ts) is pure, engine-free TypeScript and all its tests still
+  run. The 3D layer reads sim state and feeds input; it does not fork the rules.
+- **Ported presentation logic lives in `src/three/`:** `road.ts` (driven trail,
+  carry/lock, rail boost, on-road test, slurp — the tuned feel, engine-agnostic),
+  `loop.ts` (`Campaign`: day→shift→game, per-day quota + soft/hard fail, banked
+  ore, road carried within a shift, arena regen, own `mm3d-*` localStorage),
+  `bootstrap.ts` (renderer, camera, input incl. mobile thumb-stick, HUD, mining/
+  drone/slurp visuals, wiring).
+- **Phaser is gone:** `src/main.ts` and `src/scenes/*` deleted, `phaser` dropped
+  from deps, `three.html` folded into `index.html`. The browser smoke
+  (`scripts/continuous-smoke.mjs`) now drives the 3D app.
+- **Everything below (§1+) describes the PRE-FLIP Phaser build.** Treat it as
+  historical intent/rationale — the *sim* facts and the design decisions still
+  hold; anything about Phaser scenes, `drawXxx`, or vector road rendering is
+  superseded by the 3D layer.
 
 ---
 
