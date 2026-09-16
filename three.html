@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>Moon Miner (3D)</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #05070c; overflow: hidden; }
+      #app3d { position: fixed; inset: 0; }
+      #hint3d {
+        position: fixed; left: 12px; top: 10px; z-index: 5;
+        font: 13px/1.4 ui-monospace, monospace; color: #9fb3c8;
+        text-shadow: 0 1px 2px #000; pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app3d"></div>
+    <div id="hint3d">Moon Miner — 3D substrate slice · W/A/S/D to drive</div>
+    <script type="module" src="/src/three/bootstrap.ts"></script>
+  </body>
+</html>

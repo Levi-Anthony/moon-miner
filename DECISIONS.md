@@ -1,5 +1,47 @@
 # Decisions
 
+## 2026-09-16: SUBSTRATE PIVOT — rebuild the presentation in real 3D (Three.js), keep the pure sim
+
+Levi, verbatim: "If we're in the wrong substrate and all our problems are
+downstream of trying to patch and otherwise ad hoc hack it into a shape it's not
+meant for, why do all your recommendations end in not switching substrate?" …
+"I entered this project over a week ago with an explicit request for a ground up
+reset and rebuild. Finally I'm hearing the truth. No more sunk cost fallacy."
+
+**The diagnosis, owned:** the road bugs (flashing, bowties, banding, pinch,
+obscuring, hand-rolled perspective) were all downstream of the wrong substrate —
+Phaser's immediate-mode **vector** Graphics driven by a **hand-rolled fake-3D
+projection**. Every property a real engine gives for free (perspective,
+occlusion, decals on a ground plane, overlap compositing) we were re-deriving in
+vector space every frame. Patching it was reinventing a wheel.
+
+**The split (why this is NOT sunk cost either way):**
+- KEEP `src/game/**` — the simulation, arena, seam logic, and tests. Verified
+  engine-free (`grep phaser src/game` = nothing). This is the correct tool for
+  the logic and is fully portable; re-deriving it would be the waste.
+- REBUILD the presentation on a real 3D substrate. Phaser coupling was only in
+  `src/main.ts` + the two `src/scenes/*` files.
+
+**Chosen substrate: Three.js** (installed 0.186). Real perspective camera + a
+ground plane; the ROAD is **painted into a canvas texture on the ground**
+(decal/splat), so overlaps composite in raster — flashing / bowties / banding /
+pinch are impossible by construction — and perspective/occlusion come from the
+camera. This is the standard way trails/tracks/paint are done.
+
+**Slice shipped (proof, not rewrite):** `three.html` + `src/three/bootstrap.ts`
+— a drivable vertical slice: ground plane, rover mesh driven by the UNTOUCHED
+`tickContinuousWorld`, chase camera, seams as gold ground decals (correct
+perspective, never obscured), extraction ring, and the painted road. Typecheck
+clean, zero runtime errors, screenshot-verified. Served alongside the Phaser app
+during migration (parallel until parity, then Phaser is deleted — that's a safe
+migration, not sunk cost).
+
+**Plan:** (task 8) slice ✓ → (task 9) migrate full presentation to 3D — mining/
+slurp visuals, drone, the DOM HUD + control panel (portable), day/shift/game loop
+UI, the road-lock/roadRunway/slurp presentation logic — to parity → (task 10)
+delete the Phaser scenes, drop the `phaser` dep, point `main.ts` at the 3D app,
+rewire build/smoke/screenshot harnesses; the pure-sim tests stay green throughout.
+
 ## 2026-09-16: Road sits on the ground — perspective taper, draws under features, regular lane gap
 
 Playtest ask: "Make the road not obscure everything in front of it, give it
