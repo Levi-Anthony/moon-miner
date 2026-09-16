@@ -24,7 +24,10 @@ export interface RoadConfig {
 }
 
 export const DEFAULT_ROAD_CONFIG: RoadConfig = {
-  roadWidthCars: 2.2,
+  // The 2.2-car width was a workaround for the old vector road (too narrow/
+  // obscuring/pinching). On the real substrate those are gone, so this is back
+  // down to a natural road that's just comfortably wider than the rover.
+  roadWidthCars: 1.4,
   slurpBandPct: 0.34,
   slurpMinBoost: 0.55
 };
