@@ -7,6 +7,9 @@
 // perspective/occlusion come from the camera for free. The simulation
 // (src/game/continuous.ts) is reused untouched -- it has no engine coupling.
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import {
   tickContinuousWorld,
   getContinuousGuidance,
@@ -53,6 +56,7 @@ function saveConfig(): void {
 const W = 1040;
 const H = 720;
 const PX = 1.5; // road-canvas pixels per world unit
+const GROUND_BASE = '#0e1520'; // dark lunar ground so the neon road/seams carry the light
 
 // The road: the driven trail + carry (lock) + rail boost + slurp, ported from
 // the tuned game (engine-agnostic). It decides where the road goes and what to
@@ -73,15 +77,46 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 mount.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05070c);
-scene.fog = new THREE.Fog(0x05070c, 700, 1600);
+scene.background = new THREE.Color(0x03040a);
+// Deep-space haze: things fade into the dark instead of ending on a hard edge.
+scene.fog = new THREE.Fog(0x04060e, 520, 1500);
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 4000);
 
-scene.add(new THREE.AmbientLight(0x8090b0, 0.9));
-const sun = new THREE.DirectionalLight(0xfff2d0, 1.1);
-sun.position.set(-300, 600, -200);
+// Moody key + a cool rim from behind, low ambient so the dark reads as dark and
+// the neon road/seams carry the light.
+scene.add(new THREE.AmbientLight(0x2a3550, 0.5));
+const sun = new THREE.DirectionalLight(0xbfd0ff, 0.7);
+sun.position.set(-300, 500, -260);
 scene.add(sun);
+const rim = new THREE.DirectionalLight(0x7fe9ff, 0.9);
+rim.position.set(220, 240, 420);
+scene.add(rim);
+
+// --- Starfield backdrop ------------------------------------------------------
+const starGeo = new THREE.BufferGeometry();
+const starN = 900;
+const starPos = new Float32Array(starN * 3);
+for (let i = 0; i < starN; i += 1) {
+  const r = 2200 + Math.random() * 1200;
+  const th = Math.random() * Math.PI * 2;
+  const ph = Math.acos(2 * Math.random() - 1);
+  starPos[i * 3] = r * Math.sin(ph) * Math.cos(th);
+  starPos[i * 3 + 1] = Math.abs(r * Math.cos(ph)) * 0.6 + 120;
+  starPos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+}
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x9fb6d8, size: 3, sizeAttenuation: false, fog: false }));
+scene.add(stars);
+
+// --- Bloom post-processing (the neon glow) -----------------------------------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+// strength 0.55 (glow, not blowout), radius 0.5, threshold 0.72 so only the
+// neon cores bloom -- seams read as glowing edges, not solid white plates.
+const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.5, 0.72);
+composer.addPass(bloom);
+composer.setSize(window.innerWidth, window.innerHeight);
 
 // --- Ground with a painted road texture --------------------------------------
 const roadCanvas = document.createElement('canvas');
@@ -89,7 +124,7 @@ roadCanvas.width = Math.round(W * PX);
 roadCanvas.height = Math.round(H * PX);
 const rctx = roadCanvas.getContext('2d') as CanvasRenderingContext2D;
 // Base lunar ground fill; the road is painted on top of this same canvas.
-rctx.fillStyle = '#3a4a55';
+rctx.fillStyle = GROUND_BASE;
 rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
 const roadTexture = new THREE.CanvasTexture(roadCanvas);
 roadTexture.colorSpace = THREE.SRGBColorSpace;
@@ -108,7 +143,7 @@ scene.add(ground);
 // smooth ribbon with no beading; the raster composite means overlaps (loops,
 // re-drives) never flash. One teal pass on the lunar ground; the lane-gap rule
 // keeps separate lanes apart, so the dark ground between them is the channel.
-const ROAD_TEAL = '#4f9f92';
+const ROAD_TEAL = '#37f2d8'; // neon teal so bloom picks it up
 function strokeRoadSeg(ax: number, ay: number, bx: number, by: number): void {
   rctx.strokeStyle = ROAD_TEAL;
   rctx.lineWidth = road.halfWidth() * 2 * PX;
@@ -146,6 +181,24 @@ scene.add(seamGroup);
 const extractionGroup = new THREE.Group();
 scene.add(extractionGroup);
 
+// A soft radial-glow sprite (bright core -> transparent rim) shared by every
+// seam disc. Additively blended + tinted, seams read as glowing ore pools that
+// give the bloom a bright core to catch without flattening into solid plates.
+function makeGlowTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d') as CanvasRenderingContext2D;
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.75)');
+  grad.addColorStop(0.7, 'rgba(255,255,255,0.22)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+}
+const seamGlowTexture = makeGlowTexture();
+
 function clearGroup(group: THREE.Group): void {
   for (const child of group.children) {
     const mesh = child as THREE.Mesh;
@@ -158,9 +211,17 @@ function clearGroup(group: THREE.Group): void {
 function rebuildWorldMeshes(): void {
   clearGroup(seamGroup);
   for (const zone of state.fertileZones) {
+    const r = Math.max(40, zone.radius * 1.05);
     const disc = new THREE.Mesh(
-      new THREE.CircleGeometry(Math.max(28, zone.radius * 0.7), 24),
-      new THREE.MeshBasicMaterial({ color: 0xffcf5a, transparent: true, opacity: 0.85 })
+      new THREE.PlaneGeometry(r * 2, r * 2),
+      new THREE.MeshBasicMaterial({
+        map: seamGlowTexture,
+        color: 0xffb340,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+      })
     );
     disc.rotation.x = -Math.PI / 2;
     disc.position.set(zone.x - W / 2, 1.2, zone.y - H / 2);
@@ -182,7 +243,7 @@ function rebuildWorldMeshes(): void {
 // Clear the ground to the lunar base and stroke an inherited road trail as one
 // continuous ribbon, breaking the path across skip-gaps so junctions stay clean.
 function repaintCanvas(trail: TrailPoint[]): void {
-  rctx.fillStyle = '#3a4a55';
+  rctx.fillStyle = GROUND_BASE;
   rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
   if (trail.length > 0) {
     const jump = road.halfWidth() * 3;
@@ -226,7 +287,8 @@ body.position.y = 12;
 rover.add(body);
 const nose = new THREE.Mesh(
   new THREE.BoxGeometry(20, 12, 14),
-  new THREE.MeshStandardMaterial({ color: 0x8fdcf5, roughness: 0.5 })
+  // Glowing cyan cab -- reads as a headlight and gives the rover a bloom accent.
+  new THREE.MeshStandardMaterial({ color: 0x8fdcf5, emissive: 0x2fb6d6, emissiveIntensity: 1.1, roughness: 0.5 })
 );
 nose.position.set(0, 18, 22); // toward +Z (forward)
 rover.add(nose);
@@ -529,8 +591,8 @@ function frame(now: number): void {
     disc.visible = !!zone && zone.remaining > 0.01;
     const mat = disc.material as THREE.MeshBasicMaterial;
     const isMining = !!miningZone && zone?.id === miningZone.id;
-    mat.opacity = isMining ? 0.55 + pulse * 0.45 : 0.85;
-    disc.scale.setScalar(isMining ? 1 + pulse * 0.12 : 1);
+    mat.opacity = isMining ? 0.7 + pulse * 0.55 : 0.9;
+    disc.scale.setScalar(isMining ? 1 + pulse * 0.14 : 1);
   }
 
   // Drone flies above the ground while committed.
@@ -554,7 +616,8 @@ function frame(now: number): void {
   updateHud();
 
   updateCamera(dt);
-  renderer.render(scene, camera);
+  stars.rotation.y += dt * 0.005; // a barely-there drift so the dark feels alive
+  composer.render();
   requestAnimationFrame(frame);
 }
 
@@ -587,6 +650,8 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
+  bloom.setSize(window.innerWidth, window.innerHeight);
 });
 
 // Expose for headless verification.
