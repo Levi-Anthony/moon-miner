@@ -131,6 +131,8 @@ interface LoopConfig {
   arenaScale: number; // level size multiplier (1 = original)
   roadWidthCars: number; // road width in rover-widths (>=2 keeps it comfortably drivable)
   textVerbosity: number; // 0 = off, 1 = minimal (events only), 2 = full (steady-state coaching)
+  slurpBandPct: number; // central fraction of a seam that a fast pass slurps whole (0 = off)
+  slurpMinBoost: number; // how railboosted (0..1) you must be for a slurp to fire
 }
 const DEFAULT_LOOP_CONFIG: LoopConfig = {
   daysPerShift: 3,
@@ -141,7 +143,9 @@ const DEFAULT_LOOP_CONFIG: LoopConfig = {
   hardFailRoadResetPct: 0,
   arenaScale: 1.35,
   roadWidthCars: 2.2,
-  textVerbosity: 1
+  textVerbosity: 1,
+  slurpBandPct: 0.34,
+  slurpMinBoost: 0.55
 };
 const TEXT_VERBOSITY_LABELS = ['Off', 'Minimal', 'Full'];
 interface LoopConfigControlDefinition {
@@ -162,7 +166,9 @@ const LOOP_CONFIG_CONTROLS: LoopConfigControlDefinition[] = [
   { key: 'hardFailRoadResetPct', label: 'Sunset road wipe', min: 0, max: 1, step: 0.05, precision: 2, hint: 'Fraction of your carried road lost if you miss sunset (hard fail). 0 keeps it all.' },
   { key: 'arenaScale', label: 'Level size', min: 1, max: 2, step: 0.05, precision: 2, hint: 'How far the seams spread. Bigger = longer routes. Applies on the next regen/new game.' },
   { key: 'roadWidthCars', label: 'Road width (cars)', min: 1.5, max: 4, step: 0.1, precision: 1, hint: 'Road width in rover-widths. Drives the visible ribbon, the drivable band, and how close parallel tracks merge into one lane. Applies live.' },
-  { key: 'textVerbosity', label: 'Text', min: 0, max: 2, step: 1, hint: 'On-screen coaching text: 0 Off, 1 Minimal (only real events, briefly), 2 Full (constant steady-state guidance). The opening controls hint always shows briefly.' }
+  { key: 'textVerbosity', label: 'Text', min: 0, max: 2, step: 1, hint: 'On-screen coaching text: 0 Off, 1 Minimal (only real events, briefly), 2 Full (constant steady-state guidance). The opening controls hint always shows briefly.' },
+  { key: 'slurpBandPct', label: 'Slurp band', min: 0, max: 0.8, step: 0.02, precision: 2, hint: 'Zoom (railboosted) through this central fraction of a seam to slurp all its ore at once. 0.34 = the middle third. 0 turns slurp off.' },
+  { key: 'slurpMinBoost', label: 'Slurp min boost', min: 0.1, max: 1, step: 0.05, precision: 2, hint: 'How wound-up on road (rail boost, 0..1) you must be for a slurp to fire. Higher = only at full rail speed.' }
 ];
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
@@ -171,7 +177,7 @@ const TERRAIN_CRATER_COUNT = 18;
 const TERRAIN_FISSURE_COUNT = 22;
 
 type ButtonId = 'launch' | 'reset';
-type EffectKind = 'launch' | 'delivery' | 'recovery' | 'sprint' | 'build' | 'crawl' | 'mine' | 'win' | 'loss' | 'blocked';
+type EffectKind = 'launch' | 'delivery' | 'recovery' | 'sprint' | 'build' | 'crawl' | 'mine' | 'win' | 'loss' | 'blocked' | 'slurp';
 type ArmRole = 'building' | 'mining' | 'stabilizing' | 'emergency' | 'helper';
 type LayoutMode = 'desktop' | 'mobilePortrait';
 type ViewMode = 'tactical' | 'chase' | 'hybrid';
@@ -890,6 +896,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.state = tickContinuousWorld(this.state, this.readInput(), deltaSeconds);
     this.sampleRoadTrail();
     this.updateRoadBoost(deltaSeconds);
+    this.updateSeamSlurp(timeMs);
     this.updateCamera(deltaSeconds);
     recordContinuousLoopTick(this.loopTrace, previousState, this.state, deltaSeconds);
     this.captureTransitions(
@@ -4090,6 +4097,46 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.roadBoost = clamp(this.roadBoost + rate, 0, ROAD_SLIDE_MAX);
   }
 
+  // TURBO SLURP. Zooming (railboosted) through the middle third of a seam grabs
+  // ALL its ore at once, in a distinct bright burst. This does NOT touch the
+  // stop-to-mine XOR: stopped in a seam you mine with the arms; wound up on road
+  // through a seam you slurp. It is the reward for laying a route that threads
+  // your seams and then running it. The seam empties in one pass (remaining -> 0,
+  // which the overnight-depletion carry already tracks), so it never re-fires.
+  private updateSeamSlurp(timeMs: number): void {
+    if (this.state.phase !== 'playing') return;
+    const band = this.loopConfig.slurpBandPct;
+    if (band <= 0) return;
+    if (this.roadBoost < this.loopConfig.slurpMinBoost) return;
+
+    const rover = this.state.rover;
+    const lo = 0.5 - band / 2;
+    const hi = 0.5 + band / 2;
+    const perpAllow = this.roadHalfWidth() * 0.6;
+    for (const zone of this.state.fertileZones) {
+      if (zone.remaining <= 0 || !zone.vein) continue;
+      const { from, to } = zone.vein;
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq <= 0.0001) continue;
+      const t = ((rover.x - from.x) * dx + (rover.y - from.y) * dy) / lenSq;
+      if (t < lo || t > hi) continue; // only the central band
+      const cx = from.x + dx * t;
+      const cy = from.y + dy * t;
+      if (Math.hypot(rover.x - cx, rover.y - cy) > zone.vein.width / 2 + perpAllow) continue;
+
+      const gained = zone.remaining;
+      this.state.rover.ore += gained;
+      zone.remaining = 0;
+      this.addEffect('slurp', cx, cy, 950);
+      this.addEffect('slurp', rover.x, rover.y, 800);
+      // High priority so it reads even at Minimal text; the burst carries it at Off.
+      this.showEventMessage(`RAILBOOST SLURP  +${gained.toFixed(1)} ore`, 1500, timeMs, 3);
+      break; // one seam per frame
+    }
+  }
+
   // Is the rover on road it laid on an EARLIER pass -- the driven ribbon minus
   // the fresh tail it is laying right now? The single check behind both the
   // speed-up and the carry, and it matches what the player sees: the road.
@@ -5093,6 +5140,31 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       if (effect.kind === 'blocked') {
         this.graphics.lineStyle(3, 0xff6f78, alpha);
         this.graphics.strokeCircle(center.x, center.y, (18 + progress * 8) * scale);
+        continue;
+      }
+
+      if (effect.kind === 'slurp') {
+        // A bright, fast gold burst with radiating spokes -- the "turbojuiced"
+        // read, distinct from the teal delivery pop and the removed mine rings.
+        const pop = Math.sin(progress * Math.PI);
+        this.graphics.fillStyle(0xffe66a, 0.22 * alpha);
+        this.graphics.fillCircle(center.x, center.y, (30 + pop * 26) * scale);
+        this.graphics.lineStyle(5, 0xfff4c2, 0.9 * alpha);
+        this.graphics.strokeCircle(center.x, center.y, (14 + progress * 96) * scale);
+        this.graphics.lineStyle(2, 0xffd35a, 0.7 * alpha);
+        this.graphics.strokeCircle(center.x, center.y, (30 + progress * 150) * scale);
+        for (let i = 0; i < 10; i += 1) {
+          const a = (i / 10) * Math.PI * 2 + progress * 1.2;
+          const inner = (20 + pop * 10) * scale;
+          const outer = (60 + progress * 120) * scale;
+          this.graphics.lineStyle(2, 0xfff0b5, 0.6 * alpha);
+          this.graphics.lineBetween(
+            center.x + Math.cos(a) * inner,
+            center.y + Math.sin(a) * inner,
+            center.x + Math.cos(a) * outer,
+            center.y + Math.sin(a) * outer
+          );
+        }
         continue;
       }
 
@@ -6552,6 +6624,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         return 0xff8491;
       case 'blocked':
         return 0xff6f78;
+      case 'slurp':
+        return 0xffe66a;
     }
   }
 }

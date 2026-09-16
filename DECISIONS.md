@@ -1,5 +1,28 @@
 # Decisions
 
+## 2026-09-16: Turbo "railboost slurp" — zoom a seam's middle third to take it whole
+
+Playtest ask: a new condition *in addition to* stop-to-mine XOR (which is
+unchanged) — "when zooming over the middle 33% of a seam, collect all the ore at
+once with a visibly different turbojuiced railboosted mode… to encourage laying
+an effective route you can then zoom around slurping ore."
+
+- **Two regimes, no conflict.** Stopped in a seam → arms mine (XOR, untouched).
+  Wound up on road (rail boost ≥ `slurpMinBoost`, default 0.55) and passing the
+  central `slurpBandPct` (default 0.34 = middle third) of a seam's vein → **slurp
+  the whole seam at once** (`remaining → 0`, added to ore). roadBoost only builds
+  on cured road and decays fast when stopped, so the two never overlap.
+- **The reward it creates:** lay a route that threads your seams, then run it at
+  rail speed and slurp them — high-level payoff for a good road.
+- **Visibly different:** a bright gold burst with radiating spokes at the seam
+  (distinct from the teal delivery pop and the deleted mine rings) + a
+  high-priority "RAILBOOST SLURP +N ore" flash (shows even at Minimal text).
+- **Tunable (both knobs in the panel):** `slurpBandPct` (0 = off) and
+  `slurpMinBoost`. Implemented scene-side in `updateSeamSlurp`; the seam empties
+  once (overnight-depletion carry already tracks `remaining`), so it never
+  re-fires. Types/build/panel verified; the in-context firing is a playtest
+  confirmation (hard to reproduce in the slow headless harness).
+
 ## 2026-09-16: Text verbosity knob (default Minimal) + eased economy defaults
 
 Two playtest asks handled together.
