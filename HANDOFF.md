@@ -1,145 +1,216 @@
-# Moon Miner Handoff
+# Moon Miner — Handoff
 
-Last updated: 2026-07-01
+Last updated: 2026-09-16 (road-feel + loop-legibility + arms/mining + layout-shuffle arc)
 
-## Cold Start
+This file is the cold-start for a fresh agent: what the game is now, **how we
+work on it and why**, and what we've tried, rejected, and accepted. The blow-by-blow
+decision trail (with the reasons and the rejected options) lives in
+`DECISIONS.md` — read the last several dated sections there after this.
 
-Read in this order:
+---
 
-1. `CONCEPT_REFRAME.md`
-2. `GAME_DESIGN.md`
-3. `BETS.md`
-4. `DECISIONS.md`
-5. `PROGRESS.md`
+## 1. Cold start
 
-Current active bet: **First-Feel Continuous Spike Playtest**, now with the mobile portrait/control feel and prepared-field magnetic grip lessons folded into the prototype.
+- **Live build:** https://levi-anthony.github.io/moon-miner/ (auto-deploys from
+  the working branch via `.github/workflows/pages.yml`, gh-pages "deploy from a
+  branch"). Push → a couple of minutes → live.
+- **Working branch:** `claude/current-state-report-a81tov` (PR #8). All the work
+  below is here; being merged to `main`.
+- **Run locally:** `npm i`, `npx vite` (dev), or `npx vite build`. Desktop URL
+  `?desktop=1`; mobile `?mobile=1`; tactical top-down view `?view=tactical`;
+  dev panel `?debug=1` or the gear button; endless/no-shift mode `?shift=0`.
+- **Stack:** Phaser 3 + TypeScript + Vite. Deterministic sim in
+  `src/game/continuous.ts`; presentation/scene in
+  `src/scenes/ContinuousMoonMinerScene.ts` (large). The sim never imports the
+  scene; the scene drives the sim each frame with a `ContinuousInput`.
 
-Do not run `ROUND_1_PLAYTEST.md` sessions on the V0 grid build. That tracker is paused because it tests the wrong game.
+### What the game is right now
+Drive a nanobot-laying rover across a lunar field. Lay road on new ground; the
+road **cures** into a fast, holding surface; mine ore seams; launch a reclaim
+drone to refuel; get home to extraction before sunset. A run is a **3-shift
+expedition** with a banked-ore score; road and (some) ore carry between shifts.
 
-## What Was Done
+---
 
-- Built and verified a V0 grid prototype in Phaser/TypeScript.
-  - Why it matters: it proved project scaffolding, deterministic checks, browser smoke tests, and some rail/reclaim vocabulary.
-  - Current status: prior art, not active design direction.
-- Added project memory files and a 99th-percentile scaffolding standard.
-  - Why it matters: future sessions can resume without chat context.
-- Added an interpretive collaboration standard.
-  - Why it matters: future work should infer the deeper ask, surface mental models, and red-team drift before building.
-- Applied the interpretive standard backward to identify foundational drift.
-  - Why it matters: the old build over-literalized "rail" into grid/train/puzzle logic.
-- Added `CONCEPT_REFRAME.md` and rewrote `GAME_DESIGN.md`.
-  - Why it matters: these now capture the real target: continuous live-action extraction, competent industrial machinery, physical drone reclaim logistics, arm-capacity mining, prepared field, and emergency crawl.
-- Paused V0 Round 1 playtesting artifacts.
-  - Why it matters: testing the old grid build would answer a comprehension question for the wrong game.
-- Implemented the active continuous-motion spike in Phaser/TypeScript.
-  - Why it matters: the repo now tests continuous steering, prepared field, just-in-time fabrication, emergency crawl, autonomous drone reclaim, arm-capacity mining, fertile-zone yield, and solar pressure.
-  - Current status: active runnable build; V0 grid remains prior art in the repo.
-- Tuned the continuous spike pressure curve.
-  - Why it matters: the active build now has a test-locked short-run loop for prepared sprint, raw fabrication, emergency crawl, drone recovery, and mining yield.
-  - Current status: ready for a first-feel read, not yet broad playtesting.
-- Corrected the active scene to use an angled, heading-relative chase camera.
-  - Why it matters: the simulation remains deterministic world coordinates, while the presentation now follows the rover like a third-person industrial vehicle camera instead of a static god's-eye map.
-  - Current status: superseded as the default; still available in dev with `?view=chase`.
-- Added an automated Playwright smoke harness for the active continuous scene.
-  - Why it matters: keyboard steering/throttle/brake, `Space` drone launch, hidden debug snapshot integrity, debug overlay visibility, HUD text bounds, and mobile portrait touch controls are now deterministic browser checks instead of vibes.
-- Made the default continuous scene player-first instead of dev-panel-first.
-  - Why it matters: tuning controls and loop trace are hidden by default, `?debug=1` and `~` still expose them, and the hidden JSON snapshot remains available for tests.
-- Reworked first-feel UX around readable vitals, player-facing state chips, stronger rover/field/drone feedback, and punchier event copy.
-  - Why it matters: the fantasy beats should read as a playable prototype before they read as instrumentation.
-- Added a portrait-first mobile playable spike.
-  - Why it matters: mobile is not a scaled desktop. `?mobile=1` or portrait coarse-pointer devices use a vertical layout with top HUD, large launch action, bottom one-thumb drive pad, and no tap-to-navigate.
-- Corrected mobile drive feel so release or center deadzone means idle.
-  - Why it matters: always-on throttle felt bad. When there is no drive intent, the rover stops moving and stops printing field; prepared-seam mining can continue at reduced throughput while solar pressure advances.
-- Added medium prepared-field magnetic grip.
-  - Why it matters: prepared ground should keep a passive rover on the lane, resist deliberate pull-away, but never lock the player onto rails. Active steering can escape; passive steering is corrected back toward lane tangent/center.
-- Tuned the default first-run arena toward a clearer three-beat level shape.
-  - Why it matters: the opening runway now teaches, the upper lobe tempts, and the lower recovery seam is needed for quota instead of being optional scenery.
-- Replaced the default fake-oblique chase presentation with a flat tactical view.
-  - Why it matters: the level now reads as a route/drone logistics map first, while the old chase projection remains available with `?view=chase` for comparison.
+## 2. How we work here (process doctrine — follow this)
 
-## What Was Decided
+1. **Screenshot-verify renders in headless Chromium before pushing.** We shipped
+   blind and broke the game more than once; now every render/visual change is
+   captured and eyeballed first. Pattern: a throwaway Playwright script,
+   `CHROME_PATH=$(ls /opt/pw-browsers/chromium-*/chrome-linux/chrome | head -1)`,
+   drive the game, `page.screenshot`, read the PNG. Delete the script after.
+2. **The headless sim runs at ~1/6 real time** (rAF throttled). Elapsed game
+   time crawls; to reach cured road / a full lap / draining the tank you must
+   drive for tens of seconds of wall-clock. Short probes that "prove" nothing
+   changed are usually a timing artifact, not a logic result. Verify the actual
+   number, don't infer.
+3. **Read live state from the debug snapshot.** The scene writes
+   `#moon-miner-continuous-debug-state` (JSON of `state`) every frame; probes
+   read `rover.speed`, `speedState`, `arms`, `nanobots`, etc. Keep this and
+   `window.__moonMinerContinuous` stable — the Playwright smoke harness
+   (`npm run smoke:continuous`) depends on them.
+4. **Pin the feel with distinguishing questions.** When the owner says something
+   is "wrong" or "off", don't guess — ask sharp multiple-choice questions
+   (AskUserQuestion) that separate the candidate causes. This repeatedly turned
+   a vague complaint into a one-line fix ("fast when laying", "second layer on
+   re-drive at crossings").
+5. **Record and propagate every decision, including what was rejected and why.**
+   The owner runs an ECB-first doctrine (a portable context hub). For each
+   meaningful change: append the trail to `DECISIONS.md`, log an ECB pulse
+   (`mcp__ECB__log_pulse`), and comment on the relevant **Linear** ticket (DEV
+   team, workspace `ecos-ops`). If ECB/Linear tools are unavailable, say so
+   (degraded state) and keep `DECISIONS.md` current for later propagation.
+6. **Commit small and attributed.** Each logical change is its own commit with a
+   descriptive body. Commits/PRs end with the Claude Code attribution footer
+   (see the session reminder). Never put a model identifier in repo artifacts.
+7. **Tests are a spec, not a gate to game.** See §5 — a deliberate design pivot
+   may obsolete tests; retarget them to the new rule (never skip/disable to go
+   green), and document any that need a larger re-cut.
 
-- The active game is not a rail puzzle.
-  - Decision: interpret rail as temporary prepared nano-field, not train track.
-  - Why: train/track language induced puzzle and solvable route thinking.
-- The machine must feel competent.
-  - Decision: failures should blame player route shape, launch timing, greed, or hesitation, not slow/clumsy technology.
-  - Why: the fantasy is a brilliant sci-fi industrial machine pushed into bad protocols.
-- Drone reclaim is autonomous physical logistics.
-  - Decision: player launches the drone, likely with `Space`; drone chooses/commits to a target, reclaims, and returns payload.
-  - Why: route shape and launch timing should create strategy without micromanagement.
-- Prepared field frees arm capacity.
-  - Decision: prepared field is faster and lets arms mine harder; raw terrain consumes arms for just-in-time field fabrication.
-  - Why: this links speed, mining, and visual arm activity into one readable system.
-- Emergency crawl is the default punishment state.
-  - Decision: no-field/no-delivery should trigger a painful automated crawl, not ordinary hard stop.
-  - Why: preserves uncertain doom and lets the machine remain brilliant even in failure.
-- The continuous-motion spike is now the active build.
-  - Decision: keep V0 as prior art, but route the Vite entrypoint to the continuous scene.
-  - Why: the next learning should come from the new motion/reclaim/mining spine, not the paused grid prototype.
-- Default presentation should be playtest-first.
-  - Decision: dev tuning and loop trace overlays are hidden unless `?debug=1` or `~` is used.
-  - Why: debug tools were stealing the fantasy and making the build look like a parameter editor.
-- Mobile should be portrait-first and one-thumb-first.
-  - Decision: prioritize a vertical layout, large touch controls, explicit launch button, and drag drive pad over tap-to-navigate.
-  - Why: vertical leaves room for readout plus controls, and single-thumb drive better matches the casual mobile feel.
-- Mobile idle is real idle.
-  - Decision: no touch intent means no movement and no field printing; prepared-seam mining can continue at reduced throughput.
-  - Why: hidden throttle made the rover feel possessed, while a parked industrial extractor should still harvest from prepared ground.
-- Prepared field is magnetic, not a hard rail.
-  - Decision: passive no-steer correction is strong, active steer is resisted only when pulling against the field, and the field should not assist active turns.
-  - Why: a first attempt that assisted active turns made the starter loop too easy and broke the intended overextension/crawl/drone recovery beat.
-- Coherent level shape starts with three readable beats.
-  - Decision: the first authored level should read as calibration runway, rich overextension lobe, and recovery seam.
-  - Why: the previous ore distribution let the route meet quota too early, before the recovery pocket mattered.
-- Flat tactical is the default view.
-  - Decision: default to stable map projection with no camera rotation, Y squash, projection shear, or screen-Y depth scaling.
-  - Why: the fake-oblique chase view looked like floating 2D geometry and hid the authored level shape.
+---
 
-## What Was Deferred
+## 3. Architecture map (the parts you'll touch most)
 
-- Round 1 playtesting of the V0 grid prototype.
-  - Why deferred: it would test the wrong game.
-  - Revisit when: intentionally studying drift or after rewriting the plan for the continuous-motion spike.
-- Selectable drone strategy modes.
-  - Why deferred: launch timing and route geometry should carry reclaim strategy first.
-  - Revisit when: physical drone reclaim is proven but needs more player agency.
-- Manual arm assignment.
-  - Why deferred: arms should feel like an autonomous intelligent scheduler.
-  - Revisit when: automatic allocation is readable and players still want more control.
-- Prebuild/planning phases.
-  - Why deferred: risks returning to static puzzle play.
-  - Revisit when: prepared field from live movement is proven and there is a clear need for higher-level planning.
-- Full mobile polish.
-  - Why deferred: the repo now has a playable portrait spike, but it still needs real device feel, thumb ergonomics, compact toasts, orientation handling, and visual tuning.
-  - Constraint now: keep mobile portrait as a first-class path, avoid hover-only/right-click-only/tiny-control assumptions, and keep tap-to-navigate disabled until it is clearly useful.
-- Skill trees, upgrades, story, savior RNG, deep ore taxonomy, and anomaly systems.
-  - Why deferred: all can flavor the future but would obscure whether the base loop works.
-  - Revisit when: the spike produces a compelling abundance/overextension/crawl/recovery cycle.
+### The road feel (this arc's core)
+The road you see is the **rover's own driven trail** (`roadTrail: {x,y,t}[]` in
+the scene), rendered as one smoothed ribbon (`drawFields` → thick strokes at
+full alpha — never a filled outline polygon; that self-intersects and flashes).
 
-## Next Session Should Do This
+The feel is a **presentation→sim** pipeline. Each frame the scene computes,
+from the trail, and passes into the sim via `ContinuousInput`:
+- `assistSteer` — pure-pursuit turn toward the road (the carry).
+- `roadRunway` — 0..1 speed target (the boost), eased by road curvature ahead.
+- `onRoad` — is the rover on **cured** road, driving along it.
 
-Run a first-feel read of the tuned continuous spike on desktop and mobile portrait:
+Key concepts, all in the scene:
+- **Cure time** (`ROAD_CURE_SECONDS`, 1.2s): trail points older than this are
+  "pre-laid road"; younger ones are the stroke you're laying now. Time-based, so
+  it's independent of turn radius. `curedTrailLimit()` is the cured prefix.
+- **Alignment gate** (`ROAD_ALIGN_MIN`): driving *along* a road (grip/boost/no
+  re-stack) vs *crossing* it (an intersection). `roadAlignmentAt()`.
+- **On-ribbon vs along-road** in `sampleRoadTrail`: don't lay a second layer
+  when on top of existing road (either aligned-along it, or physically on the
+  ribbon at a junction). A transverse crossing still lays up to the road it
+  meets — a clean intersection.
+- **Momentum**: `roadBoost` ramps up on road, decays off; capped by
+  `ROAD_SLIDE_MAX`; scaled by `roadCurveScale` so straights run fast and bends
+  ease so the carry can always hold the line.
 
-1. Preserve the old grid implementation as V0 prior art.
-2. Ask one player to steer, mine, launch the drone, and keep the rover supplied before sunset without explaining the solution.
-3. Watch whether they notice speed-state changes, nanobot drain, drone return payload, mining-rate differences, emergency crawl, and the prepared-field magnetic pull.
-4. On mobile, watch whether release-to-idle, the drive pad deadzone, launch target size, and lack of tap-to-navigate feel natural.
-5. Record whether the next slice should be route-lure readability, drone urgency/pulse polish, mobile ergonomics, more tuning, or broader playtesting.
+In the sim (`continuous.ts`, the steering block ~line 1120): when `onRoad`, the
+carry **takes the wheel** — it can turn up to ~2.6× a manual lock, a light steer
+is subsumed (player steer scaled to 0.25), only a firm steer past
+`railBreakSteer` breaks you off. **Self-play/tests pass none of these fields**,
+so they keep the sim's own field-magnet steering unchanged — this is how we keep
+the test suite meaningful while reworking the feel. `normalizeInput` MUST carry
+`assistSteer`/`roadRunway`/`onRoad` through (it once dropped them, silently
+no-opping the whole feature — a classic trap: an input-normalisation chokepoint
+eats new fields).
 
-Success means the player can describe why the rover slowed down, what the drone returned, why mining felt better on prepared field, and why prepared ground felt helpful without feeling like a lock-on rail.
+### Arms & mining (stop-to-mine)
+`allocateArms` (sim) is **mode-exclusive**: moving on new ground → all arms
+build; moving on road → stowed (cruising); stopped in a seam → all arms mine;
+stopped elsewhere/crawl → stowed/emergency. So **you mine only when stopped**,
+and the machine's posture reads its activity. Mining yield is **flat**
+(`richness × arms × mineRate × STOP_MINE_EFFICIENCY`) — the old speed/vein-line
+coupling is gone. The visual delta is wide on purpose (`drawArms`): building
+arms punch out long and pump; stowed arms fold tight and dim.
 
-## Taste Notes For The Next Session
+### The loop frame
+A run is `EXPEDITION_SHIFTS` (3) shifts, then a scored expedition summary
+(`drawPhaseBanner`). Banked ore accumulates across shifts (persisted with the
+carried road). "SHIFT n OF 3 · X ore banked" in the HUD.
 
-- The right default is "playable prototype first, tuning workstation second."
-- Keep the machine competent. Failures should feel caused by route shape, greed, hesitation, launch timing, or steering choices.
-- Mobile vertical is probably the better casual direction. Landscape may look more game-like, but portrait gives cleaner room for thumb controls plus readout.
-- Do not resurrect always-on mobile throttle. Release and center deadzone must mean idle.
-- Parked prepared-seam mining is good; raw idle mining is not. The machine should feel like an extractor without bypassing the nanobot route loop.
-- Do not make prepared field a hard rail. The taste target is medium magnetic: enough to hold passive travel, not enough to deny active steering.
-- Keep diagonal energy in level layout and camera framing, not fake perspective. The tactical view should feel like a living extraction map.
-- If a tuning change makes the self-play/no-drone route win before crawl/drone recovery, it is probably too generous for the current proof loop.
-- Keep `#moon-miner-continuous-debug-state` and `window.__moonMinerContinuous` stable; the smoke harness is now part of the design guardrail.
-- The mobile reset button is still too prominent for a player build. Consider moving it behind pause/debug later.
-- The portrait event feed is serviceable, but a compact local toast may be cleaner if messages compete with the rover.
-- Drone urgency can still get louder: pulse the launch button in low-nanobot/crawl states, strengthen target reservation, and make delivery bursts unmistakable.
+### Layout shuffle
+`createArenaFertileZones` (in `continuousArena.ts`) really shuffles the seams
+per seed (position + vein orientation), spread and reachable, richer seams
+assigned farther from extraction (reach stays rewarded). The layout **seed** is
+persisted per expedition (`EXPEDITION_SEED_KEY`): stable across a run's shifts
+and reloads (carried road still fits), fresh on New Game.
+
+### Crawl
+Out of nanobots → `crawl` (speed 34 limp, recovers ~0.3/s to a 3.6 ceiling) —
+a recoverable setback, not the old soft-lock at 16. Reaching prepared road flips
+you out of crawl instantly.
+
+---
+
+## 4. What we tried / rejected / accepted (headlines — full trail in DECISIONS.md)
+
+- **Road render:** rejected drawing from the field lattice (id-order slashes;
+  prevId beading) and filled outline polygons (self-intersection flashing).
+  Accepted: rover-trail polyline, thick strokes at full alpha.
+- **Non-overlap:** rejected lattice-snap (reintroduces tile wobble) and
+  graph-weld (too heavy). Accepted: proximity + alignment skip; junction fix =
+  also skip when physically on the ribbon.
+- **On-road detection:** rejected field-coverage (fires on the road you're
+  laying right now) and trail-*distance* (radius-dependent). Accepted:
+  **time-based cure**.
+- **Carry:** rejected "assist you fight" (steer halved the carry; player steer
+  always added). Accepted: rescue-slide — on cured road the road takes the
+  wheel; only a firm steer leaves.
+- **Speed:** rejected one flat compromise speed and rejected full-rail-on-curves
+  (flung you off). Accepted: curvature-eased slide (fast straights, held bends).
+- **Mining:** accepted the "drive somewhere, stop to mine" reality; leaned in
+  (arms mine XOR build; flat yield; removed speed/vein coupling). Rejected
+  keeping the utility arm in the dig.
+- **Sandbox:** built a standalone road sandbox, then **rejected it as the
+  product** ("I hate the sandbox") — transplanted the good road into the real
+  game and deleted the sandbox.
+- **Text:** first cut at reducing on-screen prose (steady-state shows the short
+  objective, not a constant two-sentence how-to). Deeper text→visual pass open.
+
+---
+
+## 5. Test state & the DEV-23 debt
+
+`npm test` (vitest): **74 pass, 9 fail**. The 9 red are one coherent bucket:
+the **self-play route/economy tests and the mining-throughput tests assume the
+old mine-while-moving model and the old fixed layout.** The stop-to-mine pivot
+and the layout shuffle deliberately invalidate them. Re-cutting the self-play
+harness (routes that stop to mine) and re-deriving the economy balance is
+**DEV-23's charter** — a real, separate task, not a bug.
+
+The focused mining *unit* tests were retargeted to the new model (park to mine,
+flat rate, no vein/speed/prepared bonus, utility arm stays utility) and pass.
+The two arena-staging tests now assert the shuffle *invariants* (in-bounds,
+clear of start/extraction, richer-is-farther) instead of fixed coordinates.
+
+Rule we follow: never skip/disable a test to go green. If a design change
+obsoletes a test, retarget it to the new rule or, when its whole premise is
+removed, rewrite it as a new-model guardrail. Anything needing a larger re-cut
+is documented (here + the Linear ticket), not silently left red.
+
+---
+
+## 6. Open follow-ups (roughly prioritised)
+
+- **DEV-23:** re-cut self-play routes for stop-to-mine + shuffled layout; re-tune
+  the ore economy for the flat mining rate; get the 9 red tests green.
+- **Authored / carried-overnight road** is not yet drawn as ribbon or followed —
+  only the rover's own driven trail is. Both render and feel derive from that
+  one trail, so they stay coherent; extending to authored road is the next step.
+- **Mining legibility polish:** it's now stop-to-mine and flat, but the on-screen
+  read of "you are mining, here's the rate" could be stronger (a visual meter).
+- **Text → visual, deeper pass:** the mode chip ("Sprint / field grip"), the
+  rail/track readout, HUD labels → visual cues. Owner to point at the worst
+  offenders.
+- **Fast-loop overlap:** re-driving your OWN road within the 1.2s cure window (a
+  tight fast loop) can still double, because the skip checks only cured points
+  and can't tell "last lap's fresh road" from "the stroke I'm laying now."
+- **DEV-47:** vehicle classes that lay different road types (backlog).
+
+---
+
+## 7. Linear tickets (DEV team, `ecos-ops`)
+
+DEV-22 grip/road feel · DEV-23 restore prepared-road payoff / decouple from the
+self-play rig (the test-debt owner) · DEV-24 road legibility · DEV-19 crawl
+consequence · DEV-27 define "1 game" (the expedition frame) · DEV-47 vehicle
+classes → road types (backlog).
+
+## 8. Older design context (pre-this-arc, still useful for intent)
+
+`GAME_DESIGN.md`, `CONCEPT_REFRAME.md`, `BETS.md`, `PROGRESS.md`,
+`README.md`. These predate the road-feel/loop work; treat them as the design
+north star (competent machine, physical drone logistics, prepared field,
+overextension/crawl/recovery) rather than a current status report.

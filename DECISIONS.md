@@ -1,5 +1,267 @@
 # Decisions
 
+## 2026-09-16: Arms do one job; stop-to-mine; real layout shuffle
+
+Playtest, three asks: widen the visible delta between arm activities; mining is
+illegible/inconsistent (accept the "drive somewhere, stop to mine" reality and
+lean in — arms mine XOR build, mine only when stopped); and finally deliver the
+long-requested layout shuffle.
+
+### Arms mode-exclusive + stop-to-mine
+`allocateArms` was a confusing mix (always some build + some mine + scan), and
+mining yield scaled with speed and vein-line alignment ("speed and line are the
+yield") — the illegibility. DECISION: arms do exactly one job, read straight off
+what the machine is doing — moving on new ground = build (all 7), moving on road
+= stowed (cruising), stopped in a seam = mine (all 7), else stowed/emergency.
+Switching is instant (recomputed each tick). Mining yield is now flat
+(`richness × arms × mineRate × STOP_MINE_EFFICIENCY`); the speed/vein-line
+coupling is removed (you mine parked, so both were ~0 and only confused).
+- REJECTED keeping the utility arm in the dig — it stays utility (docking/
+  systems), so the mining path has no hidden helper contribution. Removed the
+  dead `getFertileZoneMiningFlowMultiplier` + `STATIONARY_MINING_FLOW_MULTIPLIER`.
+- Visual (widen the delta): building arms punch out long and pump; stowed arms
+  fold tight and dim — cruising vs laying track is now unmistakable.
+
+### Real layout shuffle (was a ±3.5 wobble)
+`createArenaFertileZones` only jittered seams ±3.5 units, so every game looked
+identical. DECISION: a real seeded shuffle — each authored seam keeps its size/
+richness/remaining (the balance) but is re-placed at a fresh position, spread
+and reachable, vein re-oriented. Reach stays rewarded: richer seams are assigned
+to the slots FARTHER from extraction, so "further out pays more" survives.
+- REJECTED pure-random placement (destroys the richness-distance gradient and
+  the route-affordance design). Accepted gradient-preserving assignment.
+- The layout **seed** is persisted per expedition (`EXPEDITION_SEED_KEY`): stable
+  across a run's shifts and reloads so carried road still fits; New Game stamps a
+  fresh seed for a new map. (Boot was a fixed `'apollo-17'`, so the shuffle was
+  invisible on load; now each expedition is a genuinely different map.)
+
+### Test debt (documented, not hidden)
+The stop-to-mine pivot + shuffle deliberately invalidate the mine-while-moving/
+vein/fixed-layout tests. Focused mining unit tests were retargeted to the new
+model; the arena-staging tests now assert shuffle invariants. The remaining 9
+red are the self-play route/economy + mining-throughput tests that need the
+self-play harness and economy re-cut for stop-to-mine — DEV-23's charter.
+
+## 2026-09-15: Fix the second-layer overlap at junctions
+
+Playtest (distinguishing questions): the overlap is "a second layer on re-drive"
+and "messy junctions", happening "at crossings/intersections". Cause: the
+non-overlap skip fired only when the nearest cured point was roughly ALIGNED
+with heading. Driving along road A through where road B crosses, the nearest
+cured point is B's — perpendicular — so it read as "not aligned" and laid a
+second layer of A right on the crossing.
+
+Fix: skip laying in EITHER case, not just the aligned one:
+- ALONG a road — near a cured point and aligned (`alongRoad`), as before.
+- ON the ribbon — physically on top of existing road, within half a field
+  radius, whatever the angle (`onRibbon`). Catches the junction, where you are
+  on A even though the nearest road is the B you are crossing.
+A transverse crossing of NEW road still lays right up to the road it meets (only
+the ~half-radius directly over the crossing is skipped), so the intersection
+still forms and the render bridges the short gap into a clean junction rather
+than a doubled lump.
+
+Known remaining overlap case (not this one): re-driving your OWN road within the
+1.2s cure window (a fast tight loop) still doubles, because the skip checks only
+cured points and cannot tell "a previous lap's fresh road" from "the stroke I am
+laying right now". The owner flagged crossings, not fast loops, so this is left
+for later.
+
+## 2026-09-15: Kill the straight-line jitter; fast straights, eased bends
+
+Playtest: "even normal driving straight still kind of jitters the vehicle left
+to right" and "fast on straights would be good."
+
+### Jitter (fixed)
+Driving straight on prepared ground, the only thing steering you was the sim's
+field magnet. Its heading correction is noisy — the set of nearby fields shifts
+frame to frame — and it was amplified ×9 by `railHeadingSnap`, so tiny noise
+became a visible left/right saw. The magnet is redundant now the cured-road
+slide is the road feel, so for presentation play it is **suppressed entirely**:
+on the cured road you get the smooth slide, off it plain steady driving, neither
+wobbles. Self-play/tests pass no `assistSteer` and keep the magnet unchanged.
+Verified: straight-line frame wobble ~0.007 rad (was a visible saw).
+
+### Fast straights, eased bends (done)
+The slide speed is now eased by the **curvature of the road ahead** (net bend
+over the look-ahead walk, smoothed and measured ahead so it eases before the
+bend). Straights run to the top (`ROAD_SLIDE_MAX` 0.62 → 1.0, ~railSpeed); bends
+ease toward a 0.5 floor (~174) so the carry can always hold the line. Fast where
+it is safe, slower where it is not — instead of the one flat compromise speed
+the previous change settled for. Verified: on a curved loop the scale eases to
+~0.52 (speed ~155–178) and the carry still holds you around it hands-off.
+
+## 2026-09-15: The road as a rescue slide (stop fighting it)
+
+Playtest: "The road should feel like a rescue slide home almost. I'm still
+fighting it." Raising grip strength hadn't worked because the fight was
+STRUCTURAL, not weak grip:
+- Any steer > 0.06 halved the carry (`authority`), so touching the wheel to
+  follow a curve made the road let go.
+- Player steer was always ADDED on top, so a resting finger sawed the line.
+- The 1.6× turn cap couldn't hold a curve at the 236 slide speed → you slid off
+  the outside and fought back on.
+
+Reworked the on-road steering into an actual slide. New `onRoad` input from the
+presentation (`isOnLaidRoad`, aligned + on cured road); self-play/tests pass
+none, so their steering model is byte-unchanged.
+- Carry may turn up to **2.6× a manual lock** so it holds the road's own curves.
+- A light touch is **subsumed** — player steer scaled to 0.25 while carried — so
+  incidental input no longer fights; only a firm steer past `railBreakSteer`
+  eases the carry (to 0.3) and passes the wheel through, to break off.
+- **Slide speed ceiling** lowered (`ROAD_SLIDE_MAX = 0.62` → ~174, was ramping to
+  236) so the carry can always hold the line; **longer look-ahead** (1.4 → 2.4×
+  radius) and a gentler response (divisor 0.15 → 0.25) so it glides on, not saws.
+- Traded some top speed for control — deliberate: the owner now prioritises the
+  slide feel over raw top speed. Curvature-aware speed (fast straights + slow
+  bends) is the refinement if they want the top speed back.
+
+Verified headless: on cured road, release the wheel and the carry holds you
+around your own laid curve for ~2 laps (13.8 rad turned hands-off) at a steady
+174.
+
+## 2026-09-15: Grip harder, intersections, less text
+
+Playtest: "still needs to grip the road more and allow intersections. Also too
+much reliance on text."
+
+- **Grip:** carry response tightened (angle divisor 0.22 → 0.15) and the sim's
+  assist cap raised (1.35× → 1.6× TURN_RATE, `ROAD_FOLLOW_STEER` 3.4 → 4.0) so
+  the road grabs the line rather than leaning toward it.
+- **Intersections:** one new "aligned with the road" test — `|cos|` of heading
+  vs the road tangent, `ROAD_ALIGN_MIN = 0.6` (~53°). Driving ALONG a cured road
+  grips/boosts and counts as a re-drive (no restacking). Crossing one square is
+  now an INTERSECTION: the non-overlap skip no longer suppresses it, so the
+  crossing lays and renders, and the carry lets you cut straight through instead
+  of being yanked onto the crossing road. One rule does all three (carry gate,
+  boost gate, non-overlap gate). Screenshot-verified: loops/crossings render as
+  clean junctions.
+- **Less text (first cut):** the bottom feed narrated a full two-sentence
+  objective+nudge every steady-state frame. Now it teaches for the opening
+  seconds and on real events, then drops to just the short objective. Phase-end
+  keeps its full say. This is a first pass on "too much text" — deeper work
+  (replacing textual state like the mode chip / rail readout with visual cues)
+  is open pending the owner pointing at specific offenders.
+
+## 2026-09-15: Make the loop legible — the expedition frame (DEV-27)
+
+Playtest: "other parts of the game don't make enough sense now to actually judge
+the driving." Investigation found the moment-to-moment guidance and the whole
+shift system (overnight road carry, seam depletion/regrowth, chained shifts,
+end-of-shift banner) already existed — but the run had **no frame**: shifts
+incremented forever with no goal, no cumulative score, no finish, so nothing
+told you what the driving was *for*. Owner chose "make the loop make sense."
+
+DECISION (fixed-N, matching the owner's earlier DEV-27 lean): a run is an
+**expedition of `EXPEDITION_SHIFTS = 3`** shifts, then it ends and is scored.
+- Cumulative **banked ore** accrues across won shifts (persisted with the
+  carried road) and shows live in the HUD: "SHIFT n OF 3 · X ore banked".
+- **Finale:** after shift 3 the end banner becomes an expedition summary (total
+  banked, a one-line grade) with "new expedition" instead of incrementing to a
+  shift 4; R / tap then wipes for a fresh expedition.
+- Endless play stays available (New Game / `?shift=0`) for playtesting.
+- Built entirely on the existing banner/shift-save machinery; driving untouched.
+
+### Crawl stranding (fixed)
+Running out of nanobots dropped you to speed 16 with recovery at 0.1/s toward a
+2.6 ceiling against a 2.0 exit — ~20s of near-stopped limping to claw out, and
+with no loose end for the drone and no prepared road within reach it read as a
+soft-lock. Kept crawl as the overextension penalty but removed the dead-end
+(active preset only, STABLE_FIRST_RUN):
+- crawlSpeed 16 → 34 (an unmistakable limp, under half fabricating's 74, but it
+  still carries you toward road / ore / home).
+- crawlRecoveryPerSecond 0.1 → 0.3, ceiling 2.6 → 3.6: claw out in ~7s, not ~20.
+- Left `preparedRefillPerSecond` at 0 (the drone stays the primary refill, per
+  its deliberate design note); reaching prepared/cured road still flips you out
+  of crawl instantly (a speedState change), which the raised crawl speed makes
+  reachable.
+Verified headless: enter crawl at speed 34, recover within a few seconds (drove
+back onto cured road → prepared/74), never pinned. Updated the crawl test's
+magnitude bound (was `< 30`, encoding the old 16) to `< 40`, preserving its
+intent (a limp, not a hard stop, well under fabricating).
+
+### Still open (the rest of "make it make sense")
+- **Mining legibility:** how ore accrues ("speed and line are the yield") is not
+  obviously readable. Next.
+
+## 2026-09-15: Road feel take 3 — lay slow, cured road is fast and holds
+
+Playtest, verbatim: "It's fast when I'm laying down new road, and the road
+doesn't hold me on it." Both from keying speed/carry off the wrong signal.
+
+### Fast while laying (fixed)
+On-road detection used the field data, which lights up on the road being laid
+RIGHT NOW (your own fresh field under you), so it sped you up while laying — and
+the sim's own prepared/rail speed did the same on fresh road. DECISION: the
+presentation owns drive speed whenever it supplies `roadRunway` — laying (or off
+road) holds fabricating speed, and only pre-laid road winds toward railSpeed.
+The sim's own prepared/rail speed path is kept only for self-play/tests (which
+supply no `roadRunway`). Verified headless: laying is a steady 74, not a surge.
+
+### Didn't hold / no reliable speed on pre-laid road (fixed)
+Detection was DISTANCE-based (a fixed index skip along the trail, ~78 units). A
+tight loop (turn radius ~33) can never get that far "behind" itself, so it
+almost never fired. DECISION: **time-based cure** — a stretch of road becomes
+fast-and-holding road `ROAD_CURE_SECONDS` (2s) after it is laid, independent of
+turn radius. Trail points now carry a timestamp; the cured points are the trail
+prefix. One check (`isOnLaidRoad`) drives BOTH the speed momentum and the carry,
+and it matches what the player sees. Firmed the carry response (tighter angle
+divisor, higher follow rate). Verified headless: road cures at ~2s; re-driving
+it ramps speed 74→236 (3.2× laying) and engages the carry.
+- REJECTED continuing to key off field coverage (fires on fresh road) and off
+  trail *distance* (radius-dependent, unreliable). Time is the robust axis.
+
+### Note on verification
+The headless sim runs at ~1/6 real-time (rAF throttled), so validating
+re-driving cured road needs a long wall-clock drive (~48s → ~8 game-s, ~2
+loops). Earlier short probes only simulated ~1s of game time and never cured or
+looped — a testing artifact, not a logic bug.
+
+## 2026-09-15: Road feel take 2 — the flashing, and why nothing was felt
+
+### Flashing (fixed)
+The ribbon was filled as one outline polygon (offset the centreline left, concat
+the right reversed, `fillPoints`). On loops/hard corners that outline
+self-intersects and Phaser's fill triangulation flips filled/empty regions frame
+to frame — the flashing. FIX: draw the band as thick strokes at full alpha; a
+stroke never triangulates and a full-alpha self-crossing just repaints the same
+colour. Removed the dead `fillRoadRibbon`; added round end caps.
+
+### "No carry, speed, or anything" — the real bug
+`normalizeInput()` rebuilt the input object every tick and **dropped
+`assistSteer` and `roadRunway`**. So every road signal the presentation layer
+computed was silently discarded before the motion code ran. The carry feature
+had therefore never actually done anything since it was added, and neither could
+any speed signal. FIX: carry both fields through `normalizeInput`. LESSON: an
+input-normalisation chokepoint will silently eat new fields — verify a new input
+field reaches the consumer (a headless probe reading it inside the sim), don't
+assume the wiring.
+
+### Prepared road never sped you up (reliability)
+Even with the plumbing fixed, the sim's own prepared/rail speed almost never
+fires in play: the aged-field coverage that gates it reads ~0 while you drive
+forward laying road (you are ahead of the road, and it must age 1.25s first),
+and rail capture is finicky (`tileSize` 16 ≪ patch spacing ~42) and decays.
+DECIDED: a road-speed **momentum**, tracked in the scene from
+`getPreparedCoverage` (the detection that DOES fire reliably): on prepared road
+it ramps up over ~1.1s, off it bleeds over ~0.45s. It feeds the sim as
+`roadRunway`, which ramps speed preparedSpeed→railSpeed. Felt result
+(headless-verified): settle onto road → speed winds 96→236 (3.2× fabricating) →
+decays when you leave. This is the "magnetic acceleration."
+- REJECTED driving speed off my own trail proximity: the single polyline is a
+  narrower corridor than the overlapping field lattice, so it detected on-road
+  LESS reliably than the field coverage. The field coverage is the better
+  "am I on road" signal; the trail stays the source for the visual ribbon and
+  the steering carry.
+- Self-play/tests pass neither field → unchanged (same 5 known-red, 78 pass).
+
+### Still open
+- preparedSpeed (96) vs fabricating (74) is a mild step on its own; the momentum
+  ramp toward railSpeed (236) is what makes it felt. If the owner wants the
+  floor higher too, that's a one-line tuning bump.
+- Rail capture reliability (`tileSize` ≪ spacing) is still the DEV-22 follow-up;
+  the momentum now makes it non-blocking for the felt payoff.
+
 ## 2026-06-26: Browser First
 
 Use Phaser 3, TypeScript, and Vite so the game is easy to run, share, screenshot, test, and deploy.
@@ -944,3 +1206,115 @@ than committed to. That is worth having -- thefts 15% to 8%, with launches
 slightly up rather than down -- and it is worth naming correctly, because a
 mechanic described as something it is not is how the next person tunes the wrong
 number.
+
+## 2026-09-15: The Road Rework — substrate, feel, and render (full decision trail)
+
+Trigger: first-feel playtest of the continuous build. Verdicts, in the owner's
+words: grip had "no magnetic feel"; the loop was "~15% acceptable"; the road was
+"wobbly hexes… transparent… multiple kinds… don't lay together… nothing says
+road." Driving itself was fine.
+
+### Root cause
+The road's problems are inherent to its **hex/lattice tile substrate**: tile
+centres are snapped to a lattice, so any line through them zig-zags (the
+"wobble"), and the render layered multiple tinted tile passes (the "transparent,
+multiple kinds"). This directly contradicts the repo's own 2026-06-29 decision
+("Prepared Field Should Read As Continuous Surface — connected ribbon lanes, not
+tiles"). The code had drifted to lattice tiles against its own doctrine.
+
+### Grip (DEV-22)
+Unified the two overlapping steering systems (magnet + rail-lock) into one
+`getPreparedGrip`. Finding: the rail lock almost never captured, because
+`tileSize` (16) is far below the laid-patch spacing (~42), so most lanes failed
+the neighbour test — the felt grip lived in a magnet that was itself squeezed to
+nothing. Shipped; left 5 self-play/route tests red (calibrated to old dynamics)
+pending the loop retune (DEV-23). ACCEPTED red tests as a deliberate,
+feel-first tradeoff.
+
+### The owner's decoupling idea (previously unexplored)
+Lay a lane ~2.5 car widths wide so ordinary driving sits in a free middle band
+untouched by the road, with constraint only near the edges — you steer to a
+boundary to leave. Width, not tile shape, is the mechanism. This became the
+basis of the sandbox.
+
+### Sandbox (built, then rejected as the destination)
+Built a standalone `?sandbox=1` scene: drive + continuous ribbon road + slide +
+pure-pursuit follow + live sliders. Feel iterations:
+- REJECTED: neutral middle + edge-only push — read as twitchy/"weird".
+- ADOPTED: the road *carries* you (pure pursuit toward a look-ahead point), so
+  hands-off you slide down it; leaving takes a deliberate steer (follow capped
+  below manual turn). Owner: "Better."
+- ADJUSTED: raised follow strength + added corner-braking so it takes hard
+  corners; widened slider ranges; added M2 nanobots (lay spends / slide
+  recovers) as the first economy layer.
+- REJECTED (owner): the sandbox as the product — "I hate the sandbox" (a bare
+  toy on a separate URL). 
+
+### Direction fork
+Considered: (A) rebuild the road inside Moon Miner vs (B) grow the sandbox into
+the game (DEV-48). Owner first chose B, then reversed to **"good road into real
+Moon Miner"** and to delete the sandbox. Final decision: transplant the
+validated road into the real scene; sandbox removed.
+
+### Render transplant (the bugs, in the order they were hit)
+1. Connected fields in **id order** + drew **raw world coords with no
+   projection** → big lines slashed random screen positions, real road
+   off-screen/invisible. SHIPPED AND BROKE; reverted immediately.
+2. Walked `fieldSections` (prevId chains) + projected → right place, but the
+   lattice rewrite no longer populates `prevId`, so every field was its own
+   section and drew as a single disc → a string of beads.
+3. Per-segment quads + joint circles at alpha < 1 → translucent bubbles.
+4. FIX (verified): draw from the rover's **actual driven trail** (scene-tracked,
+   ordered, contiguous) → project each point → Chaikin smooth → fill as one
+   solid outline polygon at full alpha, width clamped by camera zoom. Reads as a
+   clean connected road.
+
+### Process change (adopted)
+The repeated blind breakage came from shipping renders I could not see. Now:
+**screenshot the render in headless Chromium and inspect it before pushing.**
+
+### Feel transplant (done) — the road carries you
+The sandbox slide/follow is now in the real game. Architecture DECIDED to
+minimise sim/test regressions:
+- The **presentation layer** computes the carry (`roadFollow`): pure pursuit
+  over the rover's driven trail — find the nearest non-recent trail point,
+  take the road tangent there, aim at a look-ahead point along it, return a
+  turn rate toward it (0 when off road).
+- The **sim** takes that as a new optional `assistSteer` on `ContinuousInput`
+  and applies it in place of the field grip, capped below `TURN_RATE` and
+  eased by `gripActiveSteerFactor` under active steer — so hands-off you slide
+  down the road's own curve, and a deliberate steer still leaves it.
+- REJECTED: computing the follow inside the sim. It would have needed the
+  trail geometry in the sim and would have moved every self-play/test route.
+  Instead self-play and tests set no `assistSteer`, so they keep the existing
+  `getPreparedGrip` fallback byte-for-byte — the 5 red tests are unchanged by
+  this work.
+- Forward driving only: reverse and on-the-spot pivots pass no assist and stay
+  fully in the driver's hands.
+
+### Non-overlap (DECIDED + done) — proximity-skip
+Problem: re-driving over road you already laid must not stack a second ribbon
+(doubled fill, bubbling at crossings). Options weighed:
+- REJECTED **lattice-snap**: quantise trail points to a grid so re-drives land
+  on the same cells. Reintroduces the tile substrate whose wobble we just left.
+- REJECTED **graph-weld**: detect crossings and merge nodes into a road graph.
+  Correct but heavy — a spatial index and merge logic for a feel we can get
+  more cheaply.
+- ADOPTED **proximity-skip**: `sampleRoadTrail` refuses to add a point within
+  `fieldRadius` of an existing, non-recent trail point (recent tail excluded so
+  the road you are actively laying doesn't reject itself). One spatial check
+  does triple duty — prevents overlap, answers "am I on old road" for the
+  carry, and gates the follow-assist. Screenshot-verified: a loop that crosses
+  its own road stays a single clean ribbon at the crossing.
+
+### Known follow-ups (not yet done)
+- Authored and carried-overnight road is not yet drawn as ribbon, and the
+  follow-assist only engages on the rover's own trail (both derive from the
+  same trail, so render and feel stay coherent; extending to authored road is
+  the next step).
+- 5 self-play/route tests remain red pending the loop retune (DEV-23).
+
+### Linear
+DEV-22 grip unify · DEV-25 mobile launch-button · DEV-26 control panel / live
+tuning / New Game · DEV-27 define "1 game" (fixed-N) · DEV-47 vehicle classes →
+road-type presets (backlog) · DEV-48 rebuild-on-sandbox plan.

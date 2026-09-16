@@ -25,6 +25,23 @@ export interface ContinuousInput {
   driveIntent?: boolean;
   pivotIntent?: boolean;
   reverseIntent?: boolean;
+  // Road-follow turn rate (rad/s) supplied by the presentation layer, computed
+  // by pure pursuit over the rover's driven road trail. When present it drives
+  // the carry/slide feel on top of the sim's field grip; when absent (self-play,
+  // tests) the sim uses getPreparedGrip alone.
+  assistSteer?: number;
+  // How much laid road continues ahead of the rover along the visible trail, in
+  // [0,1], supplied by the presentation layer. The aged-field coverage that
+  // gates the sim's own prepared state reads ~0 while you drive forward laying
+  // road, so it never sped you up in normal play; the visible trail is the road
+  // the player actually sees and drives on, so when they are ON it we raise
+  // speed toward railSpeed by this much. Absent for self-play/tests.
+  roadRunway?: number;
+  // The rover is on cured road and travelling along it (the presentation's
+  // isOnLaidRoad). Turns the carry into a rescue slide: the road takes over the
+  // wheel, a light touch is subsumed, only a firm steer breaks you off. Absent
+  // for self-play/tests, so their steering model is unchanged.
+  onRoad?: boolean;
 }
 
 export interface RoverMotionState extends Vec2 {
@@ -251,6 +268,14 @@ export interface ContinuousTuning {
   // Connected track ahead, in units, that earns full rail speed. Below it the
   // rail tapers back toward prepared speed.
   railRunwayForFullSpeed: number;
+  // Grip floor: the fraction of full grip a freshly caught rail already has,
+  // before any connected runway lengthens it. Keeps a stub feeling magnetic
+  // rather than dead.
+  gripFloor: number;
+  // How much of grip's authority survives while the player is actively
+  // steering. Below 1 the wheel always wins, so grip is a magnet you can leave,
+  // never a rail that holds you on.
+  gripActiveSteerFactor: number;
   lowStockWarningRatio: number;
   droneUrgencyRatio: number;
   // Refill rate (stock per second) while moving on prepared track when drone is
@@ -319,6 +344,11 @@ export interface ContinuousCommandResult {
 const WORLD_WIDTH = 1040;
 const WORLD_HEIGHT = 720;
 const INDUSTRIAL_ARMS = 7;
+// Per-arm mining rate factor while stopped in a seam. Mining is now a flat,
+// legible "park and the arms extract" -- no speed or vein-alignment coupling,
+// because you mine standing still. Chosen so all seven arms together give about
+// the throughput parked mining had before (7 * 0.4 vs the old 7 * ~0.35).
+const STOP_MINE_EFFICIENCY = 0.4;
 const UTILITY_ARMS = 1;
 const TOTAL_ARMS = INDUSTRIAL_ARMS + UTILITY_ARMS;
 const TURN_RATE = 2.25;
@@ -333,7 +363,6 @@ const TURN_RATE = 2.25;
 const REVERSE_SPEED_RATIO = 0.62;
 // Full lock in a little over a quarter second.
 const STEER_RAMP_PER_SECOND = 4.6;
-const STATIONARY_MINING_FLOW_MULTIPLIER = 0.25;
 const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
 export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -443,6 +472,8 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   railHeadingSnap: 9,
   railCenterSnap: 4.2,
   railRunwayForFullSpeed: 210,
+  gripFloor: 0.2,
+  gripActiveSteerFactor: 0.5,
   lowStockWarningRatio: 0.18,
   droneUrgencyRatio: 0.32,
   // Refill while on prepared ground. Zero means no passive refill on track —
@@ -518,9 +549,21 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   railHeadingSnap: 9,
   railCenterSnap: 4.2,
   railRunwayForFullSpeed: 210,
-  crawlRecoveryPerSecond: 0.1,
-  crawlRecoveryCeiling: 2.6,
-  crawlSpeed: 16,
+  gripFloor: 0.2,
+  gripActiveSteerFactor: 0.5,
+  // Crawl is the overextension penalty, but at 0.1/s toward a 2.6 ceiling with a
+  // 2.0 exit it took ~20s of near-stopped limping to claw back out -- and with no
+  // loose end for the drone and no prepared road within reach, that read as a
+  // soft-lock rather than a setback. Faster recovery (0.3/s to a 3.6 ceiling)
+  // gets you out in ~7s; the consequence stays (you slowed to a limp and lost
+  // that time) without stranding. The drone is still the primary refill, and
+  // reaching prepared road still flips you out of crawl instantly.
+  crawlRecoveryPerSecond: 0.3,
+  crawlRecoveryCeiling: 3.6,
+  // 16 read as frozen. 34 is an unmistakable limp -- under half fabricating --
+  // but it still moves you toward your road, the ore, or home instead of pinning
+  // you in place.
+  crawlSpeed: 34,
   fabricatingSpeed: 74,
   // 96, not the 132 this wanted to be. The self-play routes are timed waypoint
   // scripts calibrated to the speeds they were written against: at 104 they
@@ -1083,27 +1126,52 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   state.lastRoadPatchId = findRoadPatchUnderRover(state)?.id ?? state.lastRoadPatchId;
   state.rail = state.railReleaseRemaining > 0 ? undefined : getRailLock(state, Boolean(state.rail));
 
-  if (state.rail) {
-    // On rail the machine is not steered, it is carried. Heading converges on
-    // the track and the chassis is drawn back to the centreline, so a curve you
-    // laid at walking pace can be taken flat out without touching the wheel --
-    // which is the thing that makes a long connected run home worth having.
-    const trackHeading = Math.atan2(state.rail.tangent.y, state.rail.tangent.x);
-    const snap = clamp(state.tuning.railHeadingSnap * deltaSeconds, 0, 1);
-    const correction = angleDifference(trackHeading, state.rover.heading);
-    state.rover.heading = wrapAngle(state.rover.heading + correction * snap);
-    state.rover.turnRate = state.rover.turnRate * 0.7 + (correction * snap / Math.max(deltaSeconds, 0.0001)) * 0.3;
+  // One grip, not two. The old fork was binary: a captured rail carried the
+  // machine outright and ignored the wheel, while anything short of a captured
+  // rail fell to a magnet that in practice almost never fired -- so the road was
+  // a hard lock or nothing, never the medium magnetism the design asks for. Now
+  // a single grip strength scales with how much connected track is under the
+  // machine: a stub nudges, a long run holds firmly, and the player's wheel is
+  // ALWAYS applied on top, so active steering can leave at any grip.
+  const activeSteer = Math.abs(input.steer) > 0.06;
+  const authority = activeSteer ? state.tuning.gripActiveSteerFactor : 1;
+  // The field magnet is the base grip on prepared ground -- the "medium magnetic"
+  // pull. Self-play/tests get this alone (they pass no assistSteer/onRoad), so
+  // their steering model is unchanged. Steering into it keeps full authority;
+  // against it it resists then lets go.
+  const grip = getPreparedGrip(state);
+  const fieldTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * grip.strength * authority;
 
-    const pull = clamp(state.tuning.railCenterSnap * deltaSeconds, 0, 1);
-    state.rover.x += (state.rail.center.x - state.rover.x) * pull;
-    state.rover.y += (state.rail.center.y - state.rover.y) * pull;
-  } else {
-    const magnetTurn = getPreparedMagnetTurn(state, input);
-    // Smoothed, because the projection below reads it and a single jittery frame
-    // should not swing where the drone is allowed to go.
-    state.rover.turnRate = state.rover.turnRate * 0.7 + (playerTurn + magnetTurn) * 0.3;
-    state.rover.heading = wrapAngle(state.rover.heading + (playerTurn + magnetTurn) * deltaSeconds);
+  // On cured road, the carry is a RESCUE SLIDE, not an assist you fight. The
+  // road takes over the wheel: it may turn well past a manual lock (2.6x) so it
+  // holds a curve at speed instead of flinging you off the outside; a light
+  // touch on the wheel is subsumed so a resting finger does not saw against the
+  // line; and only a firm, deliberate steer (past railBreakSteer) eases the
+  // carry and passes your wheel through, to break off at a junction or seam.
+  let gripTurn = fieldTurn;
+  let steerScale = 1;
+  if (input.assistSteer !== undefined) {
+    // Presentation play: the trail carry is the ENTIRE road feel, so the sim's
+    // field magnet is suppressed here. The magnet jittered the machine left/right
+    // on prepared ground -- a noisy heading correction amplified by
+    // railHeadingSnap -- and it is redundant now the cured-road slide provides
+    // the grip. Off the cured road there is no grip (plain, steady driving); on
+    // it, the slide holds you. Self-play/tests pass no assistSteer and keep the
+    // magnet unchanged.
+    if (input.onRoad) {
+      const firmSteer = Math.abs(input.steer) >= state.tuning.railBreakSteer;
+      const carryCap = TURN_RATE * 2.6;
+      gripTurn = clamp(input.assistSteer, -carryCap, carryCap) * (firmSteer ? 0.3 : 1);
+      steerScale = firmSteer ? 1 : 0.25;
+    } else {
+      gripTurn = 0;
+    }
   }
+  const playerAppliedTurn = playerTurn * steerScale;
+  // Smoothed, because the drone projection reads turnRate and one jittery frame
+  // should not swing where the drone is allowed to go.
+  state.rover.turnRate = state.rover.turnRate * 0.7 + (playerAppliedTurn + gripTurn) * 0.3;
+  state.rover.heading = wrapAngle(state.rover.heading + (playerAppliedTurn + gripTurn) * deltaSeconds);
 
   // Rail speed is earned by the road ahead, not by the patch underneath. Ramped
   // over railRunwayForFullSpeed so a short stub hands you back to ordinary
@@ -1113,13 +1181,28 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   const railRunway = state.rail
     ? clamp(state.rail.runwayAhead / state.tuning.railRunwayForFullSpeed, 0, 1)
     : 0;
-  const baseSpeed = state.rail
+  let baseSpeed = state.rail
     ? state.tuning.preparedSpeed + (state.tuning.railSpeed - state.tuning.preparedSpeed) * railRunway
     : state.speedState === 'prepared'
       ? state.tuning.preparedSpeed
       : state.speedState === 'fabricating'
         ? state.tuning.fabricatingSpeed
         : state.tuning.crawlSpeed;
+  // Presentation owns drive speed when it supplies roadRunway (manual/mobile).
+  // The sim's own prepared/rail detection above fires on the road being laid
+  // RIGHT NOW -- your own fresh field under you -- so it sped you up while
+  // laying, which is backwards. roadRunway is 0 while laying (and off road) and
+  // ramps to 1 only once you are on road laid on an earlier pass, so: laying
+  // stays at fabricating speed, and settling onto pre-laid road winds up toward
+  // railSpeed. Self-play/tests supply no roadRunway and keep the sim's own
+  // speed above unchanged.
+  if (input.roadRunway !== undefined) {
+    baseSpeed =
+      state.speedState === 'crawl'
+        ? state.tuning.crawlSpeed
+        : state.tuning.fabricatingSpeed +
+          (state.tuning.railSpeed - state.tuning.fabricatingSpeed) * clamp(input.roadRunway, 0, 1);
+  }
   const throttleFactor = input.brake ? 0.28 : 0.38 + input.throttle * 0.62;
   const speed = baseSpeed * throttleFactor;
   state.rover.speed = speed;
@@ -1233,13 +1316,11 @@ function runMiningSystem(
   if (state.speedState === 'crawl') return;
   if (!fertileZone || state.arms.mining <= 0) return;
 
-  const preparedMultiplier = state.speedState === 'prepared' ? 1.08 : 1;
+  // Flat rate: richness x arms x mineRate x efficiency. No speed or vein-line
+  // coupling any more -- you mine parked, so those inputs were both zero-ish and
+  // the source of the "speed and line are the yield" illegibility.
   const industrialYieldRate =
-    fertileZone.richness *
-    state.arms.mining *
-    state.tuning.mineRate *
-    preparedMultiplier *
-    getFertileZoneMiningFlowMultiplier(state, fertileZone);
+    fertileZone.richness * state.arms.mining * state.tuning.mineRate * STOP_MINE_EFFICIENCY;
   const mined = Math.min(fertileZone.remaining, industrialYieldRate * deltaSeconds);
 
   fertileZone.remaining -= mined;
@@ -1272,10 +1353,11 @@ function runMiningSystem(
 }
 
 function getHelperMiningAssistRate(state: ContinuousWorldState, industrialMined: number, deltaSeconds: number): number {
+  // The utility arm no longer joins the dig -- mining is the seven industrial
+  // arms, stopped. Kept returning 0 so the mining path has no hidden helper
+  // contribution to reason about.
   if (industrialMined <= 0 || deltaSeconds <= 0) return 0;
   if (state.arms.helper.duty !== 'miningAssist') return 0;
-  if (state.speedState !== 'prepared') return 0;
-  if (state.drone.status === 'returning') return 0;
   return (industrialMined / deltaSeconds) * HELPER_ARM_MINE_ASSIST_RATIO;
 }
 
@@ -1600,23 +1682,38 @@ function resolveSpeedState(state: ContinuousWorldState): SpeedState {
   return 'crawl';
 }
 
-function getPreparedMagnetTurn(state: ContinuousWorldState, input: ContinuousInput): number {
-  if (state.speedState !== 'prepared') return 0;
+// The single source of road grip. Returns a heading correction toward the
+// track and a strength in [0,1], and is what collapses the old
+// rail-lock/magnet fork into one continuous feel.
+//
+// The GEOMETRY is shared: getPreparedFieldMagnet already blends "run along the
+// track" with "drift onto its centreline", which is exactly the heading grip
+// should aim at, captured rail or not. The rail only decides how HARD that help
+// pulls -- a stub or fresh patch grips at the floor, a long connected run grips
+// toward full -- so the runway readout and the felt grip are now the same fact.
+function getPreparedGrip(state: ContinuousWorldState): { correction: number; strength: number } {
+  if (state.speedState !== 'prepared' && !state.rail) {
+    return { correction: 0, strength: 0 };
+  }
 
   const magnet = getPreparedFieldMagnet(state);
-  if (!magnet) return 0;
+  if (!magnet) {
+    return { correction: 0, strength: 0 };
+  }
 
-  // The magnet used to switch off completely whenever the player steered the
-  // same way it was already correcting, and drop to a fifth of its strength
-  // when steering against it. Between the two, touching the wheel released the
-  // groove entirely -- so laid road never held the machine, which is what
-  // "the road should have that central magnetism back" is describing.
-  // Steering with it now still gets help; steering against it meets a rail
-  // that resists before it lets go.
-  const activeSteer = Math.abs(input.steer) > 0.06;
+  // Base grip is the loose-prepared feel: how much stuff is near you and how
+  // aligned it is. This is the level the old magnet already provided on any
+  // prepared ground, and the floor keeps even a thin edge gripping a little.
+  const base = Math.max(state.tuning.gripFloor, magnet.strength);
+  if (!state.rail) {
+    return { correction: magnet.correction, strength: base };
+  }
 
-  const turnRate = activeSteer ? state.tuning.preparedMagnetActiveTurnRate : state.tuning.preparedMagnetPassiveTurnRate;
-  return clamp(magnet.correction / state.tuning.preparedMagnetCorrectionRange, -1, 1) * turnRate * magnet.strength;
+  // A captured, connected rail firms UP from that base toward a full lock as the
+  // runway ahead lengthens -- so a stub grips like loose road and a long run
+  // home grips hard, and the runway readout and the felt grip are the same fact.
+  const runwayFraction = clamp(state.rail.runwayAhead / state.tuning.railRunwayForFullSpeed, 0, 1);
+  return { correction: magnet.correction, strength: base + (1 - base) * runwayFraction };
 }
 
 function getPreparedFieldMagnet(state: ContinuousWorldState): { correction: number; strength: number } | undefined {
@@ -1866,6 +1963,16 @@ function getPreparedFieldTangent(fields: FieldPatch[], index: number): Vec2 | un
   };
 }
 
+// The arms do exactly ONE job at a time, and the job is read straight off what
+// the machine is doing -- so the posture tells you the activity at a glance, and
+// you mine only when stopped:
+//   - crawl                : all arms are emergency reclaim legs.
+//   - moving on new ground : all arms lay track (fabricating).
+//   - moving on road       : nothing to lay, all arms stowed (cruising).
+//   - stopped in a seam    : all arms mine.
+//   - stopped elsewhere    : all arms stowed.
+// Switching is instant because it is recomputed every tick from the same
+// condition the movement and field systems use.
 function allocateArms(
   speedState: SpeedState,
   inFertileZone: boolean,
@@ -1873,49 +1980,37 @@ function allocateArms(
   droneStatus: DroneStatus = 'ready'
 ): ArmAllocation {
   if (speedState === 'crawl') {
-    return createArmAllocation(1, 0, 0, 6, 'emergency', 'utility arm is clearing jams and keeping crawl alive');
+    return createArmAllocation(0, 0, 0, INDUSTRIAL_ARMS, 'emergency', 'reclaim legs are dragging the machine along');
   }
 
-  if (!driveIntent) {
-    const helperCanAssist = speedState === 'prepared' && inFertileZone && droneStatus !== 'returning';
-    return createArmAllocation(
-      0,
-      inFertileZone ? INDUSTRIAL_ARMS : 0,
-      inFertileZone ? 0 : INDUSTRIAL_ARMS,
-      0,
-      droneStatus === 'returning' ? 'droneDocking' : helperCanAssist ? 'miningAssist' : inFertileZone ? 'systems' : 'scan',
-      droneStatus === 'returning'
-        ? 'utility arm is braced for drone docking'
-        : helperCanAssist
-          ? 'utility arm has a clean support window'
-          : inFertileZone
-            ? 'utility arm is managing seam systems'
-            : 'utility arm is scanning and stabilizing'
-    );
+  if (driveIntent) {
+    if (speedState === 'fabricating') {
+      return createArmAllocation(INDUSTRIAL_ARMS, 0, 0, 0, 'fabricationSupport', 'every arm is laying track');
+    }
+    // Cruising on prepared road: not laying, not mining -- arms stowed.
+    return createArmAllocation(0, 0, INDUSTRIAL_ARMS, 0, 'scan', 'cruising on road, arms stowed');
   }
 
-  if (speedState === 'prepared') {
+  // Stopped in a seam: the seven industrial arms mine. The utility arm stays
+  // utility (seam systems / drone docking) -- it is not a mining arm.
+  if (inFertileZone) {
     return createArmAllocation(
-      1,
-      inFertileZone ? 5 : 2,
-      inFertileZone ? 1 : 4,
       0,
-      droneStatus === 'returning' ? 'droneDocking' : inFertileZone ? 'miningAssist' : 'scan',
-      droneStatus === 'returning'
-        ? 'utility arm is catching the returning drone'
-        : inFertileZone
-          ? 'utility arm is opportunistically stealing a ridiculous pocket'
-          : 'utility arm is scanning ahead'
+      INDUSTRIAL_ARMS,
+      0,
+      0,
+      droneStatus === 'returning' ? 'droneDocking' : 'systems',
+      droneStatus === 'returning' ? 'utility arm is braced for drone docking' : 'utility arm is managing seam systems'
     );
   }
 
   return createArmAllocation(
-    inFertileZone ? 3 : 4,
-    inFertileZone ? 3 : 1,
-    inFertileZone ? 1 : 2,
     0,
-    'fabricationSupport',
-    'utility arm is managing fabrication support'
+    0,
+    INDUSTRIAL_ARMS,
+    0,
+    droneStatus === 'returning' ? 'droneDocking' : 'scan',
+    droneStatus === 'returning' ? 'utility arm is braced for drone docking' : 'stopped, arms stowed'
   );
 }
 
@@ -2255,30 +2350,6 @@ function isPointInFertileZone(zone: FertileZone, point: Vec2): boolean {
   return distance(point, zone) <= zone.radius;
 }
 
-function getFertileZoneMiningFlowMultiplier(state: ContinuousWorldState, zone: FertileZone): number {
-  if (!zone.vein) return 1;
-  if (state.rover.speed < 1) return STATIONARY_MINING_FLOW_MULTIPLIER;
-
-  const veinDx = zone.vein.to.x - zone.vein.from.x;
-  const veinDy = zone.vein.to.y - zone.vein.from.y;
-  const veinLength = Math.hypot(veinDx, veinDy);
-  if (veinLength <= 0.001) return 1;
-
-  const heading = {
-    x: Math.cos(state.rover.heading),
-    y: Math.sin(state.rover.heading)
-  };
-  const alignment = Math.abs((heading.x * veinDx + heading.y * veinDy) / veinLength);
-  const alignmentMultiplier = 0.18 + alignment * alignment * 1.34;
-  // The cap matters more than it looks. Yield is rate times time in the zone,
-  // and crossing a seam faster shrinks the time; if the rate stops rising at
-  // 1.45 while the machine keeps getting quicker, going faster on road means
-  // mining less. That coupling -- not the self-play fixtures -- is why raising
-  // prepared speed kept costing ore.
-  const speedMultiplier = clamp(state.rover.speed / state.tuning.fabricatingSpeed, 0.35, state.tuning.miningFlowSpeedCap);
-  return alignmentMultiplier * speedMultiplier;
-}
-
 function normalizeInput(input: ContinuousInput): ContinuousInput {
   const throttle = clamp(input.throttle, 0, 1);
   const brake = Boolean(input.brake);
@@ -2291,7 +2362,13 @@ function normalizeInput(input: ContinuousInput): ContinuousInput {
     brake,
     reverseIntent,
     driveIntent,
-    pivotIntent: input.pivotIntent ?? (!driveIntent && Math.abs(steer) > 0.001)
+    pivotIntent: input.pivotIntent ?? (!driveIntent && Math.abs(steer) > 0.001),
+    // Carry the presentation-supplied road signals through. These were being
+    // dropped here, which silently no-op'd both the steering carry (assistSteer)
+    // and the on-road speed-up (roadRunway) -- the reason neither was ever felt.
+    assistSteer: input.assistSteer,
+    roadRunway: input.roadRunway,
+    onRoad: input.onRoad
   };
 }
 

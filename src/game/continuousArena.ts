@@ -538,31 +538,72 @@ export function createArenaStarterFields(
   return fields;
 }
 
+// A real layout shuffle, not a wobble. The authored seams keep their size,
+// richness and remaining ore -- the balance -- but each is re-placed at a fresh
+// seeded position across the field, spread apart, clear of the start and
+// extraction, and its vein re-oriented at a random angle. So every seed is a
+// genuinely different map to read (New Game reshuffles; a shift keeps its seed
+// so carried road still fits). Falls back to the authored position only if
+// sampling cannot find a spot.
 export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: string): FertileZone[] {
-  const random = seededRandom(`${seed}:${arena.id}`);
-  const offset = () => (random() - 0.5) * 7;
-  return arena.fertileZones.map((zone) => {
-    const offsetX = offset();
-    const offsetY = offset();
-    return {
-      ...zone,
-      x: zone.x + offsetX,
-      y: zone.y + offsetY,
-      vein: zone.vein
-        ? {
-            ...zone.vein,
-            from: {
-              x: zone.vein.from.x + offsetX,
-              y: zone.vein.from.y + offsetY
-            },
-            to: {
-              x: zone.vein.to.x + offsetX,
-              y: zone.vein.to.y + offsetY
-            }
-          }
-        : undefined
-    };
+  const random = seededRandom(`${seed}:${arena.id}:layout-v2`);
+  const bounds = { minX: 150, maxX: 900, minY: 200, maxY: 610 };
+  const start = arena.start;
+  const extraction = arena.extraction;
+  const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
+
+  // 1. Sample one spread-out, reachable position per seam. Positions are seam
+  //    slots; which SEAM lands in which slot is decided in step 2.
+  const positions: Vec2[] = [];
+  for (const zone of arena.fertileZones) {
+    let cx = zone.x;
+    let cy = zone.y;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const x = bounds.minX + random() * (bounds.maxX - bounds.minX);
+      const y = bounds.minY + random() * (bounds.maxY - bounds.minY);
+      if (dist(x, y, start.x, start.y) < 180) continue;
+      if (extraction && dist(x, y, extraction.x, extraction.y) < extraction.radius + 110) continue;
+      if (positions.some((p) => dist(x, y, p.x, p.y) < 165)) continue;
+      cx = x;
+      cy = y;
+      break;
+    }
+    positions.push({ x: cx, y: cy });
+  }
+
+  // 2. Assign seams to slots so reach stays rewarded: the richest seam lands at
+  //    the slot FARTHEST from the extraction, the leanest nearest. Without an
+  //    extraction, keep the sampled order. This gives a fresh map every seed
+  //    while preserving the "further out pays more" design property.
+  const slotOrder = positions.map((_, index) => index);
+  const zoneOrder = arena.fertileZones.map((_, index) => index);
+  if (extraction) {
+    slotOrder.sort((a, b) => dist(positions[a].x, positions[a].y, extraction.x, extraction.y) - dist(positions[b].x, positions[b].y, extraction.x, extraction.y));
+    zoneOrder.sort((a, b) => arena.fertileZones[a].richness - arena.fertileZones[b].richness);
+  }
+
+  const result: FertileZone[] = arena.fertileZones.map((zone) => ({ ...zone }));
+  slotOrder.forEach((slotIndex, rank) => {
+    const zone = arena.fertileZones[zoneOrder[rank]];
+    const at = positions[slotIndex];
+    let vein = zone.vein;
+    if (zone.vein) {
+      const length = Math.hypot(zone.vein.to.x - zone.vein.from.x, zone.vein.to.y - zone.vein.from.y);
+      const angle = random() * Math.PI * 2;
+      const hx = (Math.cos(angle) * length) / 2;
+      const hy = (Math.sin(angle) * length) / 2;
+      vein = {
+        from: { x: at.x - hx, y: at.y - hy },
+        to: { x: at.x + hx, y: at.y + hy },
+        width: zone.vein.width
+      };
+    }
+    // Keep the seam's identity/order in the array so the ids/count stay stable;
+    // only its position and vein orientation are shuffled.
+    result[zoneOrder[rank]] = { ...zone, x: at.x, y: at.y, vein };
   });
+
+  return result;
 }
 
 function seededRandom(seed: string): () => number {

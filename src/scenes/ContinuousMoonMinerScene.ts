@@ -56,6 +56,36 @@ const DESKTOP_HUD_HEIGHT = 86;
 const MOBILE_PORTRAIT_HUD_HEIGHT = 132;
 const DESKTOP_CAMERA_CENTER_Y = 505;
 const FIELD_DECK_COLOR = 0x6d8f89;
+// Road-follow feel (the sandbox slide/carry), computed over the driven trail.
+const ROAD_FOLLOW_STEER = 5.5; // rad/s carry toward the road; the sim caps the slide at ~2.6x TURN_RATE
+// |cos| of the angle between heading and the road under you, above which you
+// count as driving ALONG that road (grip, boost, and "re-drive = don't restack"
+// all apply). Below it you are crossing the road, not on it -- so crossings lay
+// a real intersection instead of being suppressed, and the carry lets you cut
+// straight through instead of yanking you onto the crossing road. ~0.6 = 53deg.
+const ROAD_ALIGN_MIN = 0.6;
+const ROAD_FOLLOW_LOOKAHEAD_MULT = 2.4; // pure-pursuit aim distance, * fieldRadius -- long, so it anticipates bends and glides on rather than sawing
+const ROAD_TRAIL_SPACING = 6; // world units between sampled trail points
+// How long after laying a stretch it "cures" into pre-laid road: fast + holds
+// you. Below this age it is the stroke you are laying right now, so it neither
+// speeds you up nor grabs you. Time-based, so it is independent of turn radius.
+const ROAD_CURE_SECONDS = 1.2;
+// Road-speed momentum. Settle onto prepared road and you accelerate toward
+// railSpeed over the ramp; leave it and you drop back over the (shorter) decay.
+// This is the felt "magnetic acceleration" -- reliable, because it keys off the
+// field-coverage detection that actually fires in play, not rail capture.
+const ROAD_BOOST_RAMP_SECONDS = 1.1;
+const ROAD_BOOST_DECAY_SECONDS = 0.45;
+// The slide's ceiling (0..1 of the way from fabricating toward railSpeed).
+// Straights run to the top; bends are eased down from it by the curvature of the
+// road ahead (below), so the carry can always hold the line -- fast where it is
+// safe, slower where it is not, instead of one flat compromise speed.
+const ROAD_SLIDE_MAX = 1.0;
+// Net bend (radians) of the road ahead at which the slide is eased to its floor.
+// ~1.1 rad over the look-ahead walk is a firm curve; gentler bends ease
+// proportionally, straights stay at full speed.
+const ROAD_BEND_SLOW_RAD = 1.1;
+const ROAD_SLIDE_BEND_FLOOR = 0.5; // slowest the bend easing goes (~174, holdable on the tightest laid curve)
 
 function mixColor(from: number, to: number, t: number): number {
   const lerp = (shift: number) => {
@@ -81,6 +111,14 @@ const DRONE_URGENCY_RATIO = 0.32;
 const DELIVERY_READOUT_MS = 1260;
 const TUNING_STORAGE_KEY = 'moon-miner-continuous-tuning-v5';
 const CARRIED_ROAD_STORAGE_KEY = 'moon-miner-carried-road-v1';
+// The seed that shuffles the seam layout. Persisted so an expedition keeps one
+// map across its shifts and reloads (carried road still fits), and New Game
+// stamps a fresh one for a brand-new map. First ever boot generates one.
+const EXPEDITION_SEED_KEY = 'moon-miner-expedition-seed-v1';
+// An expedition is a fixed run of shifts with a scored end, so the driving has
+// a point past "another shift forever". Endless play stays available via New
+// Game / ?shift=0 for playtesting.
+const EXPEDITION_SHIFTS = 3;
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
 const DRONE_RAIL_LAB_STORAGE_KEY = 'moon-miner-drone-rail-lab-v1';
@@ -245,8 +283,8 @@ interface TuningControlDefinition {
 }
 
 const TUNING_CONTROLS: TuningControlDefinition[] = [
-  { key: 'preparedSpeed', label: 'Normal speed', min: 60, max: 150, step: 1 },
-  { key: 'fabricatingSpeed', label: 'Raw speed', min: 45, max: 120, step: 1 },
+  { key: 'preparedSpeed', label: 'Normal speed', min: 40, max: 360, step: 1 },
+  { key: 'fabricatingSpeed', label: 'Raw speed', min: 20, max: 260, step: 1 },
   { key: 'crawlSpeed', label: 'Crawl speed', min: 8, max: 32, step: 1 },
   { key: 'fabricateCostPerSecond', label: 'Fabrication drain', min: 1, max: 4.2, step: 0.1, precision: 1 },
   { key: 'droneSpeed', label: 'Drone speed', min: 260, max: 620, step: 10 },
@@ -296,11 +334,16 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
       { key: 'preparedFieldMinAgeSeconds', label: 'Prepared min age', min: 0.1, max: 4, step: 0.05, precision: 2 },
       { key: 'preparedCoverageThreshold', label: 'Coverage threshold', min: 0.02, max: 0.8, step: 0.01, precision: 2 },
       { key: 'preparedFieldMinValue', label: 'Prepared min value', min: 0, max: 0.5, step: 0.005, precision: 3 },
-      { key: 'preparedMagnetInfluenceMultiplier', label: 'Magnet influence', min: 0, max: 3.5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetPassiveTurnRate', label: 'Passive turn', min: 0, max: 5, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetActiveTurnRate', label: 'Active turn', min: 0, max: 2, step: 0.05, precision: 2 },
-      { key: 'preparedMagnetCorrectionRange', label: 'Correction range', min: 0.1, max: 2, step: 0.05, precision: 2 }
+      { key: 'preparedMagnetInfluenceMultiplier', label: 'Lane reach', min: 0, max: 10, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetCenterPull', label: 'Center pull', min: 0, max: 6, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetPassiveTurnRate', label: 'Carry (hands-off)', min: 0, max: 10, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetActiveTurnRate', label: 'Active turn', min: 0, max: 10, step: 0.05, precision: 2 },
+      { key: 'preparedMagnetCorrectionRange', label: 'Correction range', min: 0.1, max: 6, step: 0.05, precision: 2 },
+      { key: 'gripFloor', label: 'Grip floor', min: 0, max: 1, step: 0.01, precision: 2 },
+      { key: 'gripActiveSteerFactor', label: 'Leave resistance', min: 0, max: 1, step: 0.01, precision: 2 },
+      { key: 'railCaptureDistance', label: 'Rail catch width', min: 10, max: 220, step: 2 },
+      { key: 'railSpeed', label: 'Slide top speed', min: 40, max: 400, step: 5 },
+      { key: 'railRunwayForFullSpeed', label: 'Runway for full slide', min: 20, max: 420, step: 5 }
     ]
   },
   {
@@ -310,8 +353,8 @@ const DRONE_RAIL_NUMERIC_GROUPS: Array<{ label: string; controls: TuningNumericC
       { key: 'maxNanobots', label: 'Max stock', min: 8, max: 64, step: 1 },
       { key: 'crawlRecoveryPerSecond', label: 'Crawl recovery', min: 0, max: 0.5, step: 0.01, precision: 2 },
       { key: 'crawlSpeed', label: 'Crawl speed', min: 4, max: 44, step: 1 },
-      { key: 'fabricatingSpeed', label: 'Raw speed', min: 30, max: 140, step: 1 },
-      { key: 'preparedSpeed', label: 'Prepared speed', min: 40, max: 180, step: 1 },
+      { key: 'fabricatingSpeed', label: 'Raw speed', min: 20, max: 260, step: 1 },
+      { key: 'preparedSpeed', label: 'Prepared speed', min: 40, max: 360, step: 1 },
       { key: 'lowStockWarningRatio', label: 'Low-stock ratio', min: 0.02, max: 0.6, step: 0.01, precision: 2 },
       { key: 'droneUrgencyRatio', label: 'Drone urgency ratio', min: 0.02, max: 0.75, step: 0.01, precision: 2 }
     ]
@@ -689,6 +732,17 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private escapeKey?: Phaser.Input.Keyboard.Key;
   private debugStateElement?: HTMLScriptElement;
   private tuningPanelElement?: HTMLElement;
+  private sessionReadoutElement?: HTMLDivElement;
+  private debugToggleElement?: HTMLButtonElement;
+  // Whether the control panel is reachable this session (?debug=1, or ~ pressed).
+  // Gates the floating on-screen toggle so a plain player never sees it.
+  private debugModeAvailable = false;
+  // The road, drawn from the rover's ACTUAL driven path -- guaranteed ordered
+  // and contiguous, unlike the lattice fields (which no longer carry prevId
+  // links, so chaining them beaded). Sampled in world coords while laying.
+  private roadTrail: Array<{ x: number; y: number; t: number }> = []; // t = elapsedSeconds when laid
+  private roadBoost = 0; // 0..1 road-speed momentum, fed to the sim as roadRunway
+  private roadCurveScale = 1; // 0..1 smoothed slide-speed easing from the road's bend ahead
   private cameraLabElement?: HTMLElement;
   private droneRailLabElement?: HTMLElement;
   private droneRailDiagnosticsElement?: HTMLElement;
@@ -714,11 +768,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.state = createContinuousWorld('apollo-17', this.loadStoredTuning(), this.loadStoredArenaId(), this.loadCarriedRoad(), this.carriedDepletion);
+    this.state = createContinuousWorld(this.loadExpeditionSeed(), this.loadStoredTuning(), this.loadStoredArenaId(), this.loadCarriedRoad(), this.carriedDepletion);
     this.cameraLab = this.loadInitialCameraLab();
     this.droneRailLab = this.loadStoredDroneRailLab();
     this.viewMode = this.cameraLab.viewMode;
     this.debugOverlayVisible = this.shouldOpenDebugOverlay();
+    // Always show the on-screen toggle so the panel is reachable on a phone
+    // (no ~ key) without needing ?debug=1 in the URL. The panel still starts
+    // closed unless ?debug=1 opened it.
+    this.debugModeAvailable = true;
     this.cameraHeading = this.state.rover.heading;
     this.tacticalCameraFocus = this.tacticalCameraTarget();
     this.loopTrace = createContinuousLoopTrace(this.state);
@@ -754,6 +812,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
     this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => this.handlePointerUp(pointer));
     this.input.on('pointerupoutside', (pointer: Phaser.Input.Pointer) => this.handlePointerUp(pointer));
+    // Phaser tracks a single touch by default, so on portrait mobile the thumb
+    // holding the drive pad owned the only pointer and a second finger tapping
+    // Launch produced no event -- you could not launch the drone while driving.
+    // A second pointer lets the Launch button register a simultaneous touch.
+    this.input.addPointer(1);
 
     this.exposeDebugHook();
     this.createTuningPanel();
@@ -777,6 +840,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const deltaSeconds = Math.min(deltaMs / 1000, 0.08);
 
     this.state = tickContinuousWorld(this.state, this.readInput(), deltaSeconds);
+    this.sampleRoadTrail();
+    this.updateRoadBoost(deltaSeconds);
     this.updateCamera(deltaSeconds);
     recordContinuousLoopTick(this.loopTrace, previousState, this.state, deltaSeconds);
     this.captureTransitions(
@@ -809,7 +874,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // reads as start-over rather than continue -- so the day after was there
     // and unreachable. Tap anywhere, or press R.
     if (this.state.phase !== 'playing') {
-      this.resetRun();
+      if (this.expeditionComplete()) this.startNewGame();
+      else this.resetRun();
       return;
     }
 
@@ -867,7 +933,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.R)) {
-      this.resetRun();
+      if (this.state.phase !== 'playing' && this.expeditionComplete()) this.startNewGame();
+      else this.resetRun();
     }
 
     if (this.escapeKey && Phaser.Input.Keyboard.JustDown(this.escapeKey)) {
@@ -876,16 +943,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private handleKeyboardEvent(event: KeyboardEvent): void {
-    if (!import.meta.env.DEV) return;
     if (event.repeat) return;
 
+    // The control panel toggle works in every build, so the deployed playtest
+    // site can open it from a keyboard; the rest of the keys stay dev-only.
     if (event.key === '`' || event.key === '~') {
       event.preventDefault();
+      this.debugModeAvailable = true;
       this.debugOverlayVisible = !this.debugOverlayVisible;
       this.syncDebugOverlayVisibility();
       return;
     }
 
+    if (!import.meta.env.DEV) return;
     if (this.isTypingInForm(event.target)) return;
 
     if (event.key.toLowerCase() === 'v') {
@@ -923,6 +993,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private carriedDepletion: Record<string, number> = {};
   private saveDiagnostic: 'loaded' | 'absent' | 'empty' | 'unreadable' | 'off' = 'off';
   private survivedTheNight = 0;
+  private bankedOre = 0; // ore delivered across completed shifts this expedition
 
   // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
   // caution about a documented deferral, and the result was that the next day
@@ -1011,11 +1082,32 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.shiftNumber = save.shift;
     this.carriedIn = save.fields.length;
     this.carriedDepletion = save.depletion;
+    this.bankedOre = save.banked;
     return save.fields;
   }
 
-  private loadShiftSave(): { shift: number; fields: FieldPatch[]; depletion: Record<string, number> } {
-    if (!this.isShiftModeEnabled()) return { shift: 1, fields: [], depletion: {} };
+  // The layout seed for this expedition. Reused across the expedition's shifts
+  // and reloads (so the carried road still fits the map), regenerated by New
+  // Game. First ever boot mints and stores one.
+  private loadExpeditionSeed(): string {
+    if (!this.isShiftModeEnabled()) return 'apollo-17';
+    try {
+      const existing = window.localStorage.getItem(EXPEDITION_SEED_KEY);
+      if (existing) return existing;
+      const fresh = this.newExpeditionSeed();
+      window.localStorage.setItem(EXPEDITION_SEED_KEY, fresh);
+      return fresh;
+    } catch {
+      return 'apollo-17';
+    }
+  }
+
+  private newExpeditionSeed(): string {
+    return `exp-${Date.now().toString(36)}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
+  }
+
+  private loadShiftSave(): { shift: number; fields: FieldPatch[]; depletion: Record<string, number>; banked: number } {
+    if (!this.isShiftModeEnabled()) return { shift: 1, fields: [], depletion: {}, banked: 0 };
 
     try {
       const raw = window.localStorage.getItem(CARRIED_ROAD_STORAGE_KEY);
@@ -1026,31 +1118,46 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       // next occurrence diagnose itself instead of being argued about.
       this.saveDiagnostic = raw === null ? 'absent' : raw.length < 3 ? 'empty' : 'loaded';
       const parsed = raw
-        ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[]; depletion?: Record<string, number> })
+        ? (JSON.parse(raw) as { shift?: number; fields?: FieldPatch[]; depletion?: Record<string, number>; banked?: number })
         : undefined;
       return {
         shift: typeof parsed?.shift === 'number' ? parsed.shift : 1,
         fields: Array.isArray(parsed?.fields) ? parsed.fields : [],
-        depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {}
+        depletion: parsed?.depletion && typeof parsed.depletion === 'object' ? parsed.depletion : {},
+        banked: typeof parsed?.banked === 'number' ? parsed.banked : 0
       };
     } catch {
       this.saveDiagnostic = 'unreadable';
-      return { shift: 1, fields: [], depletion: {} };
+      return { shift: 1, fields: [], depletion: {}, banked: 0 };
     }
+  }
+
+  // The just-completed shift was the last of the expedition, so the next action
+  // is a fresh expedition rather than another shift. False in endless mode.
+  private expeditionComplete(): boolean {
+    return this.isShiftModeEnabled() && this.shiftNumber >= EXPEDITION_SHIFTS;
   }
 
   private saveCarriedRoad(): void {
     if (!this.isShiftModeEnabled()) return;
 
+    // Bank the ore this shift actually delivered (a lost shift delivers none).
+    // In memory so the end-of-shift and expedition summary can show the total.
+    this.bankedOre += this.state.phase === 'won' ? this.state.rover.ore : 0;
+
     try {
       const carried = carryFieldsOvernight(this.state.fields, this.state.tuning);
       this.survivedTheNight = carried.length;
+      // The last shift carries nothing forward -- the next action is a new
+      // expedition, which wipes the board.
+      if (this.expeditionComplete()) return;
       window.localStorage.setItem(
         CARRIED_ROAD_STORAGE_KEY,
         JSON.stringify({
           shift: this.shiftNumber + 1,
           fields: carried,
-          depletion: carryDepletionOvernight(this.state.fertileZones)
+          depletion: carryDepletionOvernight(this.state.fertileZones),
+          banked: this.bankedOre
         })
       );
     } catch {
@@ -1059,8 +1166,6 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private shouldOpenDebugOverlay(): boolean {
-    if (!import.meta.env.DEV) return false;
-
     try {
       const params = new URLSearchParams(window.location.search);
       return params.get('debug') === '1';
@@ -1182,9 +1287,26 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.stopSelfPlay(true);
     }
 
+    // Road-follow assist: the presentation layer computes a pure-pursuit turn
+    // over the driven trail and hands it to the sim, which applies it (capped
+    // below TURN_RATE, eased against active steer) in place of the field grip.
+    // Self-play returned above without it, so tests keep the getPreparedGrip
+    // path. Only forward driving gets carried -- reverse and on-the-spot pivots
+    // must stay in the driver's hands.
+    const carry = this.roadCarry();
+    const onRoad = this.isOnLaidRoad();
+    // Ease the slide speed by the bend of the road ahead: full toward railSpeed
+    // on straights, down to the floor into curves. Smoothed so speed glides
+    // rather than pulses, and measured ahead so it eases BEFORE the bend.
+    const targetCurveScale = clamp(1 - carry.bend / ROAD_BEND_SLOW_RAD, ROAD_SLIDE_BEND_FLOOR, 1);
+    this.roadCurveScale += (targetCurveScale - this.roadCurveScale) * 0.12;
+    const roadRunway = this.roadBoost * this.roadCurveScale;
+
     if (mobileDriveInput) {
       this.clearPointerTarget();
-      return mobileDriveInput;
+      return mobileDriveInput.driveIntent
+        ? { ...mobileDriveInput, assistSteer: carry.steer, roadRunway, onRoad }
+        : mobileDriveInput;
     }
 
     if (layout.mode === 'mobilePortrait' && !manualHeld) {
@@ -1214,7 +1336,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       brake: false,
       reverseIntent: reversing,
       driveIntent: reversing ? false : driveIntent,
-      pivotIntent: reversing || (!driveIntent && Math.abs(steer) > 0.001)
+      pivotIntent: reversing || (!driveIntent && Math.abs(steer) > 0.001),
+      assistSteer: reversing ? undefined : carry.steer,
+      roadRunway: reversing ? undefined : roadRunway,
+      onRoad: reversing ? false : onRoad
     };
   }
 
@@ -1296,6 +1421,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.mobileDrive = undefined;
     this.selfPlay = undefined;
     this.effects = [];
+    this.roadTrail = [];
+    this.roadBoost = 0;
     this.eventMessage = undefined;
     this.previousDroneStatus = this.state.drone.status;
     this.previousSpeedState = this.state.speedState;
@@ -1304,6 +1431,102 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.syncTuningPanel();
     this.syncCameraLabPanel();
     this.syncDroneRailLabPanel();
+  }
+
+  // A full reset of the beginning state: wipe the carried road out of storage so
+  // the board stops inheriting yesterday's residue, drop back to shift 1, and
+  // regenerate a fresh map. This is the "start a new game / clear the board"
+  // control -- distinct from Reset Day, which restarts the current day keeping
+  // whatever road was inherited.
+  private startNewGame(): void {
+    // Fresh map for the new expedition: mint and persist a new layout seed, and
+    // wipe the carried road so nothing from the old map is inherited.
+    const seed = this.newExpeditionSeed();
+    try {
+      window.localStorage.removeItem(CARRIED_ROAD_STORAGE_KEY);
+      window.localStorage.setItem(EXPEDITION_SEED_KEY, seed);
+    } catch {
+      // Storage can be unavailable; the new game simply starts from bare ground.
+    }
+    this.shiftNumber = 1;
+    this.carriedIn = 0;
+    this.carriedDepletion = {};
+    this.bankedOre = 0;
+    this.saveDiagnostic = 'off';
+    this.state = createContinuousWorld(seed, this.state.tuning, this.state.arenaId, [], {});
+    this.cameraHeading = this.state.rover.heading;
+    this.tacticalCameraFocus = this.tacticalCameraTarget();
+    this.loopTrace = createContinuousLoopTrace(this.state);
+    this.pointerTarget = undefined;
+    this.mobileDrive = undefined;
+    this.selfPlay = undefined;
+    this.effects = [];
+    this.roadTrail = [];
+    this.roadBoost = 0;
+    this.eventMessage = undefined;
+    this.previousDroneStatus = this.state.drone.status;
+    this.previousSpeedState = this.state.speedState;
+    this.previousPhase = this.state.phase;
+    this.previousOre = this.state.rover.ore;
+    this.showEventMessage('New game. Board wiped to bare ground.', 1400, this.time.now, 2);
+    this.syncTuningPanel();
+    this.syncCameraLabPanel();
+    this.syncDroneRailLabPanel();
+  }
+
+  // The recorder that writes to a Claude Artifact database is inert on a plain
+  // static host (no window.claude), so nothing about a run is saved server-side.
+  // This copies the finished run's own trace summary to the clipboard so it can
+  // be pasted somewhere it can actually be read.
+  private copyRunData(button: HTMLButtonElement): void {
+    const summary = getContinuousLoopSummary(this.loopTrace);
+    const payload = {
+      capturedAt: new Date().toISOString(),
+      shift: this.shiftNumber,
+      carriedIn: this.carriedIn,
+      arenaId: this.state.arenaId,
+      phase: this.state.phase,
+      ore: Number(this.state.rover.ore.toFixed(2)),
+      oreRequired: this.state.arena.extraction?.oreRequired ?? this.state.targetOre,
+      elapsedSeconds: Number(this.state.elapsedSeconds.toFixed(2)),
+      solarRemaining: Number(this.state.solarSeconds.toFixed(2)),
+      hitLoop: summary.hitLoop,
+      milestones: summary.milestones.map((milestone) => ({
+        id: milestone.id,
+        hit: milestone.hit,
+        atSeconds: milestone.atSeconds === undefined ? null : Number(milestone.atSeconds.toFixed(2))
+      })),
+      speedSeconds: summary.speedSeconds,
+      lowestNanobots: Number(summary.lowestNanobots.toFixed(2)),
+      tuning: this.state.tuning
+    };
+    const text = JSON.stringify(payload, null, 2);
+    const original = button.textContent ?? 'Copy Run Data';
+
+    if (!navigator.clipboard) {
+      console.info('Moon Miner run data:', text);
+      button.textContent = 'Logged to console';
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1200);
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        button.textContent = 'Copied';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 1200);
+      })
+      .catch(() => {
+        console.info('Moon Miner run data:', text);
+        button.textContent = 'Logged to console';
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 1200);
+      });
   }
 
   private setArena(arenaId: ContinuousArenaId): void {
@@ -1320,6 +1543,8 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.preSelfPlayPointerTarget = undefined;
     this.selfPlay = undefined;
     this.effects = [];
+    this.roadTrail = [];
+    this.roadBoost = 0;
     this.eventMessage = undefined;
     this.previousDroneStatus = this.state.drone.status;
     this.previousSpeedState = this.state.speedState;
@@ -1391,8 +1616,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private createTuningPanel(): void {
-    if (!import.meta.env.DEV) return;
-
+    // Built in every build now: the deployed playtest site needs the control
+    // panel (New Game, tuning, Copy Run Data). It stays hidden until ?debug=1,
+    // the ~ key, or the on-screen toggle opens it, so a plain player never sees
+    // it.
     const existing = document.getElementById('moon-miner-tuning-panel');
     const panel = existing ?? document.createElement('aside');
     panel.id = 'moon-miner-tuning-panel';
@@ -1401,8 +1628,45 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.tuningControls.clear();
 
     const title = document.createElement('h2');
-    title.textContent = 'Dynamics';
+    title.textContent = 'Control Panel';
     panel.appendChild(title);
+
+    // Session controls first, so the beginning-of-game buttons sit at the top of
+    // the panel where they are reachable on a phone without scrolling past every
+    // tuning slider.
+    const sessionReadout = document.createElement('div');
+    sessionReadout.className = 'moon-miner-tuning__diagnostics';
+    this.sessionReadoutElement = sessionReadout;
+    panel.appendChild(sessionReadout);
+
+    const session = document.createElement('div');
+    session.className = 'moon-miner-tuning__actions';
+
+    const newGameButton = document.createElement('button');
+    newGameButton.type = 'button';
+    newGameButton.textContent = 'New Game (wipe board)';
+    newGameButton.addEventListener('click', () => this.startNewGame());
+
+    const resetDayButton = document.createElement('button');
+    resetDayButton.type = 'button';
+    resetDayButton.textContent = 'Reset Day';
+    resetDayButton.addEventListener('click', () => this.resetRun());
+
+    const copyRunButton = document.createElement('button');
+    copyRunButton.type = 'button';
+    copyRunButton.textContent = 'Copy Run Data';
+    copyRunButton.addEventListener('click', () => this.copyRunData(copyRunButton));
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.textContent = 'Close';
+    closeButton.addEventListener('click', () => {
+      this.debugOverlayVisible = false;
+      this.syncDebugOverlayVisibility();
+    });
+
+    session.append(newGameButton, resetDayButton, copyRunButton, closeButton);
+    panel.appendChild(session);
 
     const arenaRow = document.createElement('label');
     arenaRow.className = 'moon-miner-tuning__row moon-miner-tuning__row--select';
@@ -1489,6 +1753,44 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
 
     if (!existing) document.body.appendChild(panel);
     this.tuningPanelElement = panel;
+
+    // A floating toggle so the panel can be tucked away and brought back on a
+    // phone, which has no ~ key. Hidden unless the panel is reachable this
+    // session; parked on the left edge, clear of the top vitals and the bottom
+    // drive/launch controls. Inline styles keep it self-contained.
+    const existingToggle = document.getElementById('moon-miner-debug-toggle') as HTMLButtonElement | null;
+    const toggle = existingToggle ?? document.createElement('button');
+    toggle.id = 'moon-miner-debug-toggle';
+    toggle.type = 'button';
+    Object.assign(toggle.style, {
+      position: 'fixed',
+      left: '8px',
+      top: '50%',
+      transform: 'translateY(-50%)',
+      zIndex: '40',
+      width: '44px',
+      height: '44px',
+      borderRadius: '22px',
+      border: '1px solid rgba(246, 248, 251, 0.35)',
+      background: 'rgba(12, 16, 24, 0.82)',
+      color: '#f6f8fb',
+      fontSize: '20px',
+      lineHeight: '1',
+      cursor: 'pointer',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '0',
+      display: 'none'
+    });
+    if (!existingToggle) {
+      toggle.addEventListener('click', () => {
+        this.debugOverlayVisible = !this.debugOverlayVisible;
+        this.syncDebugOverlayVisibility();
+      });
+      document.body.appendChild(toggle);
+    }
+    this.debugToggleElement = toggle;
+
     this.syncTuningPanel();
     this.syncDebugOverlayVisibility();
   }
@@ -1771,7 +2073,19 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private syncDebugOverlayVisibility(): void {
-    if (!import.meta.env.DEV) return;
+    // The floating toggle is how a phone opens and closes the panel (no ~ key),
+    // so it is driven here in every build. style.display, not the hidden
+    // attribute, because the button carries an inline display that would win
+    // over [hidden].
+    if (this.debugToggleElement) {
+      this.debugToggleElement.style.display = this.debugModeAvailable ? 'flex' : 'none';
+      this.debugToggleElement.textContent = this.debugOverlayVisible ? '✕' : '⚙';
+      this.debugToggleElement.setAttribute(
+        'aria-label',
+        this.debugOverlayVisible ? 'Close control panel' : 'Open control panel'
+      );
+    }
+
     if (!this.tuningPanelElement && !this.cameraLabElement && !this.droneRailLabElement) return;
 
     for (const panel of [this.tuningPanelElement, this.cameraLabElement, this.droneRailLabElement]) {
@@ -1828,6 +2142,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   }
 
   private syncTuningPanel(): void {
+    if (this.sessionReadoutElement) {
+      const carry = this.carriedIn > 0 ? `${this.carriedIn} lengths carried in` : 'bare ground';
+      this.sessionReadoutElement.textContent = `Shift ${this.shiftNumber} · ${carry} · ${this.state.arenaId}`;
+    }
+
     if (this.arenaSelectElement) {
       this.arenaSelectElement.value = this.state.arenaId;
     }
@@ -3464,39 +3783,245 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
   }
 
-  private drawFields(): void {
-    const fields = [...this.state.fields].sort((a, b) => a.id - b.id);
-    const ordinary = fields.filter((field) => !field.reservedByDrone);
-    const reserved = fields.filter((field) => field.reservedByDrone);
+  // How many trail points have cured into pre-laid road. Points are laid in
+  // time order, so the cured ones are the prefix [0, limit); everything from
+  // there to the end is the stroke being laid right now. Independent of turn
+  // radius, unlike the old fixed index skip (which a tight loop could never get
+  // "far enough" behind).
+  private curedTrailLimit(): number {
+    const now = this.state.elapsedSeconds;
+    let limit = this.roadTrail.length;
+    while (limit > 0 && now - this.roadTrail[limit - 1].t < ROAD_CURE_SECONDS) limit -= 1;
+    return limit;
+  }
 
-    // Your road is one thing and it is painted one colour. It used to be split
-    // live into "protected" and "spendable", and that reads as inscrutable
-    // because both of those are measured from the rover: the corridor runs to
-    // extraction from wherever you are, and the forward arc follows your
-    // heading. So a stretch of road flipped between cyan and amber as you drove
-    // past it, changing for reasons tied to your own motion rather than to
-    // anything about the road. Road that repaints itself while you look at it
-    // is not road.
-    //
-    // The distinction still exists and still matters, so it is shown at the
-    // only moment it is a decision: the cluster the drone would actually lift
-    // is highlighted while the launch is available. That is a targeting
-    // reticle, which is allowed to move, rather than a property of the ground,
-    // which is not.
-    const preview = getReclaimPreview(this.state);
-    const targeted = new Set<number>();
-    if (preview) {
-      for (const field of ordinary) {
-        if (Math.hypot(field.x - preview.target.x, field.y - preview.target.y) <= this.state.tuning.dronePickupRadius) {
-          targeted.add(field.id);
-        }
+  // Nearest cured trail point to the rover, scanning only [0, limit). Linear
+  // scan; the trail is capped so this stays cheap.
+  private nearestTrailIndex(limit: number): { index: number; dist: number } {
+    const trail = this.roadTrail;
+    const rover = this.state.rover;
+    let bestDist = Infinity;
+    let index = -1;
+    for (let i = 0; i < limit; i += 1) {
+      const point = trail[i];
+      const d = Math.hypot(point.x - rover.x, point.y - rover.y);
+      if (d < bestDist) {
+        bestDist = d;
+        index = i;
       }
     }
+    return { index, dist: bestDist };
+  }
 
-    this.drawFieldRibbon(ordinary.filter((field) => !targeted.has(field.id)), 0x6cf5dd, false);
-    this.drawFieldRibbon(ordinary.filter((field) => targeted.has(field.id)), 0xd8a24a, false);
-    this.drawFieldRibbon(reserved, 0xffa06c, true);
-    this.drawFieldBirthMarkers(ordinary);
+  // The carry/slide feel AND the on-road speed, from one read of the visible
+  // trail. Returns a follow turn rate (rad/s) toward a look-ahead point along
+  // the road, and `runway` in [0,1] -- how much laid road continues ahead in
+  // the travel direction. Both are 0 when off road. The sim uses steer for the
+  // carry and runway to speed you up. This is the single source of truth the
+  // player can see: on the visible road you are carried and fast; laying fresh
+  // road (the recent tail is excluded) you are neither.
+  private roadCarry(): { steer: number; bend: number } {
+    const off = { steer: 0, bend: 0 };
+    const trail = this.roadTrail;
+    const tuning = this.state.tuning;
+    const limit = this.curedTrailLimit();
+    if (limit < 2) return off;
+    const near = this.nearestTrailIndex(limit);
+    if (near.index < 1 || near.dist >= tuning.fieldRadius) return off;
+    // Only carry along road you are roughly travelling ALONG. Crossing a road
+    // square is an intersection, not a lane to be pulled onto -- pass through it.
+    if (this.roadAlignmentAt(near.index, limit) < ROAD_ALIGN_MIN) return off;
+    const rover = this.state.rover;
+    const a = trail[Math.max(0, near.index - 1)];
+    const b = trail[Math.min(limit - 1, near.index + 1)];
+    let tangent = Math.atan2(b.y - a.y, b.x - a.x);
+    // Which way along the trail is "ahead" for the direction we are travelling.
+    const forward = Math.cos(tangent) * Math.cos(rover.heading) + Math.sin(tangent) * Math.sin(rover.heading) >= 0 ? 1 : -1;
+    if (forward < 0) tangent += Math.PI;
+    const centre = trail[near.index];
+    const lookahead = tuning.fieldRadius * ROAD_FOLLOW_LOOKAHEAD_MULT;
+    const desired = Math.atan2(
+      centre.y + Math.sin(tangent) * lookahead - rover.y,
+      centre.x + Math.cos(tangent) * lookahead - rover.x
+    );
+    const steer = clamp(angleDifference(desired, rover.heading) / 0.25, -1, 1) * ROAD_FOLLOW_STEER;
+    // Walk the road ahead in the travel direction and sum how much it bends
+    // (net signed turn, so per-point jitter cancels). The caller eases the slide
+    // speed by this so straights run fast and bends slow enough for the carry to
+    // hold the line.
+    let covered = 0;
+    let prev = centre;
+    let prevDir = tangent;
+    let netTurn = 0;
+    const maxRun = tuning.fieldRadius * 5;
+    for (let i = near.index + forward; i >= 0 && i < limit; i += forward) {
+      const p = trail[i];
+      const dx = p.x - prev.x;
+      const dy = p.y - prev.y;
+      const step = Math.hypot(dx, dy);
+      if (step > tuning.fieldRadius) break;
+      netTurn += angleDifference(Math.atan2(dy, dx), prevDir);
+      prevDir = Math.atan2(dy, dx);
+      covered += step;
+      prev = p;
+      if (covered >= maxRun) break;
+    }
+    return { steer, bend: Math.abs(netTurn) };
+  }
+
+  // Road-speed momentum, keyed to the VISIBLE road (the driven ribbon), NOT the
+  // field data. The field detection lights up on the road being laid right now,
+  // so it sped the rover up WHILE laying -- backwards. The trail with its fresh
+  // tail excluded is "road that already existed": build momentum while on it,
+  // bleed off when leaving. Fed to the sim as roadRunway (preparedSpeed ->
+  // railSpeed). So laying fresh road stays ordinary; getting onto pre-laid road
+  // winds you up.
+  private updateRoadBoost(deltaSeconds: number): void {
+    const onRoad = this.isOnLaidRoad();
+    const rate = onRoad ? deltaSeconds / ROAD_BOOST_RAMP_SECONDS : -deltaSeconds / ROAD_BOOST_DECAY_SECONDS;
+    this.roadBoost = clamp(this.roadBoost + rate, 0, ROAD_SLIDE_MAX);
+  }
+
+  // Is the rover on road it laid on an EARLIER pass -- the driven ribbon minus
+  // the fresh tail it is laying right now? The single check behind both the
+  // speed-up and the carry, and it matches what the player sees: the road.
+  private isOnLaidRoad(): boolean {
+    const limit = this.curedTrailLimit();
+    if (limit < 2) return false;
+    const near = this.nearestTrailIndex(limit);
+    // On the road only when driving along it, not when crossing it.
+    return (
+      near.index >= 1 &&
+      near.dist < this.state.tuning.fieldRadius &&
+      this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN
+    );
+  }
+
+  // |cos| of the angle between the rover's heading and the road tangent at a
+  // cured trail index. 1 = driving along the road, 0 = crossing it square.
+  private roadAlignmentAt(index: number, limit: number): number {
+    const trail = this.roadTrail;
+    const a = trail[Math.max(0, index - 1)];
+    const b = trail[Math.min(limit - 1, index + 1)];
+    const tx = b.x - a.x;
+    const ty = b.y - a.y;
+    const len = Math.hypot(tx, ty) || 1;
+    const h = this.state.rover.heading;
+    return Math.abs((tx / len) * Math.cos(h) + (ty / len) * Math.sin(h));
+  }
+
+  // Record where the rover actually drives while laying or on road. Crawl
+  // (starved) adds nothing. NON-OVERLAP: if the rover is already on old road,
+  // do not stack a second ribbon -- re-driving your own road is a slide, not
+  // new road. World coords.
+  private sampleRoadTrail(): void {
+    if (this.state.speedState === 'crawl') return;
+    const rover = this.state.rover;
+    const last = this.roadTrail[this.roadTrail.length - 1];
+    if (last && Math.hypot(rover.x - last.x, rover.y - last.y) < ROAD_TRAIL_SPACING) return;
+    // NON-OVERLAP against cured road. Lay nothing if you are re-driving existing
+    // road, in either of two ways:
+    //  - ALONG it: near a cured point and roughly aligned with it (a slide).
+    //  - ON it: physically on top of the ribbon (within half a field radius),
+    //    whatever the angle. This is the junction case -- driving along road A
+    //    through where road B crosses, the NEAREST cured point is B's and it
+    //    reads as "not aligned", which used to lay a second layer of A right on
+    //    the crossing. Being on the ribbon is enough to skip.
+    // A transverse crossing of NEW road still lays right up to the road it meets
+    // (only the ~half-radius on top of the crossing is skipped), so the
+    // intersection exists and is clean rather than doubled.
+    const limit = this.curedTrailLimit();
+    if (limit >= 2) {
+      const near = this.nearestTrailIndex(limit);
+      const radius = this.state.tuning.fieldRadius;
+      const onRibbon = near.index >= 0 && near.dist < radius * 0.5;
+      const alongRoad =
+        near.index >= 0 && near.dist < radius && this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN;
+      if (onRibbon || alongRoad) return;
+    }
+    this.roadTrail.push({ x: rover.x, y: rover.y, t: this.state.elapsedSeconds });
+    if (this.roadTrail.length > 4000) this.roadTrail.shift();
+  }
+
+  private drawFields(): void {
+    // One road, drawn from the rover's actual driven trail -- an ordered,
+    // contiguous path -- projected world->screen and filled as one continuous
+    // band. Earlier attempts failed because they drew from the lattice fields:
+    // by id order they slashed random lines across unrelated patches, and even
+    // in the right order the fields no longer carry prevId links so they beaded
+    // into a string of discs. The rover trail sidesteps all of that.
+    if (this.roadTrail.length < 2) return;
+
+    // Split defensively on any big jump (a reset clears the trail, so this
+    // should not fire -- but never draw a straight slash across a gap).
+    const runs: Vec2[][] = [];
+    let run: Vec2[] = [];
+    const gap = this.state.tuning.fieldRadius * 3;
+    for (const point of this.roadTrail) {
+      const prev = run[run.length - 1];
+      if (prev && Math.hypot(point.x - prev.x, point.y - prev.y) > gap) {
+        if (run.length > 1) runs.push(run);
+        run = [];
+      }
+      run.push(point);
+    }
+    if (run.length > 1) runs.push(run);
+
+    const hw = clamp(this.state.tuning.fieldRadius * this.getCameraZoom() * 0.5, 7, 20);
+    for (const worldRun of runs) {
+      const smooth = this.smoothPolyline(worldRun.map((point) => this.project(point)), 2);
+      // Thick strokes at full alpha, not a filled outline polygon. When the road
+      // loops or turns hard the outline crossed itself, and fillPoints then
+      // flipped filled/empty regions frame to frame -- the "flashing". A stroke
+      // never triangulates, and at full alpha a self-crossing just repaints the
+      // same colour, so the band stays solid through loops and hard corners.
+      this.strokeRoadRibbon(smooth, 0x1b2a29, (hw + 3) * 2, 1);
+      this.strokeRoadRibbon(smooth, mixColor(FIELD_DECK_COLOR, 0x59c7b4, 0.5), hw * 2, 1);
+      this.strokeRoadRibbon(smooth, 0x8fd9c9, 2, 0.55);
+    }
+  }
+
+  // Chaikin corner-cutting in screen space: rounds the lattice zig-zag of the
+  // laid-field centres into a smooth centreline.
+  private smoothPolyline(points: Vec2[], iterations: number): Vec2[] {
+    let pts = points;
+    for (let iter = 0; iter < iterations && pts.length >= 3; iter += 1) {
+      const out: Vec2[] = [pts[0]];
+      for (let i = 0; i < pts.length - 1; i += 1) {
+        const a = pts[i];
+        const b = pts[i + 1];
+        out.push({ x: a.x * 0.75 + b.x * 0.25, y: a.y * 0.75 + b.y * 0.25 });
+        out.push({ x: a.x * 0.25 + b.x * 0.75, y: a.y * 0.25 + b.y * 0.75 });
+      }
+      out.push(pts[pts.length - 1]);
+      pts = out;
+    }
+    return pts;
+  }
+
+  // Stroke a screen-space polyline as a road ribbon. Width is in screen pixels
+  // (points are already projected), so there is no world-units blow-up.
+  private strokeRoadRibbon(points: Vec2[], color: number, width: number, alpha: number): void {
+    if (points.length === 0) return;
+    if (points.length === 1) {
+      this.graphics.fillStyle(color, alpha);
+      this.graphics.fillCircle(points[0].x, points[0].y, width / 2);
+      return;
+    }
+    this.graphics.lineStyle(width, color, alpha);
+    this.graphics.beginPath();
+    this.graphics.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      this.graphics.lineTo(points[i].x, points[i].y);
+    }
+    this.graphics.strokePath();
+    // Round caps so the band does not end (or the rover does not sit on) a hard
+    // flat cut. Cheap: two circles, not one per vertex.
+    if (width > 3) {
+      this.graphics.fillStyle(color, alpha);
+      this.graphics.fillCircle(points[0].x, points[0].y, width / 2);
+      this.graphics.fillCircle(points[points.length - 1].x, points[points.length - 1].y, width / 2);
+    }
   }
 
   // Track is drawn as the tiles it is: one flat-top hex per occupied cell, at
@@ -4139,9 +4664,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
                 : 0xc6b2ff;
         width = this.state.arms.helper.duty === 'miningAssist' ? 5 : 3;
       } else if (role === 'building') {
-        target = this.pointFromHeading(rover, rover.heading + angle * 0.28, this.state.speedState === 'crawl' ? 34 : 64);
+        // Laying track: arms punched out long and pumping, so "driving on new
+        // ground" is unmistakably busy next to a stowed cruise.
+        const reach = this.state.speedState === 'crawl' ? 34 : 72 + Math.sin(this.time.now / 85 + index * 1.3) * 12;
+        target = this.pointFromHeading(rover, rover.heading + angle * 0.28, reach);
         color = 0x68f3ff;
-        width = 4;
+        width = 5;
       } else if (role === 'mining') {
         const miningTarget = fertile
           ? this.closestPointOnFertileZone(fertile, this.pointFromHeading(rover, rover.heading + angle * 0.24, 70))
@@ -4164,7 +4692,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
         color = 0xff765f;
         width = 2.6;
       } else {
-        target = this.pointFromHeading(rover, rover.heading + angle, 40);
+        // Stowed (cruising on road, or parked on bare ground): arms folded tight
+        // to the chassis and dim, so the machine reads as idle -- the wide,
+        // legible contrast with laying track and mining.
+        target = this.pointFromHeading(rover, rover.heading + angle, 15);
+        color = 0x5c6a7d;
+        width = 2;
       }
 
       // Screen-space depth: anything whose tip lands below the chassis centre is
@@ -4462,7 +4995,13 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       layout.vitals[0].x,
       layout.hudHeight + 16,
       this.isShiftModeEnabled()
-        ? `SHIFT ${this.shiftNumber}${this.carriedIn > 0 ? ` · ${this.carriedIn} lengths inherited` : ' · bare ground'}`
+        ? `SHIFT ${this.shiftNumber} OF ${EXPEDITION_SHIFTS} · ${
+            this.bankedOre > 0
+              ? `${this.bankedOre.toFixed(0)} ore banked`
+              : this.carriedIn > 0
+                ? `${this.carriedIn} lengths inherited`
+                : 'bare ground'
+          }`
         : '',
       11,
       '#8fa3ba'
@@ -5099,7 +5638,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       this.eventMessage = undefined;
     }
     const guidance = getContinuousGuidance(this.state);
-    return `${guidance.objective}. ${guidance.nudge}`;
+    // Less prose. The two-sentence objective+nudge taught the controls in the
+    // opening seconds and still speaks on real events (the transient messages
+    // above); but narrating a full how-to line every steady-state frame was the
+    // "too much text". After the intro, the persistent line is just the short
+    // objective -- a reminder, not a paragraph. Phase end keeps its full say.
+    if (this.state.elapsedSeconds < 7 || this.state.phase !== 'playing') {
+      return `${guidance.objective}. ${guidance.nudge}`;
+    }
+    return guidance.objective;
   }
 
   private drawPhaseBanner(): void {
@@ -5113,19 +5660,40 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
 
     const won = this.state.phase === 'won';
+    // The expedition is over once the last shift ends, win or lose. It reads as
+    // a scored finish, not another shift.
+    const finale = this.expeditionComplete();
+    const quota = this.state.arena.extraction?.oreRequired ?? this.state.targetOre ?? 12;
+    const target = quota * EXPEDITION_SHIFTS;
+    const grade =
+      this.bankedOre >= target * 1.25
+        ? 'Outstanding expedition'
+        : this.bankedOre >= target
+          ? 'Expedition target cleared'
+          : this.bankedOre >= target * 0.5
+            ? 'A lean expedition'
+            : 'The expedition came up short';
+    // On the finale, colour by the run's overall result, not this one shift.
+    const good = finale ? this.bankedOre >= target * 0.5 : won;
     const width = Math.min(layout.width - 48, 524);
     const height = layout.mode === 'mobilePortrait' ? 132 : 116;
     const x = (layout.width - width) / 2;
     const y = layout.mode === 'mobilePortrait' ? layout.hudHeight + 150 : 276;
-    this.graphics.fillStyle(won ? 0x12382f : 0x441d26, 0.94);
+    this.graphics.fillStyle(good ? 0x12382f : 0x441d26, 0.94);
     this.graphics.fillRoundedRect(x, y, width, height, 8);
-    this.graphics.lineStyle(2, won ? 0x77f2ca : 0xff8491, 1);
+    this.graphics.lineStyle(2, good ? 0x77f2ca : 0xff8491, 1);
     this.graphics.strokeRoundedRect(x, y, width, height, 8);
     this.drawStaticText(
       'phase-title',
       layout.width / 2,
       y + 36,
-      won && this.state.arena.extraction ? 'EXTRACTION REACHED' : won ? 'EXTRACTION QUOTA MET' : 'RUN FAILED',
+      finale
+        ? 'EXPEDITION COMPLETE'
+        : won && this.state.arena.extraction
+          ? 'EXTRACTION REACHED'
+          : won
+            ? 'EXTRACTION QUOTA MET'
+            : 'RUN FAILED',
       layout.mode === 'mobilePortrait' ? 20 : 25,
       '#ffffff',
       0.5
@@ -5135,9 +5703,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       'phase-shift',
       layout.width / 2,
       y + height + 24,
-      this.isShiftModeEnabled()
-        ? `${this.survivedTheNight} lengths of rail survive the night`
-        : '',
+      finale
+        ? `${this.bankedOre.toFixed(0)} ore banked over ${EXPEDITION_SHIFTS} shifts — ${grade}`
+        : this.isShiftModeEnabled()
+          ? `${this.survivedTheNight} lengths of rail survive the night`
+          : '',
       layout.mode === 'mobilePortrait' ? 13 : 15,
       '#9fb3c8',
       0.5
@@ -5156,7 +5726,11 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       'phase-cta',
       layout.width / 2,
       ctaY + 22,
-      this.isShiftModeEnabled() ? `Tap or press R for shift ${this.shiftNumber + 1}` : 'Tap or press R to run again',
+      finale
+        ? 'Tap or press R for a new expedition'
+        : this.isShiftModeEnabled()
+          ? `Tap or press R for shift ${this.shiftNumber + 1}`
+          : 'Tap or press R to run again',
       layout.mode === 'mobilePortrait' ? 15 : 17,
       '#ecfffa',
       0.5

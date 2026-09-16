@@ -73,13 +73,26 @@ describe('continuous Moon Miner spike rules', () => {
       'east-saddle',
       'south-east-pocket'
     ]);
-    expect(world.fertileZones[0].x).toBeGreaterThan(world.rover.x);
-    expect(world.fertileZones[1].x).toBeGreaterThan(world.fertileZones[0].x + 300);
-    expect(world.fertileZones[1].y).toBeLessThan(world.fertileZones[0].y - 120);
-    expect(world.fertileZones[2].y).toBeGreaterThan(world.fertileZones[0].y + 130);
-    expect(world.fertileZones[4].x).toBeGreaterThan(800);
+    // Layout is shuffled per seed now, so assert the shuffle INVARIANTS rather
+    // than fixed coordinates: every seam is inside the field, clear of the depot
+    // and the extraction, and keeps its vein.
+    const inBounds = (zone: (typeof world.fertileZones)[number]) =>
+      zone.x >= 140 && zone.x <= 910 && zone.y >= 190 && zone.y <= 620;
+    expect(world.fertileZones.every(inBounds)).toBe(true);
+    expect(
+      world.fertileZones.every(
+        (zone) => Math.hypot(zone.x - world.arena.start.x, zone.y - world.arena.start.y) >= 150
+      )
+    ).toBe(true);
+    if (world.arena.extraction) {
+      const extraction = world.arena.extraction;
+      expect(
+        world.fertileZones.every(
+          (zone) => Math.hypot(zone.x - extraction.x, zone.y - extraction.y) >= extraction.radius + 80
+        )
+      ).toBe(true);
+    }
     expect(world.fertileZones.every((zone) => zone.vein)).toBe(true);
-    expect(world.fertileZones[1].vein?.to.x).toBeGreaterThan(world.fertileZones[1].vein?.from.x ?? 0);
     expect(world.arena.beats.length).toBeGreaterThanOrEqual(6);
     expect(world.arena.beats.map((beat) => beat.label)).not.toContain('prepared runway');
     expect(world.arena.ridges.length).toBeLessThanOrEqual(3);
@@ -138,7 +151,8 @@ describe('continuous Moon Miner spike rules', () => {
     // distinct, which the seam assertions below carry.
     expect(readable.fields).toHaveLength(6);
     expect(tight.fields).toEqual([]);
-    expect(readable.fertileZones[1].x).toBeGreaterThan(tight.fertileZones[1].x);
+    // The two variants lay out differently (each arena seeds its own shuffle).
+    expect(readable.fertileZones[1].x).not.toBe(tight.fertileZones[1].x);
     expect(readable.fertileZones[1].vein).not.toEqual(tight.fertileZones[1].vein);
   });
 
@@ -198,13 +212,16 @@ describe('continuous Moon Miner spike rules', () => {
     const seam = world.fertileZones[1];
     expect(seam.vein).toBeDefined();
 
+    // Parked on the vein line the arms mine; parked off the band (out at the
+    // circle radius) they do not -- the seam is a directional band, not a blob.
+    // (Parked, because mining is stop-only now; brake counts as a drive input.)
     world.rover.x = seam.vein?.from.x ?? seam.x;
     world.rover.y = seam.vein?.from.y ?? seam.y;
-    expect(tickContinuousWorld(world, { steer: 0, throttle: 0, brake: true }, 0.1).lastYieldRate).toBeGreaterThan(0);
+    expect(tickContinuousWorld(world, idleInput, 0.1).lastYieldRate).toBeGreaterThan(0);
 
     world.rover.x = seam.x + seam.radius * 0.72;
     world.rover.y = seam.y + seam.radius * 0.72;
-    expect(tickContinuousWorld(world, { steer: 0, throttle: 0, brake: true }, 0.1).lastYieldRate).toBe(0);
+    expect(tickContinuousWorld(world, idleInput, 0.1).lastYieldRate).toBe(0);
   });
 
   it('idles on barren raw terrain without moving, printing field, or mining when there is no drive intent', () => {
@@ -345,8 +362,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.lastYieldRate).toBeGreaterThan(0);
     expect(next.arms.building).toBe(0);
     expect(next.arms.mining).toBe(7);
-    expect(next.arms.helper.duty).toBe('miningAssist');
-    expect(next.arms.helper.miningAssistRate).toBeGreaterThan(0);
+    // Mining is the seven industrial arms; the utility arm stays utility and no
+    // longer joins the dig (stop-to-mine model).
+    expect(next.arms.helper.duty).toBe('systems');
+    expect(next.arms.helper.miningAssistRate).toBe(0);
     expect(next.fertileZones[0].remaining).toBeCloseTo(remaining - (next.rover.ore - start.ore));
     expect(next.message).toBe('Mining arms harvesting while parked on prepared field.');
   });
@@ -430,19 +449,27 @@ describe('continuous Moon Miner spike rules', () => {
     expect(next.arms.helper.lastAssistYield).toBe(0);
   });
 
-  it('rewards fast aligned vein passes more than slow crosswise loitering', () => {
-    const aligned = placeRoverInSecondFertileZone(createContinuousWorld());
-    const crosswise = placeRoverInSecondFertileZone(createContinuousWorld());
-    const vein = aligned.fertileZones[1].vein;
+  it('mines only when stopped, with a flat rate independent of heading and speed', () => {
+    // The old model rewarded fast, vein-aligned passes. Stop-to-mine replaces it:
+    // driving lays track and mines nothing; parked in the seam mines at a flat
+    // rate that does not care which way the machine is pointing.
+    const moving = placeRoverInSecondFertileZone(createContinuousWorld());
+    const parkedAlong = placeRoverInSecondFertileZone(createContinuousWorld());
+    const parkedCross = placeRoverInSecondFertileZone(createContinuousWorld());
+    const vein = moving.fertileZones[1].vein;
     if (!vein) throw new Error('expected authored vein');
+    const along = Math.atan2(vein.to.y - vein.from.y, vein.to.x - vein.from.x);
+    moving.rover.heading = along;
+    parkedAlong.rover.heading = along;
+    parkedCross.rover.heading = along + Math.PI / 2;
 
-    aligned.rover.heading = Math.atan2(vein.to.y - vein.from.y, vein.to.x - vein.from.x);
-    crosswise.rover.heading = aligned.rover.heading + Math.PI / 2;
+    const movingNext = tickContinuousWorld(moving, { steer: 0, throttle: 1 }, 0.1);
+    const alongNext = tickContinuousWorld(parkedAlong, idleInput, 0.1);
+    const crossNext = tickContinuousWorld(parkedCross, idleInput, 0.1);
 
-    const alignedNext = tickContinuousWorld(aligned, { steer: 0, throttle: 1 }, 0.1);
-    const crosswiseNext = tickContinuousWorld(crosswise, { steer: 0, throttle: 0, brake: true }, 0.1);
-
-    expect(alignedNext.lastYieldRate).toBeGreaterThan(crosswiseNext.lastYieldRate * 5);
+    expect(movingNext.lastYieldRate).toBe(0);
+    expect(alongNext.lastYieldRate).toBeGreaterThan(0);
+    expect(crossNext.lastYieldRate).toBeCloseTo(alongNext.lastYieldRate);
   });
 
   it('lets a clean rally pass mostly sweep an average deposit', () => {
@@ -559,7 +586,11 @@ describe('continuous Moon Miner spike rules', () => {
 
     expect(next.phase).toBe('playing');
     expect(next.speedState).toBe('crawl');
-    expect(next.rover.speed).toBeLessThan(30);
+    // Crawl is a limp, not a hard stop and not full speed. The magnitude was
+    // raised (16 -> 34) so crawl stops stranding the player, but it stays well
+    // under fabricating speed (74) so it is still the overextension penalty.
+    expect(next.rover.speed).toBeGreaterThan(0);
+    expect(next.rover.speed).toBeLessThan(40);
     expect(next.nanobots).toBeGreaterThan(0);
   });
 
@@ -875,7 +906,10 @@ describe('continuous Moon Miner spike rules', () => {
     expect(fleeingTicks).toBeGreaterThan(parkedTicks + 3);
   });
 
-  it('mines faster when prepared field frees arm capacity', () => {
+  it('mines at the same flat parked rate whether the seam is prepared or raw', () => {
+    // The old model gave prepared ground a mining bonus (arms freed from
+    // fabricating). Stop-to-mine removes it: parked, all seven arms mine at a
+    // flat rate that does not depend on the ground under the machine.
     const prepared = placeRoverInFirstFertileZone(createContinuousWorld());
     prepared.fields = [
       {
@@ -892,11 +926,13 @@ describe('continuous Moon Miner spike rules', () => {
     raw.fields = [];
     raw.nanobots = 20;
 
-    const preparedNext = tickContinuousWorld(prepared, straightInput, 0.1);
-    const rawNext = tickContinuousWorld(raw, straightInput, 0.1);
+    const preparedNext = tickContinuousWorld(prepared, idleInput, 0.1);
+    const rawNext = tickContinuousWorld(raw, idleInput, 0.1);
 
-    expect(preparedNext.rover.ore).toBeGreaterThan(rawNext.rover.ore);
-    expect(preparedNext.arms.mining).toBeGreaterThan(rawNext.arms.mining);
+    expect(preparedNext.rover.ore).toBeGreaterThan(0);
+    expect(preparedNext.arms.mining).toBe(7);
+    expect(rawNext.arms.mining).toBe(7);
+    expect(preparedNext.rover.ore).toBeCloseTo(rawNext.rover.ore);
   });
 
   it('loses when the solar window closes before quota', () => {
