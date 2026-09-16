@@ -58,7 +58,7 @@ describe('continuous Moon Miner spike rules', () => {
     // rather than fabricating from the first metre.
     expect(world.speedState).toBe('prepared');
     expect(world.message).toBe('Prepared field online. Keep the machine supplied before sunset.');
-    expect(world.nanobots).toBe(6);
+    expect(world.nanobots).toBe(9);
     expect(world.arms.total).toBe(8);
     expect(world.arms.industrialTotal).toBe(7);
     expect(world.arms.utilityTotal).toBe(1);
@@ -118,7 +118,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(DEFAULT_CONTINUOUS_TUNING).toEqual(stable?.tuning);
     expect(classic?.tuning).toEqual(CURRENT_CLASSIC_CONTINUOUS_TUNING);
 
-    expect(stable?.tuning.startingNanobots).toBe(6);
+    expect(stable?.tuning.startingNanobots).toBe(9);
     expect(stable?.tuning.maxNanobots).toBe(24);
     expect(stable?.tuning.reclaimMinFieldAgeSeconds).toBe(4);
     expect(stable?.tuning.reclaimMinDistanceFromRover).toBe(90);

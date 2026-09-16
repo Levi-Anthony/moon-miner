@@ -510,9 +510,13 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   ...CURRENT_CLASSIC_CONTINUOUS_TUNING,
-  startingNanobots: 6,
+  // Eased on playtest: a run that spent most of its life at LOW/crawl felt
+  // frantic by default rather than by choice. More opening buffer, a gentler
+  // fabrication drain, and faster crawl recovery. All three stay panel knobs, so
+  // the tension is dialable back up.
+  startingNanobots: 9,
   maxNanobots: 24,
-  fabricateCostPerSecond: 1,
+  fabricateCostPerSecond: 0.85,
   fieldEmitDistance: 26,
   fieldRadius: 46,
   tileSize: 16,
@@ -583,7 +587,7 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // gets you out in ~7s; the consequence stays (you slowed to a limp and lost
   // that time) without stranding. The drone is still the primary refill, and
   // reaching prepared road still flips you out of crawl instantly.
-  crawlRecoveryPerSecond: 0.3,
+  crawlRecoveryPerSecond: 0.45,
   crawlRecoveryCeiling: 3.6,
   // 16 read as frozen. 34 is an unmistakable limp -- under half fabricating --
   // but it still moves you toward your road, the ore, or home instead of pinning
