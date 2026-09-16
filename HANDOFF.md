@@ -27,8 +27,10 @@ decision trail (with the reasons and the rejected options) lives in
 ### What the game is right now
 Drive a nanobot-laying rover across a lunar field. Lay road on new ground; the
 road **cures** into a fast, holding surface; mine ore seams; launch a reclaim
-drone to refuel; get home to extraction before sunset. A run is a **3-shift
-expedition** with a banked-ore score; road and (some) ore carry between shifts.
+drone to refuel; get home to extraction before sunset. The loop is a nested
+**day / shift / game** campaign with a banked-ore score (see §3a): a day is one
+sunset run, days make a shift, shifts make a game. Road persists within a shift;
+the map regenerates every N shifts. All of it is player-tunable in the panel.
 
 ---
 
@@ -115,17 +117,39 @@ and the machine's posture reads its activity. Mining yield is **flat**
 coupling is gone. The visual delta is wide on purpose (`drawArms`): building
 arms punch out long and pump; stowed arms fold tight and dim.
 
-### The loop frame
-A run is `EXPEDITION_SHIFTS` (3) shifts, then a scored expedition summary
-(`drawPhaseBanner`). Banked ore accumulates across shifts (persisted with the
-carried road). "SHIFT n OF 3 · X ore banked" in the HUD.
+### 3a. The loop frame (day / shift / game — all in `LoopConfig`, panel-tunable)
+`dayNumber` (total days this game, 1-based) is the single source of truth;
+`shiftOfDay`/`dayInShiftOf` derive shift and day-in-shift from it and the config.
+Defaults: **day** = one excursion (one sunset run); **shift = D days** (3);
+**game = S shifts** (4). HUD: `DAY d/D · SHIFT s/S · X ore banked`. The game ends
+after `D×S` days with a scored summary (`drawPhaseBanner`), scored against
+`quota × D×S`.
+
+- **Road** persists day-to-day WITHIN a shift and **resets at each shift
+  boundary** (`saveCarriedRoad` carries only when the next day stays in the same
+  shift).
+- **Map** regenerates **every N shifts** (2) and on New Game, via a derived
+  block seed `${gameSeed}:blk${floor((shift-1)/N)}` (`worldSeedFor`). Road wipes
+  every shift regardless of N. **Bigger level** = `arenaScale` (1.35) widening
+  the seam-scatter bounds, threaded `createContinuousWorld(..., layoutScale)`.
+- **Economy (per-day):** quota `Q` (12) overrides `oreRequired` on a per-state
+  arena clone. **Under quota but back before sunset = soft fail** → banked ore
+  skimmed by `underQuotaFeePct` (0.5). **Missed sunset = hard fail** → lose only
+  this run's haul (prior banked survives), plus a tunable `hardFailRoadResetPct`
+  (0) fraction of carried road. The sim's **`leftExtraction` latch** makes a day
+  end by RETURNING to the depot (guards the t=0 depot; enables under-quota
+  returns as a win flagged `returnedUnderQuota`).
+- `buildWorld()` centralises world construction (block seed + quota override +
+  scale); `create`/`resetRun`/`startNewGame`/`setArena` all route through it.
+- Config persists to `LOOP_CONFIG_STORAGE_KEY`; carried-road save is
+  `CARRIED_ROAD_STORAGE_KEY` **v2** (stores `day`, not the old `shift`).
 
 ### Layout shuffle
 `createArenaFertileZones` (in `continuousArena.ts`) really shuffles the seams
 per seed (position + vein orientation), spread and reachable, richer seams
-assigned farther from extraction (reach stays rewarded). The layout **seed** is
-persisted per expedition (`EXPEDITION_SEED_KEY`): stable across a run's shifts
-and reloads (carried road still fits), fresh on New Game.
+assigned farther from extraction (reach stays rewarded), now scaled by
+`layoutScale`. The base game **seed** is persisted (`EXPEDITION_SEED_KEY`), with
+per-block variation for the regen cadence.
 
 ### Crawl
 Out of nanobots → `crawl` (speed 34 limp, recovers ~0.3/s to a 3.6 ceiling) —
@@ -157,12 +181,18 @@ you out of crawl instantly.
   bends), then **reversed it** on playtest — "Don't slow down on corners.
   Increase grip." Current accepted model: **full-speed corners** (no curvature
   easing; `roadRunway = roadBoost` straight through) held on the road by
-  **stronger grip** (carry cap 3.4× TURN_RATE, follow-steer 7.5, tighter
-  divisor). Rejected the earlier fear that full rail on curves "flings you off" —
-  grip is what holds you, not slowing down.
+  **stronger grip** — and then hardened into the LOCK above (carry cap 5×
+  TURN_RATE, follow-steer 9). Rejected the earlier fear that full rail on curves
+  "flings you off" — grip is what holds you, not slowing down.
 - **Mining:** accepted the "drive somewhere, stop to mine" reality; leaned in
   (arms mine XOR build; flat yield; removed speed/vein coupling). Rejected
-  keeping the utility arm in the dig.
+  keeping the utility arm in the dig. Fixed the "stopped on a seam and not
+  mining" bug: detection band was the bare `vein.width/2` but the seam is DRAWN
+  inflated, so a ring of visible gold didn't mine — band now `vein.width/2 +
+  SEAM_MINE_REACH` (20) to match the drawn ore. Dropped the strobing "mine"
+  rings; the arms in the seam are the cue. NEXT (deferred by Levi): a turbo
+  "railboosted slurp" — zoom the middle 33% of a seam to take it all at once,
+  distinct mode — layered ON TOP of (not replacing) stop-to-mine XOR.
 - **Sandbox:** built a standalone road sandbox, then **rejected it as the
   product** ("I hate the sandbox") — transplanted the good road into the real
   game and deleted the sandbox.
@@ -210,11 +240,16 @@ is documented (here + the Linear ticket), not silently left red.
   re-cut the smoke harness** (`scripts/continuous-smoke.mjs`) to park-and-mine on
   the shuffled layout instead of driving through the vein — it currently times
   out on the stale mine-while-moving cue.
+- **Turbo "railboosted slurp" (deferred, next up):** zooming the middle 33% of a
+  seam collects all its ore at once, in a visibly distinct high-speed mode —
+  layered ON TOP of stop-to-mine XOR (do NOT replace it). The reward for laying a
+  good route then running it. Should be a panel knob (slurp band %, on/off).
 - **Authored / carried-overnight road** is not yet drawn as ribbon or followed —
   only the rover's own driven trail is. Both render and feel derive from that
   one trail, so they stay coherent; extending to authored road is the next step.
-- **Mining legibility polish:** it's now stop-to-mine and flat, but the on-screen
-  read of "you are mining, here's the rate" could be stronger (a visual meter).
+- **Mining legibility polish:** stop-to-mine now engages on the visible gold
+  (band matches the drawn seam). A "you are mining, here's the rate" meter could
+  still be stronger, but the strobing rings are gone and the arms carry it.
 - **Text → visual, deeper pass:** the mode chip ("Sprint / field grip"), the
   rail/track readout, HUD labels → visual cues. Owner to point at the worst
   offenders.
