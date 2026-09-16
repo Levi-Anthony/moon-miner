@@ -73,47 +73,40 @@ const ground = new THREE.Mesh(
 ground.rotation.x = -Math.PI / 2; // lie flat on XZ
 scene.add(ground);
 
-// World (x,y) -> road-canvas pixel. Plane is centred, UVs run 0..1 across it.
-function paintRoadDab(x: number, y: number): void {
-  const half = road.halfWidth();
-  const cx = x * PX;
-  const cy = y * PX;
-  // Dark bed, then teal deck a touch narrower so re-drives read as one lane.
-  rctx.fillStyle = '#1b2a29';
+// Road paint: a CONTINUOUS round-capped stroke into the ground canvas -- not a
+// chain of stamped circles. Round caps/joins bridge consecutive points into a
+// smooth ribbon with no beading; the raster composite means overlaps (loops,
+// re-drives) never flash. One teal pass on the lunar ground; the lane-gap rule
+// keeps separate lanes apart, so the dark ground between them is the channel.
+const ROAD_TEAL = '#4f9f92';
+function strokeRoadSeg(ax: number, ay: number, bx: number, by: number): void {
+  rctx.strokeStyle = ROAD_TEAL;
+  rctx.lineWidth = road.halfWidth() * 2 * PX;
+  rctx.lineCap = 'round';
+  rctx.lineJoin = 'round';
   rctx.beginPath();
-  rctx.arc(cx, cy, (half + 4) * PX, 0, Math.PI * 2);
-  rctx.fill();
-  rctx.fillStyle = '#4f9f92';
-  rctx.beginPath();
-  rctx.arc(cx, cy, half * PX, 0, Math.PI * 2);
-  rctx.fill();
+  rctx.moveTo(ax * PX, ay * PX);
+  rctx.lineTo(bx * PX, by * PX);
+  rctx.stroke();
   roadTexture.needsUpdate = true;
 }
 
-// Paint the segment from the previous trail point to a newly laid one, so fast
-// movement leaves a continuous ribbon (dabs are radius >> spacing, so they
-// overlap into a clean band; a skipped stretch simply gets no paint).
+// Stroke the segment from the previous laid point to a newly laid one. A big
+// jump means a skipped stretch (junction / lane-gap): don't bridge it, just cap
+// a round end at the new point so the ribbon stays clean and separate.
 function paintTrailPoint(added: TrailPoint): void {
   const prev = road.trail[road.trail.length - 2];
-  if (!prev) {
-    paintRoadDab(added.x, added.y);
+  const jump = road.halfWidth() * 3;
+  if (!prev || Math.hypot(added.x - prev.x, added.y - prev.y) > jump) {
+    strokeRoadSeg(added.x, added.y, added.x, added.y); // round dot cap
     return;
   }
-  const dist = Math.hypot(added.x - prev.x, added.y - prev.y);
-  const steps = Math.max(1, Math.ceil(dist / 6));
-  for (let i = 1; i <= steps; i += 1) {
-    const t = i / steps;
-    paintRoadDab(prev.x + (added.x - prev.x) * t, prev.y + (added.y - prev.y) * t);
-  }
+  strokeRoadSeg(prev.x, prev.y, added.x, added.y);
 }
 
-// A slurp leaves a brighter gold scar on the road at the seam it emptied.
-function paintSlurp(ev: SlurpEvent): void {
-  rctx.fillStyle = '#ffe66a';
-  rctx.beginPath();
-  rctx.arc(ev.x * PX, ev.y * PX, road.halfWidth() * 0.8 * PX, 0, Math.PI * 2);
-  rctx.fill();
-  roadTexture.needsUpdate = true;
+// The slurp's visible cue is the 3D gold burst (spawnBurst); no permanent scar.
+function paintSlurp(_ev: SlurpEvent): void {
+  /* intentionally empty -- kept for call-site clarity; the burst is the cue */
 }
 
 // --- Seams + extraction, rebuilt per world (the layout regenerates on regen
@@ -156,11 +149,27 @@ function rebuildWorldMeshes(): void {
   }
 }
 
-// Clear the ground to the lunar base and repaint an inherited road trail.
+// Clear the ground to the lunar base and stroke an inherited road trail as one
+// continuous ribbon, breaking the path across skip-gaps so junctions stay clean.
 function repaintCanvas(trail: TrailPoint[]): void {
   rctx.fillStyle = '#3a4a55';
   rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
-  for (const p of trail) paintRoadDab(p.x, p.y);
+  if (trail.length > 0) {
+    const jump = road.halfWidth() * 3;
+    rctx.strokeStyle = ROAD_TEAL;
+    rctx.lineWidth = road.halfWidth() * 2 * PX;
+    rctx.lineCap = 'round';
+    rctx.lineJoin = 'round';
+    rctx.beginPath();
+    rctx.moveTo(trail[0].x * PX, trail[0].y * PX);
+    for (let i = 1; i < trail.length; i += 1) {
+      const prev = trail[i - 1];
+      const p = trail[i];
+      if (Math.hypot(p.x - prev.x, p.y - prev.y) > jump) rctx.moveTo(p.x * PX, p.y * PX);
+      else rctx.lineTo(p.x * PX, p.y * PX);
+    }
+    rctx.stroke();
+  }
   roadTexture.needsUpdate = true;
 }
 
