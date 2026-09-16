@@ -148,8 +148,13 @@ you out of crawl instantly.
 - **Carry:** rejected "assist you fight" (steer halved the carry; player steer
   always added). Accepted: rescue-slide — on cured road the road takes the
   wheel; only a firm steer leaves.
-- **Speed:** rejected one flat compromise speed and rejected full-rail-on-curves
-  (flung you off). Accepted: curvature-eased slide (fast straights, held bends).
+- **Speed:** first accepted a curvature-eased slide (fast straights, slowed
+  bends), then **reversed it** on playtest — "Don't slow down on corners.
+  Increase grip." Current accepted model: **full-speed corners** (no curvature
+  easing; `roadRunway = roadBoost` straight through) held on the road by
+  **stronger grip** (carry cap 3.4× TURN_RATE, follow-steer 7.5, tighter
+  divisor). Rejected the earlier fear that full rail on curves "flings you off" —
+  grip is what holds you, not slowing down.
 - **Mining:** accepted the "drive somewhere, stop to mine" reality; leaned in
   (arms mine XOR build; flat yield; removed speed/vein coupling). Rejected
   keeping the utility arm in the dig.
@@ -175,6 +180,17 @@ flat rate, no vein/speed/prepared bonus, utility arm stays utility) and pass.
 The two arena-staging tests now assert the shuffle *invariants* (in-bounds,
 clear of start/extraction, richer-is-farther) instead of fixed coordinates.
 
+**The smoke harness (`scripts/continuous-smoke.mjs`) is also DEV-23 debt.** It
+still drives *through* an ore vein and waits for an "active mining ore-vein cue"
+(around line 463) and a subsequent depletion check — the mine-while-moving
+assumption. Under stop-to-mine that cue never fires while moving, so the smoke
+times out ("Timed out waiting for active mining ore-vein cue", hit the 120s
+ceiling). Re-cutting it means teaching the harness to navigate the *shuffled*
+layout, park in a seam, and assert the parked-mining cue + depletion — real
+harness work that belongs with DEV-23's self-play re-cut, not a rushed patch.
+It is red pending that; typecheck, build, and the screenshot verification are
+the gates currently green.
+
 Rule we follow: never skip/disable a test to go green. If a design change
 obsoletes a test, retarget it to the new rule or, when its whole premise is
 removed, rewrite it as a new-model guardrail. Anything needing a larger re-cut
@@ -185,7 +201,10 @@ is documented (here + the Linear ticket), not silently left red.
 ## 6. Open follow-ups (roughly prioritised)
 
 - **DEV-23:** re-cut self-play routes for stop-to-mine + shuffled layout; re-tune
-  the ore economy for the flat mining rate; get the 9 red tests green.
+  the ore economy for the flat mining rate; get the 9 red tests green. **Also
+  re-cut the smoke harness** (`scripts/continuous-smoke.mjs`) to park-and-mine on
+  the shuffled layout instead of driving through the vein — it currently times
+  out on the stale mine-while-moving cue.
 - **Authored / carried-overnight road** is not yet drawn as ribbon or followed —
   only the rover's own driven trail is. Both render and feel derive from that
   one trail, so they stay coherent; extending to authored road is the next step.
