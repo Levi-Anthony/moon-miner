@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import {
   createContinuousWorld,
   tickContinuousWorld,
+  getContinuousGuidance,
   type ContinuousInput,
   type ContinuousWorldState
 } from '../game/continuous';
@@ -248,6 +249,60 @@ function updateCamera(dt: number): void {
   camera.lookAt(camLook);
 }
 
+// --- HUD ----------------------------------------------------------------------
+const el = (id: string) => document.getElementById(id) as HTMLElement;
+const hud = {
+  nano: el('hud-nano'), nanoBar: el('hud-nano-bar'),
+  ore: el('hud-ore'), oreBar: el('hud-ore-bar'),
+  sun: el('hud-sun'), sunBar: el('hud-sun-bar'),
+  day: el('hud-day'), mode: el('hud-mode'), line: el('line'),
+  banner: el('banner'), bannerTitle: el('banner-title'), bannerBody: el('banner-body')
+};
+const MODE_LABEL: Record<string, string> = { fabricating: 'Building', prepared: 'Prepared', crawl: 'Crawl' };
+
+function updateHud(): void {
+  const quota = state.arena.extraction?.oreRequired ?? state.targetOre;
+  hud.nano.textContent = `${state.nanobots.toFixed(1)}/${state.maxNanobots}`;
+  hud.nanoBar.style.width = `${Math.min(100, (state.nanobots / state.maxNanobots) * 100)}%`;
+  hud.nanoBar.style.background = state.nanobots / state.maxNanobots < 0.18 ? '#ff765f' : '#78f7df';
+  hud.ore.textContent = `${state.rover.ore.toFixed(1)}/${quota}`;
+  hud.oreBar.style.width = `${Math.min(100, (state.rover.ore / Math.max(1, quota)) * 100)}%`;
+  hud.sun.textContent = `${Math.ceil(state.solarSeconds)}s`;
+  hud.sunBar.style.width = `${Math.min(100, (state.solarSeconds / Math.max(1, state.solarWindowSeconds)) * 100)}%`;
+  hud.sunBar.style.background = state.solarSeconds / state.solarWindowSeconds < 0.25 ? '#ffb066' : '#8fb2ff';
+  hud.day.textContent = 'DAY 1 · S1'; // real day/shift lands with the loop migration
+  const onRoad = road.isOnLaidRoad(state);
+  hud.mode.textContent = state.speedState === 'crawl'
+    ? 'Crawl'
+    : onRoad && road.boost > 0.5
+      ? 'Rail'
+      : (MODE_LABEL[state.speedState] ?? state.speedState);
+  hud.line.textContent = state.phase === 'playing' ? getContinuousGuidance(state).objective : '';
+}
+
+function showBanner(): void {
+  const won = state.phase === 'won';
+  hud.banner.className = won ? 'win' : 'lose';
+  hud.banner.style.display = 'flex';
+  hud.bannerTitle.textContent = won ? 'EXTRACTION REACHED' : 'RUN OVER';
+  hud.bannerBody.textContent = state.message;
+}
+
+function restart(): void {
+  state = createContinuousWorld('three-slice', {}, 'last-light-return');
+  road.reset();
+  rctx.fillStyle = '#3a4a55';
+  rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
+  roadTexture.needsUpdate = true;
+  for (const disc of seamGroup.children) (disc as THREE.Mesh).visible = true;
+  hud.banner.style.display = 'none';
+}
+function onContinue(): void {
+  if (state.phase !== 'playing') restart();
+}
+window.addEventListener('keydown', (e) => { if (e.key.toLowerCase() === 'r') onContinue(); });
+hud.banner.addEventListener('pointerdown', onContinue);
+
 // --- Loop ---------------------------------------------------------------------
 let last = performance.now();
 
@@ -280,6 +335,9 @@ function frame(now: number): void {
 
   rover.position.set(state.rover.x - W / 2, 0, state.rover.y - H / 2);
   rover.rotation.y = -state.rover.heading + Math.PI / 2; // +Z is the model's nose
+
+  updateHud();
+  if (state.phase !== 'playing') showBanner();
 
   updateCamera(dt);
   renderer.render(scene, camera);
