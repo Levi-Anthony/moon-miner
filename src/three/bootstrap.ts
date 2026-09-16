@@ -10,6 +10,8 @@ import * as THREE from 'three';
 import {
   tickContinuousWorld,
   getContinuousGuidance,
+  launchReclaimDrone,
+  findFertileZoneAt,
   type ContinuousInput,
   type ContinuousWorldState
 } from '../game/continuous';
@@ -64,7 +66,9 @@ roadTexture.colorSpace = THREE.SRGBColorSpace;
 
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(W, H),
-  new THREE.MeshStandardMaterial({ map: roadTexture, roughness: 1, metalness: 0 })
+  // Unlit, so the painted canvas shows its true colours (teal road, gold seams)
+  // instead of being tinted olive by the warm sun. The rover/drone stay lit.
+  new THREE.MeshBasicMaterial({ map: roadTexture })
 );
 ground.rotation.x = -Math.PI / 2; // lie flat on XZ
 scene.add(ground);
@@ -189,6 +193,43 @@ nose.position.set(0, 18, 22); // toward +Z (forward)
 rover.add(nose);
 scene.add(rover);
 
+// --- Reclaim drone (a cyan flyer above the ground while committed) -----------
+const drone = new THREE.Mesh(
+  new THREE.OctahedronGeometry(12),
+  new THREE.MeshStandardMaterial({ color: 0x78f7df, emissive: 0x1c6f5c, roughness: 0.4 })
+);
+drone.visible = false;
+scene.add(drone);
+
+// --- Transient 3D bursts (slurp, mining tick) --------------------------------
+interface Burst { mesh: THREE.Mesh; born: number; ttl: number; grow: number }
+const bursts: Burst[] = [];
+function spawnBurst(x: number, y: number, color: number, r0: number, grow: number, ttl: number): void {
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(r0, r0 + 4, 32),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x - W / 2, 3, y - H / 2);
+  scene.add(ring);
+  bursts.push({ mesh: ring, born: performance.now(), ttl, grow });
+}
+function updateBursts(now: number): void {
+  for (let i = bursts.length - 1; i >= 0; i -= 1) {
+    const b = bursts[i];
+    const p = (now - b.born) / b.ttl;
+    if (p >= 1) {
+      scene.remove(b.mesh);
+      b.mesh.geometry.dispose();
+      (b.mesh.material as THREE.Material).dispose();
+      bursts.splice(i, 1);
+      continue;
+    }
+    b.mesh.scale.setScalar(1 + p * b.grow);
+    (b.mesh.material as THREE.MeshBasicMaterial).opacity = 0.9 * (1 - p);
+  }
+}
+
 // --- Input --------------------------------------------------------------------
 const keys = new Set<string>();
 window.addEventListener('keydown', (e) => {
@@ -310,12 +351,16 @@ function updateHud(): void {
   hud.sunBar.style.background = state.solarSeconds / state.solarWindowSeconds < 0.25 ? '#ffb066' : '#8fb2ff';
   hud.day.textContent = `D${campaign.dayInShiftOf()}/${campaign.config.daysPerShift} · S${campaign.shiftOfDay()}/${campaign.config.shiftsPerGame}`;
   const onRoad = road.isOnLaidRoad(state);
-  hud.mode.textContent = state.speedState === 'crawl'
-    ? 'Crawl'
-    : onRoad && road.boost > 0.5
-      ? 'Rail'
-      : (MODE_LABEL[state.speedState] ?? state.speedState);
-  hud.line.textContent = state.phase === 'playing' ? getContinuousGuidance(state).objective : '';
+  hud.mode.textContent = state.arms.mining > 0
+    ? 'Mining'
+    : state.speedState === 'crawl'
+      ? 'Crawl'
+      : onRoad && road.boost > 0.5
+        ? 'Rail'
+        : (MODE_LABEL[state.speedState] ?? state.speedState);
+  const flashing = flash && performance.now() < flash.until;
+  hud.line.textContent = flashing ? flash!.text : state.phase === 'playing' ? getContinuousGuidance(state).objective : '';
+  launchBtn.disabled = state.phase !== 'playing' || state.drone.status !== 'ready';
 }
 
 const cta = hud.banner.querySelector('.cta') as HTMLElement;
@@ -337,6 +382,18 @@ function onContinue(): void {
 }
 window.addEventListener('keydown', (e) => { if (e.key.toLowerCase() === 'r') onContinue(); });
 hud.banner.addEventListener('pointerdown', onContinue);
+
+// --- Drone launch + transient message flash ----------------------------------
+let flash: { text: string; until: number } | null = null;
+const launchBtn = document.getElementById('launch') as HTMLButtonElement;
+function launch(): void {
+  if (state.phase !== 'playing') return;
+  const res = launchReclaimDrone(state);
+  state = res.state;
+  flash = { text: res.message, until: performance.now() + 2000 };
+}
+launchBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); launch(); });
+window.addEventListener('keydown', (e) => { if (e.key === ' ') { e.preventDefault(); launch(); } });
 
 // --- Loop ---------------------------------------------------------------------
 let last = performance.now();
@@ -360,13 +417,32 @@ function frame(now: number): void {
   if (added) paintTrailPoint(added);
   road.updateBoost(dt, road.isOnLaidRoad(state));
   const slurped = road.slurp(state);
-  if (slurped) paintSlurp(slurped);
-
-  // Update seam visibility as ore is taken.
-  for (const disc of seamGroup.children) {
-    const zone = state.fertileZones.find((z) => z.id === (disc as THREE.Mesh).userData.zoneId);
-    (disc as THREE.Mesh).visible = !!zone && zone.remaining > 0.01;
+  if (slurped) {
+    paintSlurp(slurped);
+    spawnBurst(slurped.x, slurped.y, 0xffe66a, 20, 6, 700); // gold rail-slurp burst
   }
+
+  // Mining: while parked and extracting, pulse the seam under the rover so the
+  // stop-to-mine read is unmistakable (the sim ticks the ore up; this shows it).
+  const miningZone = state.arms.mining > 0 ? findFertileZoneAt(state, state.rover) : undefined;
+  const pulse = 0.5 + Math.sin(now / 140) * 0.5;
+  for (const child of seamGroup.children) {
+    const disc = child as THREE.Mesh;
+    const zone = state.fertileZones.find((z) => z.id === disc.userData.zoneId);
+    disc.visible = !!zone && zone.remaining > 0.01;
+    const mat = disc.material as THREE.MeshBasicMaterial;
+    const isMining = !!miningZone && zone?.id === miningZone.id;
+    mat.opacity = isMining ? 0.55 + pulse * 0.45 : 0.85;
+    disc.scale.setScalar(isMining ? 1 + pulse * 0.12 : 1);
+  }
+
+  // Drone flies above the ground while committed.
+  drone.visible = state.drone.status !== 'ready';
+  if (drone.visible) {
+    drone.position.set(state.drone.x - W / 2, 60, state.drone.y - H / 2);
+    drone.rotation.y += dt * 3;
+  }
+  updateBursts(now);
 
   rover.position.set(state.rover.x - W / 2, 0, state.rover.y - H / 2);
   rover.rotation.y = -state.rover.heading + Math.PI / 2; // +Z is the model's nose
