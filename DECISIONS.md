@@ -1,5 +1,30 @@
 # Decisions
 
+## 2026-09-16: Full-speed corners + more grip; strip the obscuring rover rings
+
+Playtest: don't slow on corners, increase grip, reduce the weird UI circles that
+signalled activity before but now obscure the arms/road.
+
+### Corners & grip
+Removed the curvature speed easing outright — the slide runs to full railSpeed
+on straights AND bends. To hold the line at that speed instead of easing to make
+the turn, raised the grip: sim carry cap 2.6× → 3.4× TURN_RATE,
+`ROAD_FOLLOW_STEER` 5.5 → 7.5, response divisor 0.25 → 0.18. Cleaned out the
+now-dead bend walk in `roadCarry` and the `ROAD_BEND_*`/`roadCurveScale` code.
+Verified headless: hands-off, the carry holds a curve at a full 236. (Earlier we
+ADDED curvature easing to stop the fling; the owner prefers full-speed corners
+and more grip — accepted the trade, reversed the easing.)
+
+### UI declutter
+The road ribbon and the mode-exclusive arms now tell you the activity, so the
+old rover-centred rings were redundant clutter over the machine:
+- Reclaim preview: filled disc + three concentric rings → a small dot + one thin
+  ring (kept the "+NET / haul" text).
+- Rover state aura: dropped the stroked ellipse ring(s); kept a faint tint only.
+- Removed the prepared-coverage ellipse ring around the rover.
+Kept the extraction ring (a goal marker, not activity). The machine and arms
+read clearly now.
+
 ## 2026-09-16: Arms do one job; stop-to-mine; real layout shuffle
 
 Playtest, three asks: widen the visible delta between arm activities; mining is
