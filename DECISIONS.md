@@ -1,5 +1,39 @@
 # Decisions
 
+## 2026-09-16: Art direction (moody atmospheric) + better procedural maps
+
+Levi's picks after parity: art direction = **Moody atmospheric**, level design =
+**Better procedural maps** (camera controls already shipped).
+
+- **Moody atmospheric art pass** (`src/three/bootstrap.ts`). Neon-on-dark with
+  bloom: dark lunar ground, deep fog to a near-black horizon, a starfield, an
+  emissive rover cab, and a cool rim light. Bloom (UnrealBloomPass) eased to
+  strength 0.55 / radius 0.5 / threshold 0.72 so only the neon cores glow —
+  first pass at 0.9/0.55 blew the seams into solid white plates. Seams are now
+  soft **radial-glow ore pools** (a shared additive glow sprite, bright core
+  fading to a transparent rim) instead of flat saturated discs; the mining pulse
+  rides the same material. Reads as atmosphere, not blowout.
+- **Better procedural maps** (`createArenaFertileZones`, `continuousArena.ts`).
+  The uniform-noise scatter became a seeded **layout archetype** — scatter,
+  ridge (seams strung along one vein line, veins aligned to it), clusters (lean
+  near the plant, rich far out), or belt (ringing the extraction) — so each map
+  has a shape you can read a route into. A spring-separation **relaxation pass**
+  then spreads any crowded seams to a legal gap while keeping the archetype's
+  gestalt, then snaps each back inside bounds and clear of start/extraction.
+  Over 400 seeds on last-light-return: full 155-unit spread on ~89% of seeds,
+  worst pair 46 units (never stacked), zero reachability violations. "Further
+  out pays more" preserved (richest seam farthest from the plant). Seam count,
+  ids, richness and remaining ore untouched, so the economy balance and the
+  loop's carried depletion still key off stable seams. New `continuousArena.test.ts`
+  (5 tests) pins these invariants across many seeds.
+- **Not yet a panel knob.** Archetype is chosen by seed, so New Game reshuffles
+  it; forcing a specific archetype would need plumbing a value through
+  `createContinuousWorld`, deferred. (Standing taste pref: turn requests into
+  knobs where possible — this one is the exception, noted.)
+- Test baseline unchanged otherwise: the 9 `continuous.test.ts` + 1
+  `routeAffordance.test.ts` DEV-23 sim-tuning reds pre-date this work and are
+  untouched by it; +5 new arena tests pass.
+
 ## 2026-09-16: 3D road-draw fix + control panel (parity complete)
 
 - **Road draw was still circles.** The 3D road was painted as a chain of filled
