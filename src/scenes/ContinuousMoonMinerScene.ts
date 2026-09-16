@@ -69,6 +69,11 @@ const ROAD_TRAIL_SPACING = 6; // world units between sampled trail points
 // The rover's tread-to-tread width in world units (chassis is ±27). "Road
 // width" is expressed in these car-widths so "at least two cars wide" is literal.
 const CAR_WIDTH = 54;
+// The regular channel kept between two separate road lanes, as a fraction of the
+// road half-width. Two aligned lanes can never be laid closer than a full width
+// plus this, so roads are never directly adjacent -- there is always a small,
+// consistent gap between them.
+const ROAD_LANE_GAP_FACTOR = 0.4;
 // How long after laying a stretch it "cures" into pre-laid road: fast + holds
 // you. Below this age it is the stroke you are laying right now, so it neither
 // speeds you up nor grabs you. Time-based, so it is independent of turn radius.
@@ -3049,12 +3054,15 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     this.graphics.clear();
     this.drawBackdrop();
     this.drawTerrainLayer();
+    // Road sits ON the ground: drawn right above the terrain and BELOW the
+    // seams, beats, ridges, fields, drone and rover, so a wide ribbon no longer
+    // paints over everything ahead of you.
+    this.drawRoadRibbon();
     this.drawArenaNavigationGuides();
     this.drawFertileZones();
     this.drawFirstRunAffordances();
     this.drawBeatMarkers();
     this.drawRidges();
-    this.drawFields();
     this.drawReclaimPreview();
     this.drawDroneReservation();
     this.drawPointerTarget();
@@ -4191,28 +4199,34 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     if (limit >= 2) {
       const near = this.nearestTrailIndex(limit);
       const half = this.roadHalfWidth();
+      // Small regular channel enforced between separate lanes: a new aligned lane
+      // may not come closer than a full road width PLUS this gap, so two roads
+      // are never directly adjacent (edges touching) -- there is always a clean
+      // space between them. Re-driving your own lane (on the ribbon, any angle)
+      // still merges; a crossing (not aligned) still lays through as a junction.
+      const laneGap = half * ROAD_LANE_GAP_FACTOR;
       const onRibbon = near.index >= 0 && near.dist < half * 0.55;
-      const alongRoad =
-        near.index >= 0 && near.dist < half * 2 && this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN;
-      if (onRibbon || alongRoad) return;
+      const tooAdjacent =
+        near.index >= 0 && near.dist < half * 2 + laneGap && this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN;
+      if (onRibbon || tooAdjacent) return;
     }
     this.roadTrail.push({ x: rover.x, y: rover.y, t: this.state.elapsedSeconds });
     if (this.roadTrail.length > 4000) this.roadTrail.shift();
   }
 
-  private drawFields(): void {
+  private drawRoadRibbon(): void {
     // One road, drawn from the rover's actual driven trail -- an ordered,
-    // contiguous path -- projected world->screen and filled as one continuous
-    // band. Earlier attempts failed because they drew from the lattice fields:
-    // by id order they slashed random lines across unrelated patches, and even
-    // in the right order the fields no longer carry prevId links so they beaded
-    // into a string of discs. The rover trail sidesteps all of that.
+    // contiguous path. Filled as a per-segment quad strip whose width TAPERS
+    // with depth (each vertex's half-width is the world road half-width
+    // projected at that vertex), so the band recedes in perspective instead of
+    // being a constant-width slab. Per-quad fills (not one big polygon) never
+    // self-intersect, so no flashing through loops and hard corners.
     if (this.roadTrail.length < 2) return;
 
     // Split defensively on any big jump (a reset clears the trail, so this
     // should not fire -- but never draw a straight slash across a gap).
-    const runs: Vec2[][] = [];
-    let run: Vec2[] = [];
+    const runs: Array<{ x: number; y: number; t: number }[]> = [];
+    let run: { x: number; y: number; t: number }[] = [];
     const gap = this.roadHalfWidth() * 3;
     for (const point of this.roadTrail) {
       const prev = run[run.length - 1];
@@ -4224,66 +4238,54 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
     if (run.length > 1) runs.push(run);
 
-    // Ribbon half-width in SCREEN px, projected from the world road half-width so
-    // the drawn band matches the drivable band exactly (project the rover, and a
-    // point one road-half-width to its side, and measure the screen gap).
-    const rScreen = this.project(this.state.rover);
-    const sideScreen = this.project(this.pointFromHeading(this.state.rover, this.state.rover.heading + Math.PI / 2, this.roadHalfWidth()));
-    const hw = clamp(Math.hypot(sideScreen.x - rScreen.x, sideScreen.y - rScreen.y), 10, 64);
+    const half = this.roadHalfWidth();
     for (const worldRun of runs) {
-      const smooth = this.smoothPolyline(worldRun.map((point) => this.project(point)), 2);
-      // Thick strokes at full alpha, not a filled outline polygon. When the road
-      // loops or turns hard the outline crossed itself, and fillPoints then
-      // flipped filled/empty regions frame to frame -- the "flashing". A stroke
-      // never triangulates, and at full alpha a self-crossing just repaints the
-      // same colour, so the band stays solid through loops and hard corners.
-      this.strokeRoadRibbon(smooth, 0x1b2a29, (hw + 3) * 2, 1);
-      this.strokeRoadRibbon(smooth, mixColor(FIELD_DECK_COLOR, 0x59c7b4, 0.5), hw * 2, 1);
-      this.strokeRoadRibbon(smooth, 0x8fd9c9, 2, 0.55);
+      // Dark bed slightly proud of the surface, then the teal deck a touch
+      // narrower so adjacent lanes always show a dark channel between them.
+      this.fillTaperedRibbon(worldRun, 0x1b2a29, half + 4, 1);
+      this.fillTaperedRibbon(worldRun, mixColor(FIELD_DECK_COLOR, 0x59c7b4, 0.5), half, 0.96);
     }
   }
 
-  // Chaikin corner-cutting in screen space: rounds the lattice zig-zag of the
-  // laid-field centres into a smooth centreline.
-  private smoothPolyline(points: Vec2[], iterations: number): Vec2[] {
-    let pts = points;
-    for (let iter = 0; iter < iterations && pts.length >= 3; iter += 1) {
-      const out: Vec2[] = [pts[0]];
-      for (let i = 0; i < pts.length - 1; i += 1) {
-        const a = pts[i];
-        const b = pts[i + 1];
-        out.push({ x: a.x * 0.75 + b.x * 0.25, y: a.y * 0.75 + b.y * 0.25 });
-        out.push({ x: a.x * 0.25 + b.x * 0.75, y: a.y * 0.25 + b.y * 0.75 });
-      }
-      out.push(pts[pts.length - 1]);
-      pts = out;
+  // Fill a world-space polyline as a ribbon whose half-width (in WORLD units)
+  // is projected per vertex, so it narrows with distance (perspective). Each
+  // segment is one convex quad plus a joint disc, drawn independently.
+  private fillTaperedRibbon(worldPts: { x: number; y: number }[], color: number, worldHalf: number, alpha: number): void {
+    if (worldPts.length < 2) return;
+    // Per-vertex screen centre + screen-space edge offset (perpendicular to the
+    // local road direction, one world-half-width long, projected -- so it shrinks
+    // with depth exactly like the ground does).
+    const centres: Vec2[] = [];
+    const edges: Vec2[] = [];
+    for (let i = 0; i < worldPts.length; i += 1) {
+      const p = worldPts[i];
+      const a = worldPts[Math.max(0, i - 1)];
+      const b = worldPts[Math.min(worldPts.length - 1, i + 1)];
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      dx /= len;
+      dy /= len;
+      const side = { x: p.x + -dy * worldHalf, y: p.y + dx * worldHalf };
+      const cS = this.project(p);
+      const sS = this.project(side);
+      centres.push(cS);
+      edges.push({ x: sS.x - cS.x, y: sS.y - cS.y });
     }
-    return pts;
-  }
-
-  // Stroke a screen-space polyline as a road ribbon. Width is in screen pixels
-  // (points are already projected), so there is no world-units blow-up.
-  private strokeRoadRibbon(points: Vec2[], color: number, width: number, alpha: number): void {
-    if (points.length === 0) return;
-    if (points.length === 1) {
-      this.graphics.fillStyle(color, alpha);
-      this.graphics.fillCircle(points[0].x, points[0].y, width / 2);
-      return;
+    this.graphics.fillStyle(color, alpha);
+    for (let i = 0; i < centres.length - 1; i += 1) {
+      const aL = { x: centres[i].x - edges[i].x, y: centres[i].y - edges[i].y };
+      const aR = { x: centres[i].x + edges[i].x, y: centres[i].y + edges[i].y };
+      const bL = { x: centres[i + 1].x - edges[i + 1].x, y: centres[i + 1].y - edges[i + 1].y };
+      const bR = { x: centres[i + 1].x + edges[i + 1].x, y: centres[i + 1].y + edges[i + 1].y };
+      this.graphics.fillPoints([aL, bL, bR, aR], true, true);
+      // Joint disc smooths the elbow between quads at this vertex's width.
+      const r = Math.hypot(edges[i].x, edges[i].y);
+      if (r > 1) this.graphics.fillCircle(centres[i].x, centres[i].y, r);
     }
-    this.graphics.lineStyle(width, color, alpha);
-    this.graphics.beginPath();
-    this.graphics.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i += 1) {
-      this.graphics.lineTo(points[i].x, points[i].y);
-    }
-    this.graphics.strokePath();
-    // Round caps so the band does not end (or the rover does not sit on) a hard
-    // flat cut. Cheap: two circles, not one per vertex.
-    if (width > 3) {
-      this.graphics.fillStyle(color, alpha);
-      this.graphics.fillCircle(points[0].x, points[0].y, width / 2);
-      this.graphics.fillCircle(points[points.length - 1].x, points[points.length - 1].y, width / 2);
-    }
+    const last = centres.length - 1;
+    const rLast = Math.hypot(edges[last].x, edges[last].y);
+    if (rLast > 1) this.graphics.fillCircle(centres[last].x, centres[last].y, rLast);
   }
 
   // Track is drawn as the tiles it is: one flat-top hex per occupied cell, at

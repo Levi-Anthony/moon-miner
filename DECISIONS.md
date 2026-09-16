@@ -1,5 +1,28 @@
 # Decisions
 
+## 2026-09-16: Road sits on the ground — perspective taper, draws under features, regular lane gap
+
+Playtest ask: "Make the road not obscure everything in front of it, give it
+perspective and disallow directly adjacent road path. Enforce a small regular
+space."
+
+- **Doesn't obscure (draw order).** The ribbon (was `drawFields`, now
+  `drawRoadRibbon`) drew AFTER the seams/beats/ridges/fields, painting over
+  everything ahead. Moved to right above the terrain and BELOW seams, beats,
+  ridges, fields, drone and rover — the road is ground now, features sit on it.
+- **Perspective.** Replaced the constant-width screen stroke with a per-segment
+  quad strip (`fillTaperedRibbon`) whose half-width is the WORLD road half-width
+  projected *per vertex*, so the band narrows with distance like the ground does.
+  Per-quad fills (+ joint discs) never self-intersect, so no flashing. Removed
+  the dead `strokeRoadRibbon`/`smoothPolyline`.
+- **Regular lane gap (revises the earlier "merge within a full width").** A new
+  aligned lane may not be laid closer than a full road width PLUS
+  `ROAD_LANE_GAP_FACTOR` (0.4 × half) — so two roads are never directly adjacent
+  (edges touching); there is always a small, consistent channel between separate
+  lanes. Re-driving your own lane (on the ribbon, any angle) still merges; a
+  crossing (not aligned) still lays through as a junction. The dark bed is drawn
+  a touch proud of the teal deck so the channel reads.
+
 ## 2026-09-16: Turbo "railboost slurp" — zoom a seam's middle third to take it whole
 
 Playtest ask: a new condition *in addition to* stop-to-mine XOR (which is
