@@ -143,6 +143,13 @@ after `D×S` days with a scored summary (`drawPhaseBanner`), scored against
   scale); `create`/`resetRun`/`startNewGame`/`setArena` all route through it.
 - Config persists to `LOOP_CONFIG_STORAGE_KEY`; carried-road save is
   `CARRIED_ROAD_STORAGE_KEY` **v2** (stores `day`, not the old `shift`).
+- `LoopConfig` also now carries the **road width** (`roadWidthCars`, drives
+  `roadHalfWidth()` — the ribbon, drivable band, carry lookahead and parallel-
+  merge all key off it; see the road decision), **text verbosity**
+  (`textVerbosity` Off/Minimal/Full, gates `getEventFeedText`), and the **slurp**
+  knobs (`slurpBandPct`, `slurpMinBoost`). Economy defaults were eased in the
+  STABLE preset (startingNanobots 9, fabricateCostPerSecond 0.85,
+  crawlRecoveryPerSecond 0.45) and remain panel knobs.
 
 ### Layout shuffle
 `createArenaFertileZones` (in `continuousArena.ts`) really shuffles the seams
@@ -240,10 +247,11 @@ is documented (here + the Linear ticket), not silently left red.
   re-cut the smoke harness** (`scripts/continuous-smoke.mjs`) to park-and-mine on
   the shuffled layout instead of driving through the vein — it currently times
   out on the stale mine-while-moving cue.
-- **Turbo "railboosted slurp" (deferred, next up):** zooming the middle 33% of a
-  seam collects all its ore at once, in a visibly distinct high-speed mode —
-  layered ON TOP of stop-to-mine XOR (do NOT replace it). The reward for laying a
-  good route then running it. Should be a panel knob (slurp band %, on/off).
+- **Turbo "railboost slurp" — DONE.** `updateSeamSlurp` (scene): wound up on road
+  (roadBoost ≥ `slurpMinBoost`) through a seam's central `slurpBandPct` (middle
+  third) slurps the whole seam at once, distinct gold burst. Layered on top of
+  stop-to-mine XOR. Both knobs in the panel (band 0 = off). In-context firing is
+  still worth a playtest eyeball.
 - **Authored / carried-overnight road** is not yet drawn as ribbon or followed —
   only the rover's own driven trail is. Both render and feel derive from that
   one trail, so they stay coherent; extending to authored road is the next step.
