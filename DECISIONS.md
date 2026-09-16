@@ -1,5 +1,27 @@
 # Decisions
 
+## 2026-09-16: 3D road-draw fix + control panel (parity complete)
+
+- **Road draw was still circles.** The 3D road was painted as a chain of filled
+  `arc()` dabs — beading + a steppy "hysteresis" look, the exact thing the flip
+  was meant to leave behind. Replaced with a CONTINUOUS round-capped **stroke**
+  into the ground canvas (`strokeRoadSeg`): round caps/joins bridge laid points
+  into a smooth ribbon that paints in immediately behind the rover; the path
+  breaks across skip-gaps so junctions stay clean. Still raster-composited on the
+  ground (overlaps never flash). Dropped the dark bed and the permanent gold
+  slurp scar (the 3D burst is the cue).
+- **Control panel (#4) — the last parity piece.** New `src/three/panel.ts`: a
+  gear toggle (⚙, bottom-left) opening a scrollable overlay of live knobs —
+  Loop & Economy (days/shift, shifts/game, regen N, quota, fee, sunset wipe,
+  level size), Road & Slurp (width, band, min boost), Drive Feel (speeds, mining
+  yield, drain, crawl recovery, start stock, sun window) — plus New Game / Reset
+  Day / Close. Changes apply live; loop+road config and sim-tuning overrides
+  persist (`mm3d-config-v1`), the latter via `Campaign.tuningOverrides` fed into
+  every world build so tweaks survive across days.
+
+Migration to parity is DONE: the 3D build has the driving feel, loop/economy,
+mining/slurp/drone, HUD, and the tuning panel — Phaser fully retired.
+
 ## 2026-09-16: FLIP — the 3D build is the app; Phaser retired
 
 Levi: "Flip and continue." The player-facing parity was there (drive feel, HUD,

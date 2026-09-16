@@ -12,11 +12,38 @@ import {
   getContinuousGuidance,
   launchReclaimDrone,
   findFertileZoneAt,
+  resolveContinuousTuning,
   type ContinuousInput,
+  type ContinuousTuning,
   type ContinuousWorldState
 } from '../game/continuous';
-import { RoadModel, type TrailPoint, type SlurpEvent } from './road';
-import { Campaign } from './loop';
+import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type TrailPoint, type SlurpEvent } from './road';
+import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
+import { createPanel } from './panel';
+
+// --- Persisted panel config (loop + road + sim-tuning overrides) -------------
+const CONFIG_KEY = 'mm3d-config-v1';
+function loadConfig(): { loop: LoopConfig; road: RoadConfig; tuning: Partial<ContinuousTuning> } {
+  try {
+    const raw = window.localStorage.getItem(CONFIG_KEY);
+    const p = raw ? JSON.parse(raw) : {};
+    return {
+      loop: { ...DEFAULT_LOOP_CONFIG, ...(p.loop ?? {}) },
+      road: { ...DEFAULT_ROAD_CONFIG, ...(p.road ?? {}) },
+      tuning: p.tuning ?? {}
+    };
+  } catch {
+    return { loop: { ...DEFAULT_LOOP_CONFIG }, road: { ...DEFAULT_ROAD_CONFIG }, tuning: {} };
+  }
+}
+const savedConfig = loadConfig();
+function saveConfig(): void {
+  try {
+    window.localStorage.setItem(CONFIG_KEY, JSON.stringify({ loop: campaign.config, road: road.config, tuning: campaign.tuningOverrides }));
+  } catch {
+    /* storage may be unavailable */
+  }
+}
 
 // --- World <-> scene mapping -------------------------------------------------
 // Sim world is x in [0,W], y in [0,H] (top-down). We lay it on the XZ ground
@@ -28,10 +55,11 @@ const PX = 1.5; // road-canvas pixels per world unit
 // The road: the driven trail + carry (lock) + rail boost + slurp, ported from
 // the tuned game (engine-agnostic). It decides where the road goes and what to
 // feed back into the sim; the canvas below paints what it lays.
-const road = new RoadModel();
+const road = new RoadModel(savedConfig.road);
 
 // --- Sim + campaign (day / shift / game loop, economy, carried road) ---------
-const campaign = new Campaign();
+const campaign = new Campaign(savedConfig.loop);
+campaign.tuningOverrides = savedConfig.tuning;
 let state!: ContinuousWorldState;
 let runEnded = false; // guards the once-per-run bank/persist
 
@@ -470,8 +498,28 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
 }
 
-// Install the first day's world, then start the loop.
+// Apply a sim-tuning change from the panel: to the live world now, and to the
+// campaign overrides so it persists into future days.
+function applyTuning(patch: Partial<ContinuousTuning>): void {
+  campaign.tuningOverrides = { ...campaign.tuningOverrides, ...patch };
+  state.tuning = resolveContinuousTuning({ ...state.tuning, ...patch });
+  state.maxNanobots = state.tuning.maxNanobots;
+  state.nanobots = Math.min(state.nanobots, state.maxNanobots);
+  state.solarWindowSeconds = state.arena.solarWindowSeconds ?? state.tuning.startingSolarSeconds;
+  state.solarSeconds = Math.min(state.solarSeconds, state.solarWindowSeconds);
+}
+
+// Install the first day's world, mount the control panel, then start the loop.
 applyWorld(campaign.buildWorld());
+createPanel({
+  campaign,
+  road,
+  getState: () => state,
+  applyTuning,
+  rebuildDay: () => applyWorld(campaign.buildWorld()),
+  newGame: () => { campaign.newGame(); applyWorld(campaign.buildWorld()); },
+  save: saveConfig
+});
 requestAnimationFrame(frame);
 
 window.addEventListener('resize', () => {

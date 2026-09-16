@@ -7,6 +7,7 @@ import {
   createContinuousWorld,
   carryFieldsOvernight,
   carryDepletionOvernight,
+  type ContinuousTuning,
   type ContinuousWorldState,
   type FieldPatch
 } from '../game/continuous';
@@ -53,6 +54,9 @@ export class Campaign {
   carriedFields: FieldPatch[] = [];
   carriedDepletion: Record<string, number> = {};
   carriedTrail: TrailPoint[] = [];
+  // Live sim-tuning overrides from the control panel, applied to every world we
+  // build so panel tweaks persist across days.
+  tuningOverrides: Partial<ContinuousTuning> = {};
 
   constructor(config: LoopConfig = DEFAULT_LOOP_CONFIG) {
     this.config = { ...config };
@@ -85,7 +89,7 @@ export class Campaign {
   buildWorld(): { state: ContinuousWorldState; trail: TrailPoint[] } {
     const state = createContinuousWorld(
       this.worldSeedFor(this.dayNumber),
-      {},
+      this.tuningOverrides,
       this.arenaId,
       this.carriedFields,
       this.carriedDepletion,
