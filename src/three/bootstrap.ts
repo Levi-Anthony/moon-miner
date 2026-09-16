@@ -128,6 +128,45 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 
+// --- Touch / pointer drive: drag anywhere = a virtual stick -------------------
+const stickEl = document.getElementById('stick') as HTMLDivElement;
+const knobEl = stickEl.querySelector('.knob') as HTMLDivElement;
+const STICK_RADIUS = 66;
+const touch = { active: false, id: -1, ox: 0, oy: 0, dx: 0, dy: 0 };
+
+function beginTouch(e: PointerEvent): void {
+  touch.active = true;
+  touch.id = e.pointerId;
+  touch.ox = e.clientX;
+  touch.oy = e.clientY;
+  touch.dx = 0;
+  touch.dy = 0;
+  stickEl.style.left = `${e.clientX}px`;
+  stickEl.style.top = `${e.clientY}px`;
+  stickEl.style.display = 'block';
+  knobEl.style.transform = 'translate(0px, 0px)';
+}
+function moveTouch(e: PointerEvent): void {
+  if (!touch.active || e.pointerId !== touch.id) return;
+  touch.dx = e.clientX - touch.ox;
+  touch.dy = e.clientY - touch.oy;
+  const kx = Math.max(-STICK_RADIUS, Math.min(STICK_RADIUS, touch.dx));
+  const ky = Math.max(-STICK_RADIUS, Math.min(STICK_RADIUS, touch.dy));
+  knobEl.style.transform = `translate(${kx}px, ${ky}px)`;
+}
+function endTouch(e: PointerEvent): void {
+  if (e.pointerId !== touch.id) return;
+  touch.active = false;
+  touch.id = -1;
+  touch.dx = 0;
+  touch.dy = 0;
+  stickEl.style.display = 'none';
+}
+renderer.domElement.addEventListener('pointerdown', beginTouch);
+renderer.domElement.addEventListener('pointermove', moveTouch);
+window.addEventListener('pointerup', endTouch);
+window.addEventListener('pointercancel', endTouch);
+
 function readInput(): ContinuousInput {
   const up = keys.has('w') || keys.has('arrowup');
   const down = keys.has('s') || keys.has('arrowdown');
@@ -136,12 +175,29 @@ function readInput(): ContinuousInput {
   let steer = 0;
   if (left) steer -= 1;
   if (right) steer += 1;
+  let throttle = up ? 1 : 0;
+  let reverse = down && !up;
+
+  if (touch.active) {
+    // Same grammar as the keyboard: push up to drive, pull down to reverse,
+    // left/right to steer. A small deadzone so a resting thumb does nothing.
+    const dead = STICK_RADIUS * 0.2;
+    const span = STICK_RADIUS - dead;
+    const sx = Math.max(-1, Math.min(1, touch.dx / STICK_RADIUS));
+    if (Math.abs(touch.dx) > dead) steer = sx;
+    const forward = Math.max(0, (-touch.dy - dead) / span);
+    const back = Math.max(0, (touch.dy - dead) / span);
+    if (forward > 0) throttle = Math.min(1, forward);
+    reverse = back > 0 && forward === 0;
+  }
+
+  const driveIntent = throttle > 0;
   return {
     steer,
-    throttle: up ? 1 : 0,
-    reverseIntent: down && !up,
-    driveIntent: up,
-    pivotIntent: !up && !down && steer !== 0
+    throttle,
+    reverseIntent: reverse && !driveIntent,
+    driveIntent,
+    pivotIntent: !driveIntent && !reverse && steer !== 0
   };
 }
 

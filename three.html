@@ -7,17 +7,24 @@
     <title>Moon Miner (3D)</title>
     <style>
       html, body { margin: 0; height: 100%; background: #05070c; overflow: hidden; }
-      #app3d { position: fixed; inset: 0; }
+      #app3d { position: fixed; inset: 0; touch-action: none; }
       #hint3d {
         position: fixed; left: 12px; top: 10px; z-index: 5;
         font: 13px/1.4 ui-monospace, monospace; color: #9fb3c8;
         text-shadow: 0 1px 2px #000; pointer-events: none;
       }
+      /* On-screen thumb stick: appears where you touch, knob follows the drag. */
+      #stick { position: fixed; z-index: 6; width: 132px; height: 132px; margin: -66px 0 0 -66px;
+        border-radius: 50%; border: 2px solid rgba(143,217,201,0.5); background: rgba(12,16,24,0.35);
+        display: none; pointer-events: none; }
+      #stick .knob { position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px 0 0 -28px;
+        border-radius: 50%; background: rgba(143,217,201,0.85); }
     </style>
   </head>
   <body>
     <div id="app3d"></div>
-    <div id="hint3d">Moon Miner — 3D substrate slice · W/A/S/D to drive</div>
+    <div id="stick"><div class="knob"></div></div>
+    <div id="hint3d">Moon Miner — 3D substrate slice · drag anywhere to drive (or W/A/S/D)</div>
     <script type="module" src="/src/three/bootstrap.ts"></script>
   </body>
 </html>
