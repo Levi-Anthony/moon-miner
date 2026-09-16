@@ -10,11 +10,15 @@ space."
   `drawRoadRibbon`) drew AFTER the seams/beats/ridges/fields, painting over
   everything ahead. Moved to right above the terrain and BELOW seams, beats,
   ridges, fields, drone and rover — the road is ground now, features sit on it.
-- **Perspective.** Replaced the constant-width screen stroke with a per-segment
-  quad strip (`fillTaperedRibbon`) whose half-width is the WORLD road half-width
-  projected *per vertex*, so the band narrows with distance like the ground does.
-  Per-quad fills (+ joint discs) never self-intersect, so no flashing. Removed
-  the dead `strokeRoadRibbon`/`smoothPolyline`.
+- **Perspective.** The band's half-width is the WORLD road half-width projected
+  *per vertex*, so it narrows with distance like the ground does
+  (`strokeTaperedRibbon`). First tried a filled quad strip — that brought back
+  "polygon problems" (bowtie self-intersection on hard turns, winding flips, and
+  translucent-overlap banding at junctions), the exact failure the road work has
+  hit before. Fixed by building the taper from per-segment **strokes + joint
+  discs at full alpha**: strokes and discs never triangulate, so overlaps just
+  repaint the same colour — no flashing, no banding. Removed the dead
+  `strokeRoadRibbon`/`smoothPolyline`.
 - **Regular lane gap (revises the earlier "merge within a full width").** A new
   aligned lane may not be laid closer than a full road width PLUS
   `ROAD_LANE_GAP_FACTOR` (0.4 × half) — so two roads are never directly adjacent

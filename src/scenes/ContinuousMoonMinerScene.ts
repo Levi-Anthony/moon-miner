@@ -4242,21 +4242,23 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     for (const worldRun of runs) {
       // Dark bed slightly proud of the surface, then the teal deck a touch
       // narrower so adjacent lanes always show a dark channel between them.
-      this.fillTaperedRibbon(worldRun, 0x1b2a29, half + 4, 1);
-      this.fillTaperedRibbon(worldRun, mixColor(FIELD_DECK_COLOR, 0x59c7b4, 0.5), half, 0.96);
+      // Both at FULL alpha: overlapping strokes/discs just repaint the same
+      // colour, so loops and junctions never band or flash.
+      this.strokeTaperedRibbon(worldRun, 0x1b2a29, half + 4);
+      this.strokeTaperedRibbon(worldRun, mixColor(FIELD_DECK_COLOR, 0x59c7b4, 0.5), half);
     }
   }
 
-  // Fill a world-space polyline as a ribbon whose half-width (in WORLD units)
-  // is projected per vertex, so it narrows with distance (perspective). Each
-  // segment is one convex quad plus a joint disc, drawn independently.
-  private fillTaperedRibbon(worldPts: { x: number; y: number }[], color: number, worldHalf: number, alpha: number): void {
+  // Draw a world-space polyline as a ribbon whose width TAPERS with depth: each
+  // vertex's screen half-width is the world half-width projected there, so the
+  // band narrows into the distance. Built from per-segment STROKES plus a joint
+  // disc at each vertex, all at full alpha -- strokes and discs never
+  // triangulate, so (unlike a filled quad strip) there are no self-intersection
+  // bowties, no winding flips, and no translucent-overlap banding.
+  private strokeTaperedRibbon(worldPts: { x: number; y: number }[], color: number, worldHalf: number): void {
     if (worldPts.length < 2) return;
-    // Per-vertex screen centre + screen-space edge offset (perpendicular to the
-    // local road direction, one world-half-width long, projected -- so it shrinks
-    // with depth exactly like the ground does).
     const centres: Vec2[] = [];
-    const edges: Vec2[] = [];
+    const halfPx: number[] = [];
     for (let i = 0; i < worldPts.length; i += 1) {
       const p = worldPts[i];
       const a = worldPts[Math.max(0, i - 1)];
@@ -4266,26 +4268,23 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
       const len = Math.hypot(dx, dy) || 1;
       dx /= len;
       dy /= len;
-      const side = { x: p.x + -dy * worldHalf, y: p.y + dx * worldHalf };
       const cS = this.project(p);
-      const sS = this.project(side);
+      const sS = this.project({ x: p.x + -dy * worldHalf, y: p.y + dx * worldHalf });
       centres.push(cS);
-      edges.push({ x: sS.x - cS.x, y: sS.y - cS.y });
+      halfPx.push(Math.max(1, Math.hypot(sS.x - cS.x, sS.y - cS.y)));
     }
-    this.graphics.fillStyle(color, alpha);
     for (let i = 0; i < centres.length - 1; i += 1) {
-      const aL = { x: centres[i].x - edges[i].x, y: centres[i].y - edges[i].y };
-      const aR = { x: centres[i].x + edges[i].x, y: centres[i].y + edges[i].y };
-      const bL = { x: centres[i + 1].x - edges[i + 1].x, y: centres[i + 1].y - edges[i + 1].y };
-      const bR = { x: centres[i + 1].x + edges[i + 1].x, y: centres[i + 1].y + edges[i + 1].y };
-      this.graphics.fillPoints([aL, bL, bR, aR], true, true);
-      // Joint disc smooths the elbow between quads at this vertex's width.
-      const r = Math.hypot(edges[i].x, edges[i].y);
-      if (r > 1) this.graphics.fillCircle(centres[i].x, centres[i].y, r);
+      // Full stroke width = the two endpoints' half-widths summed (~2 * average).
+      this.graphics.lineStyle(halfPx[i] + halfPx[i + 1], color, 1);
+      this.graphics.beginPath();
+      this.graphics.moveTo(centres[i].x, centres[i].y);
+      this.graphics.lineTo(centres[i + 1].x, centres[i + 1].y);
+      this.graphics.strokePath();
     }
-    const last = centres.length - 1;
-    const rLast = Math.hypot(edges[last].x, edges[last].y);
-    if (rLast > 1) this.graphics.fillCircle(centres[last].x, centres[last].y, rLast);
+    this.graphics.fillStyle(color, 1);
+    for (let i = 0; i < centres.length; i += 1) {
+      this.graphics.fillCircle(centres[i].x, centres[i].y, halfPx[i]);
+    }
   }
 
   // Track is drawn as the tiles it is: one flat-top hex per occupied cell, at
