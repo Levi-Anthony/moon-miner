@@ -1,5 +1,47 @@
 # Decisions
 
+## 2026-09-16: Arms do one job; stop-to-mine; real layout shuffle
+
+Playtest, three asks: widen the visible delta between arm activities; mining is
+illegible/inconsistent (accept the "drive somewhere, stop to mine" reality and
+lean in — arms mine XOR build, mine only when stopped); and finally deliver the
+long-requested layout shuffle.
+
+### Arms mode-exclusive + stop-to-mine
+`allocateArms` was a confusing mix (always some build + some mine + scan), and
+mining yield scaled with speed and vein-line alignment ("speed and line are the
+yield") — the illegibility. DECISION: arms do exactly one job, read straight off
+what the machine is doing — moving on new ground = build (all 7), moving on road
+= stowed (cruising), stopped in a seam = mine (all 7), else stowed/emergency.
+Switching is instant (recomputed each tick). Mining yield is now flat
+(`richness × arms × mineRate × STOP_MINE_EFFICIENCY`); the speed/vein-line
+coupling is removed (you mine parked, so both were ~0 and only confused).
+- REJECTED keeping the utility arm in the dig — it stays utility (docking/
+  systems), so the mining path has no hidden helper contribution. Removed the
+  dead `getFertileZoneMiningFlowMultiplier` + `STATIONARY_MINING_FLOW_MULTIPLIER`.
+- Visual (widen the delta): building arms punch out long and pump; stowed arms
+  fold tight and dim — cruising vs laying track is now unmistakable.
+
+### Real layout shuffle (was a ±3.5 wobble)
+`createArenaFertileZones` only jittered seams ±3.5 units, so every game looked
+identical. DECISION: a real seeded shuffle — each authored seam keeps its size/
+richness/remaining (the balance) but is re-placed at a fresh position, spread
+and reachable, vein re-oriented. Reach stays rewarded: richer seams are assigned
+to the slots FARTHER from extraction, so "further out pays more" survives.
+- REJECTED pure-random placement (destroys the richness-distance gradient and
+  the route-affordance design). Accepted gradient-preserving assignment.
+- The layout **seed** is persisted per expedition (`EXPEDITION_SEED_KEY`): stable
+  across a run's shifts and reloads so carried road still fits; New Game stamps a
+  fresh seed for a new map. (Boot was a fixed `'apollo-17'`, so the shuffle was
+  invisible on load; now each expedition is a genuinely different map.)
+
+### Test debt (documented, not hidden)
+The stop-to-mine pivot + shuffle deliberately invalidate the mine-while-moving/
+vein/fixed-layout tests. Focused mining unit tests were retargeted to the new
+model; the arena-staging tests now assert shuffle invariants. The remaining 9
+red are the self-play route/economy + mining-throughput tests that need the
+self-play harness and economy re-cut for stop-to-mine — DEV-23's charter.
+
 ## 2026-09-15: Fix the second-layer overlap at junctions
 
 Playtest (distinguishing questions): the overlap is "a second layer on re-drive"
