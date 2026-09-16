@@ -1,5 +1,31 @@
 # Decisions
 
+## 2026-09-16: Road is ≥2 car-widths and one width drives everything (clean maze, no pinch/overlap)
+
+Playtest ask: "The road needs to be at least two car widths wide and have strong
+and smart proximity and adjacent track interface rules to make a cleanly
+navigable maze without odd proximity overlaps and pinch points."
+
+- **One number, world-space.** `roadHalfWidth()` = `roadWidthCars × CAR_WIDTH / 2`
+  (CAR_WIDTH = 54, the rover's tread span; default `roadWidthCars` = 2.2, a live
+  panel knob). It now drives the **visible ribbon**, the **drivable on-road
+  band**, the **carry lookahead**, and the **parallel-merge distance** — so what
+  you see is exactly what you drive on, and adjacency is judged by the same
+  measure. Previously the ribbon was ~0.85 car-widths of world while the band was
+  ~1.7 (a mismatch), and both narrow.
+- **Ribbon draw** now projects the world half-width to screen (project the rover
+  and a point one half-width to its side, measure the gap) instead of an ad-hoc
+  screen-px clamp, so the band scales correctly and matches the drivable width.
+- **Smart adjacency (the maze rule).** Laying skips (merges) in exactly two
+  cases: (a) physically ON another ribbon (`< 0.55×half`, any angle — also the
+  junction centre, so a crossing isn't doubled); (b) ALONGSIDE an *aligned* track
+  within a **full road width** (`< 2×half`). So two roughly-parallel tracks
+  closer than a width become the one lane instead of an overlapping bulge with a
+  pinch between — while a *crossing* (not aligned) still lays right up to the road
+  it meets, keeping junctions clean crossroads. Verified: a U-turn return merged
+  into the single outbound lane rather than laying a second ribbon.
+- Decoupled from `fieldRadius` (still the field/patch system's own knob).
+
 ## 2026-09-16: Mining fix — the band matches the drawn seam; drop the strobing mine rings
 
 Playtest: "you can be stopped on top of a visual ore seam and not be mining at

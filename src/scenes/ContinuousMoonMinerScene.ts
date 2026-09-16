@@ -66,6 +66,9 @@ const ROAD_FOLLOW_STEER = 9; // rad/s carry toward the road; the sim caps the lo
 const ROAD_ALIGN_MIN = 0.6;
 const ROAD_FOLLOW_LOOKAHEAD_MULT = 2.4; // pure-pursuit aim distance, * fieldRadius -- long, so it anticipates bends and glides on rather than sawing
 const ROAD_TRAIL_SPACING = 6; // world units between sampled trail points
+// The rover's tread-to-tread width in world units (chassis is ±27). "Road
+// width" is expressed in these car-widths so "at least two cars wide" is literal.
+const CAR_WIDTH = 54;
 // How long after laying a stretch it "cures" into pre-laid road: fast + holds
 // you. Below this age it is the stroke you are laying right now, so it neither
 // speeds you up nor grabs you. Time-based, so it is independent of turn radius.
@@ -126,6 +129,7 @@ interface LoopConfig {
   underQuotaFeePct: number; // company processing fee on an under-quota return (0..1)
   hardFailRoadResetPct: number; // fraction of carried road wiped on a sunset (hard) fail (0..1)
   arenaScale: number; // level size multiplier (1 = original)
+  roadWidthCars: number; // road width in rover-widths (>=2 keeps it comfortably drivable)
 }
 const DEFAULT_LOOP_CONFIG: LoopConfig = {
   daysPerShift: 3,
@@ -134,7 +138,8 @@ const DEFAULT_LOOP_CONFIG: LoopConfig = {
   quota: 12,
   underQuotaFeePct: 0.5,
   hardFailRoadResetPct: 0,
-  arenaScale: 1.35
+  arenaScale: 1.35,
+  roadWidthCars: 2.2
 };
 interface LoopConfigControlDefinition {
   key: keyof LoopConfig;
@@ -152,7 +157,8 @@ const LOOP_CONFIG_CONTROLS: LoopConfigControlDefinition[] = [
   { key: 'quota', label: 'Daily quota (Q)', min: 1, max: 40, step: 1, hint: 'Ore to deliver each day. Come back under it and the company charges a processing fee.' },
   { key: 'underQuotaFeePct', label: 'Under-quota fee', min: 0, max: 0.9, step: 0.05, precision: 2, hint: 'Fraction the company skims off an under-quota return (soft fail).' },
   { key: 'hardFailRoadResetPct', label: 'Sunset road wipe', min: 0, max: 1, step: 0.05, precision: 2, hint: 'Fraction of your carried road lost if you miss sunset (hard fail). 0 keeps it all.' },
-  { key: 'arenaScale', label: 'Level size', min: 1, max: 2, step: 0.05, precision: 2, hint: 'How far the seams spread. Bigger = longer routes. Applies on the next regen/new game.' }
+  { key: 'arenaScale', label: 'Level size', min: 1, max: 2, step: 0.05, precision: 2, hint: 'How far the seams spread. Bigger = longer routes. Applies on the next regen/new game.' },
+  { key: 'roadWidthCars', label: 'Road width (cars)', min: 1.5, max: 4, step: 0.1, precision: 1, hint: 'Road width in rover-widths. Drives the visible ribbon, the drivable band, and how close parallel tracks merge into one lane. Applies live.' }
 ];
 const ARENA_STORAGE_KEY = 'moon-miner-continuous-arena-v1';
 const CAMERA_LAB_STORAGE_KEY = 'moon-miner-camera-lab-v1';
@@ -1059,6 +1065,14 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   // Kept as a read-only alias so records/HUD that say "shift" stay meaningful.
   private get shiftNumber(): number {
     return this.shiftOfDay();
+  }
+
+  // Road half-width in WORLD units. One number drives the visible ribbon, the
+  // drivable "on road" band, the carry lookahead, and the parallel-merge
+  // distance -- so what you see is exactly what you drive on, and adjacent
+  // tracks interface by the same measure. Default 2.2 car-widths.
+  private roadHalfWidth(): number {
+    return (this.loopConfig.roadWidthCars * CAR_WIDTH) / 2;
   }
 
   // On by default now, opt out with ?shift=0. It shipped behind ?shift=1 out of
@@ -4030,11 +4044,10 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
   private roadCarry(): { steer: number } {
     const off = { steer: 0 };
     const trail = this.roadTrail;
-    const tuning = this.state.tuning;
     const limit = this.curedTrailLimit();
     if (limit < 2) return off;
     const near = this.nearestTrailIndex(limit);
-    if (near.index < 1 || near.dist >= tuning.fieldRadius) return off;
+    if (near.index < 1 || near.dist >= this.roadHalfWidth()) return off;
     // Only carry along road you are roughly travelling ALONG. Crossing a road
     // square is an intersection, not a lane to be pulled onto -- pass through it.
     if (this.roadAlignmentAt(near.index, limit) < ROAD_ALIGN_MIN) return off;
@@ -4046,7 +4059,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const forward = Math.cos(tangent) * Math.cos(rover.heading) + Math.sin(tangent) * Math.sin(rover.heading) >= 0 ? 1 : -1;
     if (forward < 0) tangent += Math.PI;
     const centre = trail[near.index];
-    const lookahead = tuning.fieldRadius * ROAD_FOLLOW_LOOKAHEAD_MULT;
+    const lookahead = this.roadHalfWidth() * ROAD_FOLLOW_LOOKAHEAD_MULT;
     const desired = Math.atan2(
       centre.y + Math.sin(tangent) * lookahead - rover.y,
       centre.x + Math.cos(tangent) * lookahead - rover.x
@@ -4078,7 +4091,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // On the road only when driving along it, not when crossing it.
     return (
       near.index >= 1 &&
-      near.dist < this.state.tuning.fieldRadius &&
+      near.dist < this.roadHalfWidth() &&
       this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN
     );
   }
@@ -4105,24 +4118,26 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     const rover = this.state.rover;
     const last = this.roadTrail[this.roadTrail.length - 1];
     if (last && Math.hypot(rover.x - last.x, rover.y - last.y) < ROAD_TRAIL_SPACING) return;
-    // NON-OVERLAP against cured road. Lay nothing if you are re-driving existing
-    // road, in either of two ways:
-    //  - ALONG it: near a cured point and roughly aligned with it (a slide).
-    //  - ON it: physically on top of the ribbon (within half a field radius),
-    //    whatever the angle. This is the junction case -- driving along road A
-    //    through where road B crosses, the NEAREST cured point is B's and it
-    //    reads as "not aligned", which used to lay a second layer of A right on
-    //    the crossing. Being on the ribbon is enough to skip.
-    // A transverse crossing of NEW road still lays right up to the road it meets
-    // (only the ~half-radius on top of the crossing is skipped), so the
-    // intersection exists and is clean rather than doubled.
+    // SMART ADJACENCY. The road is one width wide; parallel tracks that would
+    // land within a width of each other are the SAME lane, so laying a second
+    // one just makes an overlapping bulge with a pinch between. So we skip
+    // (merge) in two cases, and only those, to keep a clean navigable maze:
+    //  - ON another ribbon (near.dist < ~half a road-width), any angle. This is
+    //    also the junction centre -- driving road A through where road B crosses,
+    //    the nearest point is B's and reads as "not aligned"; being on the ribbon
+    //    is enough to skip so A is not doubled right on the crossing.
+    //  - ALONGSIDE an aligned track within a FULL road width. Two roughly
+    //    parallel tracks closer than a full width merge into the one lane instead
+    //    of laying a second overlapping ribbon (the "odd proximity overlap").
+    // A transverse crossing still lays right up to the road it meets (a crossing
+    // is not "aligned"), so junctions stay clean crossroads, not doubled blobs.
     const limit = this.curedTrailLimit();
     if (limit >= 2) {
       const near = this.nearestTrailIndex(limit);
-      const radius = this.state.tuning.fieldRadius;
-      const onRibbon = near.index >= 0 && near.dist < radius * 0.5;
+      const half = this.roadHalfWidth();
+      const onRibbon = near.index >= 0 && near.dist < half * 0.55;
       const alongRoad =
-        near.index >= 0 && near.dist < radius && this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN;
+        near.index >= 0 && near.dist < half * 2 && this.roadAlignmentAt(near.index, limit) >= ROAD_ALIGN_MIN;
       if (onRibbon || alongRoad) return;
     }
     this.roadTrail.push({ x: rover.x, y: rover.y, t: this.state.elapsedSeconds });
@@ -4142,7 +4157,7 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     // should not fire -- but never draw a straight slash across a gap).
     const runs: Vec2[][] = [];
     let run: Vec2[] = [];
-    const gap = this.state.tuning.fieldRadius * 3;
+    const gap = this.roadHalfWidth() * 3;
     for (const point of this.roadTrail) {
       const prev = run[run.length - 1];
       if (prev && Math.hypot(point.x - prev.x, point.y - prev.y) > gap) {
@@ -4153,7 +4168,12 @@ export class ContinuousMoonMinerScene extends Phaser.Scene {
     }
     if (run.length > 1) runs.push(run);
 
-    const hw = clamp(this.state.tuning.fieldRadius * this.getCameraZoom() * 0.5, 7, 20);
+    // Ribbon half-width in SCREEN px, projected from the world road half-width so
+    // the drawn band matches the drivable band exactly (project the rover, and a
+    // point one road-half-width to its side, and measure the screen gap).
+    const rScreen = this.project(this.state.rover);
+    const sideScreen = this.project(this.pointFromHeading(this.state.rover, this.state.rover.heading + Math.PI / 2, this.roadHalfWidth()));
+    const hw = clamp(Math.hypot(sideScreen.x - rScreen.x, sideScreen.y - rScreen.y), 10, 64);
     for (const worldRun of runs) {
       const smooth = this.smoothPolyline(worldRun.map((point) => this.project(point)), 2);
       // Thick strokes at full alpha, not a filled outline polygon. When the road
