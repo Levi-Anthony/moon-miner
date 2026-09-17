@@ -1,5 +1,36 @@
 # Decisions
 
+## 2026-09-17: Legibility + pace + drone/road feel
+
+After the conceit reset the loop was coherent on one road but Levi read it as
+"still broken and illegible," then "it picks up too much road at a time, and
+sometimes you can drive without laying road at all." Three passes, all
+presentation-side or flag-gated (sim rules untouched):
+
+- **Legibility — distinct identities.** Ore is crisp gold discs (solid body,
+  hard rim, no additive glow); HOME is a dark pad + magenta rim + a tall beacon
+  pillar you can find from anywhere; road is teal; craters read as faint lit
+  rims, not noise. An objective banner (`#line`) sits high-contrast at the top.
+  Nothing shares a silhouette now.
+- **Pace + the Sun-window knob made live.** `startingSolarSeconds` /
+  `fabricatingSpeed` overrides let a day actually complete; `applyWorld` now
+  seeds `state.solarWindowSeconds`/`solarSeconds` from the knob so the Sun-window
+  slider changes the real clock, not just a label. NB: headless capture runs
+  ~5fps, so game-time crawls there — pace is only judgeable at real 60fps.
+- **Drone/road feel.** (1) Reclaim bite is capped and exposed as a live
+  `reclaimBite` panel knob (default 150) so the drone lifts a sensible run, not
+  half the map. (2) The separation rule that created dead zones (you could drive
+  without laying) is replaced by a permissive one: **lay whenever you drive;
+  only refuse double-stacking within `noLayDistance = halfWidth*(1+laneGapCars)`
+  of older ribbon past the recent stroke.** No angle test → no dead zones;
+  scribbles stay bounded because older loops trip the same check. Retired the
+  dead `crossAngleDeg`; the margin knob is now "No-restack margin." `road.test.ts`
+  rewritten to this intent (8 pass).
+
+Supersedes the separation/crossing rule in the entry below. Handed back for a
+60fps playtest; the exposed knobs (Reclaim bite, No-restack margin, Tether
+range, Aim bias) dial the feel.
+
 ## 2026-09-17: Conceit reset — one road (ribbon-authoritative economy)
 
 Levi: "Back to the nanobot/rail/road/drone conceit. This needs to be reapproached
