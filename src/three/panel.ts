@@ -144,29 +144,29 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Slurp min boost', min: 0.1, max: 1, step: 0.05, fmt: p2, hint: 'Rail boost (0..1) needed before a slurp can fire at all.', get: () => rc.slurpMinBoost, set: (v) => (rc.slurpMinBoost = v) });
   addRow({ label: 'Slurp charge (s)', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Seconds at rail top speed before the slurp arms. Higher = must earn a longer run first.', get: () => rc.slurpChargeSeconds, set: (v) => (rc.slurpChargeSeconds = v) });
 
-  section('Grip & Rail');
-  addRow({ label: 'Road lock strength', min: 0, max: 40, step: 0.5, fmt: p2, hint: 'How hard laid road steers the rover onto its line. 0 = no auto-follow.', get: () => rc.followStrength, set: (v) => (rc.followStrength = v) });
-  addRow({ label: 'Grip floor', min: 0, max: 3, step: 0.05, fmt: p2, hint: 'How magnetic a freshly caught rail is before it lengthens. Higher = grabs you sooner.', get: tget('gripFloor'), set: tset('gripFloor') });
-  addRow({ label: 'Grip while steering', min: 0, max: 3, step: 0.05, fmt: p2, hint: '1 = the rail holds you even as you steer; 0 = the wheel always wins.', get: tget('gripActiveSteerFactor'), set: tset('gripActiveSteerFactor') });
-  addRow({ label: 'Rail center pull', min: 0, max: 30, step: 0.2, fmt: p2, hint: 'How hard the rail tugs you back to its centreline, per unit off-centre.', get: tget('railCenterSnap'), set: tset('railCenterSnap') });
-  addRow({ label: 'Rail heading snap', min: 0, max: 40, step: 0.5, fmt: p2, hint: 'How fast your heading swings to line up with the rail.', get: tget('railHeadingSnap'), set: tset('railHeadingSnap') });
-  addRow({ label: 'Rail capture width', min: 5, max: 300, step: 5, fmt: int, hint: 'How far off-centre you can be and still catch the rail.', get: tget('railCaptureDistance'), set: tset('railCaptureDistance') });
-  addRow({ label: 'Rail runway for full speed', min: 20, max: 900, step: 10, fmt: int, hint: 'Connected track ahead needed to reach full rail speed; below it the rail tapers back.', get: tget('railRunwayForFullSpeed'), set: tset('railRunwayForFullSpeed') });
-
-  section('Drive Feel');
-  addRow({ label: 'Prepared speed', min: 40, max: 700, step: 1, fmt: int, hint: 'Speed on laid-but-not-railed road.', get: tget('preparedSpeed'), set: tset('preparedSpeed') });
-  addRow({ label: 'Raw speed', min: 20, max: 500, step: 1, fmt: int, hint: 'Speed on bare ground while fabricating new road.', get: tget('fabricatingSpeed'), set: tset('fabricatingSpeed') });
-  addRow({ label: 'Rail speed', min: 40, max: 900, step: 5, fmt: int, hint: 'Top speed on connected rail. Max is deliberately silly.', get: tget('railSpeed'), set: tset('railSpeed') });
+  // Speed under the live ribbon model: no road under you = off-road speed (the
+  // floor); on ribbon you already laid, you wind UP toward road top speed (the
+  // ceiling) over the spin-up time; the road lock steers you along its line.
+  // (The old rail-capture knobs -- grip floor, rail snaps, prepared speed, rail
+  // runway -- drove a hidden field system the 3D game overrides, so they did
+  // nothing here and have been removed.)
+  section('Speed & drive');
+  addRow({ label: 'Off-road speed', min: 20, max: 500, step: 1, fmt: int, hint: 'Speed with no road under you — laying fresh ribbon or crossing bare ground. This is the floor your speed falls back to.', get: tget('fabricatingSpeed'), set: tset('fabricatingSpeed') });
+  addRow({ label: 'Road top speed', min: 40, max: 900, step: 5, fmt: int, hint: 'Top speed once you are rolling on ribbon you already laid — the ceiling you wind up toward. Max is deliberately silly.', get: tget('railSpeed'), set: tset('railSpeed') });
+  addRow({ label: 'Spin-up time (s)', min: 0.2, max: 6, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Seconds on laid road to wind from off-road speed up to road top speed. Lower = instant pickup; higher = a longer runway before you are flying.', get: () => rc.spinUpSeconds, set: (v) => (rc.spinUpSeconds = v) });
+  addRow({ label: 'Road lock strength', min: 0, max: 40, step: 0.5, fmt: p2, hint: 'How hard laid road steers the rover onto its line as you drive it. 0 = no auto-follow; high = the road does the cornering for you.', get: () => rc.followStrength, set: (v) => (rc.followStrength = v) });
   addRow({ label: 'Mining yield', min: 0.05, max: 2, step: 0.01, fmt: p2, hint: 'Ore per second while parked in a seam.', get: tget('mineRate'), set: tset('mineRate') });
   addRow({ label: 'Fabrication drain', min: 0, max: 6, step: 0.05, fmt: p2, hint: 'Nanobots per second spent laying road on bare ground.', get: tget('fabricateCostPerSecond'), set: tset('fabricateCostPerSecond') });
   addRow({ label: 'Crawl recovery', min: 0, max: 2, step: 0.01, fmt: p2, hint: 'Nanobots per second regained while crawling (out of stock).', get: tget('crawlRecoveryPerSecond'), set: tset('crawlRecoveryPerSecond') });
   addRow({ label: 'Start stock', min: 0, max: 80, step: 1, fmt: int, hint: 'Nanobots you begin each day with. Applies next day.', get: tget('startingNanobots'), set: tset('startingNanobots') });
   addRow({ label: 'Sun window', min: 30, max: 600, step: 5, fmt: int, hint: 'Seconds of daylight per day. Applies next day.', get: tget('startingSolarSeconds'), set: tset('startingSolarSeconds') });
 
+  // The drone lifts a run off ONE END of the ribbon, so the network never
+  // splits -- "protect the loop" is automatic and no longer a toggle. Tether =
+  // how far out it reaches; Aim bias = your facing at launch picks which end.
   section('Drone (cleanup / reclaim)');
-  addRow({ label: 'Protect the loop', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off'), hint: 'On = the drone only lifts loose ends, never a section that would split the road.', get: () => (ctx.getState().tuning.reclaimProtectLoop ? 1 : 0), set: (v) => ctx.applyTuning({ reclaimProtectLoop: v >= 0.5 }) });
-  addRow({ label: 'Tether range', min: 120, max: 3000, step: 20, fmt: int, hint: 'How far from home the drone may reclaim. It keeps a line back. Max ≈ whole map.', get: tget('droneTetherRange'), set: tset('droneTetherRange') });
-  addRow({ label: 'Aim bias', min: 0, max: 15, step: 0.5, fmt: p2, hint: 'How hard the rover’s facing steers which section the drone grabs. 0 = off, high = facing dominates.', get: tget('reclaimAimBias'), set: tset('reclaimAimBias') });
+  addRow({ label: 'Tether range', min: 120, max: 3000, step: 20, fmt: int, hint: 'How far out from home the drone will reach. It lifts a run off one end of the ribbon whose midpoint is within this radius, and never a middle piece, so the network never splits. Max ≈ whole map.', get: tget('droneTetherRange'), set: tset('droneTetherRange') });
+  addRow({ label: 'Aim bias', min: 0, max: 15, step: 0.5, fmt: p2, hint: 'How hard the way you FACE at launch picks which end the drone reclaims. 0 = always the oldest road nearest home (pure cleanup); high = it grabs from whichever end you point toward.', get: tget('reclaimAimBias'), set: tset('reclaimAimBias') });
   addRow({ label: 'Reclaim bite', min: 40, max: 1200, step: 20, fmt: int, hint: 'World units of road one drone flight lifts. Lower = takes a small chunk; higher = reels in more per trip.', get: () => rc.reclaimBite, set: (v) => (rc.reclaimBite = v) });
 
   const btns = document.createElement('div');

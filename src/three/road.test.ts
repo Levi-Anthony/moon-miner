@@ -88,6 +88,20 @@ describe('road ribbon — free to lay, but separated (no adjacency/overlap)', ()
     expect(road.edgeCount()).toBeGreaterThan(0); // the far ribbon survives (nothing split)
   });
 
+  it('aim bias picks the end you face; no aim reclaims the oldest end', () => {
+    t = 0;
+    const road = new RoadModel();
+    // Ribbon laid west->east THROUGH home(0,0): oldest end is west, newest east.
+    for (let x = -400; x <= 400; x += 8) road.sample(state(x, 0));
+    const home = { x: 0, y: 0 };
+    // No aim -> pure cleanup: the oldest end (west, x < 0).
+    expect(road.reclaimPlan(home, 1e9, 100)!.point.x).toBeLessThan(0);
+    // Facing east (heading 0) with strong bias -> grab the end you point at.
+    expect(road.reclaimPlan(home, 1e9, 100, { heading: 0, bias: 6 })!.point.x).toBeGreaterThan(0);
+    // Facing west (heading pi) -> the west end.
+    expect(road.reclaimPlan(home, 1e9, 100, { heading: Math.PI, bias: 6 })!.point.x).toBeLessThan(0);
+  });
+
   it('serializes and re-seeds the same ribbon', () => {
     t = 0;
     const road = new RoadModel();

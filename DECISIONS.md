@@ -1,5 +1,36 @@
 # Decisions
 
+## 2026-09-17: Panel honesty — kill the dead sim-rail knobs; make aim real
+
+Levi: "I don't understand the tether system. I also don't understand the speed
+controls… I suspect we have another concept-patch clash." He was right — the
+same "two roads" split, now on the panel. The controls described the **sim's**
+rail-capture model while the 3D game runs the **ribbon** model, so ~9 knobs were
+inert or lying:
+
+- **Speed.** In the live game (ribbonEconomy + manual input) drive speed is
+  simply `off-road speed → road top speed`, interpolated by the ribbon's own
+  boost ramp, throttled. The `roadRunway` override in `updateDrive` replaces
+  `baseSpeed` regardless of any `state.rail`, and the field-magnet steering is
+  explicitly suppressed when `assistSteer` is fed. So **Prepared speed**, **Rail
+  runway for full speed**, and the whole **Grip & Rail** magnet section (grip
+  floor, grip-while-steering, rail centre pull, rail heading snap, rail capture
+  width) did nothing here. Removed them from the panel (the sim tuning fields
+  stay for self-play / flag-off, so this is presentation-only + rollback-safe).
+  Relabelled the live ones honestly: **Off-road speed** (floor) / **Road top
+  speed** (ceiling) / **Spin-up time** (new live knob = `road.config.spinUpSeconds`,
+  the boost ramp, was a hard-coded const) / **Road lock strength** (followStrength).
+- **Drone.** The ribbon drone only ever honoured Tether + Bite; **Protect the
+  loop** and **Aim bias** were sim-field-drone knobs that did nothing under
+  ribbonEconomy. A polyline peeled from an end can't split, so "protect the
+  loop" is automatic — removed the toggle. **Aim bias is now real**:
+  `reclaimPlan` builds both end-runs (oldest + newest) and your facing at launch
+  picks which, weighted by bias (0 = always oldest/cleanup; high = the end you
+  point at). Tether hint rewritten to what it does (reach radius; lifts a run
+  off one end, never a middle piece).
+- Tests: `road.test.ts` gains an aim-bias guard (face east → east end, face west
+  / no aim → oldest west end); the reclaim backward-compat (3-arg call) holds.
+
 ## 2026-09-17: Legibility + pace + drone/road feel
 
 After the conceit reset the loop was coherent on one road but Levi read it as

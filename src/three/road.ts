@@ -16,7 +16,6 @@ const ROAD_TRAIL_SPACING = 6; // min world units between laid points
 const ROAD_CURE_SECONDS = 1.2; // the fresh tail you're laying isn't lockable yet
 const ROAD_ALIGN_MIN = 0.6;
 const ROAD_FOLLOW_LOOKAHEAD_MULT = 2.4;
-const ROAD_BOOST_RAMP_SECONDS = 1.1;
 const ROAD_BOOST_DECAY_SECONDS = 0.45;
 const ROAD_SLIDE_MAX = 1.0;
 const MAX_POINTS = 8000;
@@ -28,6 +27,7 @@ export interface RoadConfig {
   slurpChargeSeconds: number; // sustained-top-speed time needed before a slurp arms
   laneGapCars: number; // how close a NEW ribbon may come to existing ribbon before it's refused as double-stacking, beyond the road width
   followStrength: number; // how hard laid road pulls the rover onto its line
+  spinUpSeconds: number; // seconds on laid road to wind from off-road speed up to road top speed
   reclaimBite: number; // world units of ribbon one drone flight lifts (the reclaim chunk size)
 }
 
@@ -41,6 +41,7 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
   // ordinary driving keeps laying rather than hitting dead zones.
   laneGapCars: 0.3,
   followStrength: 9,
+  spinUpSeconds: 1.1,
   reclaimBite: 150 // a modest chunk per flight, not the whole run
 };
 
@@ -109,17 +110,53 @@ export class RoadModel {
     return this.segs.map((s) => ({ ax: s.ax, ay: s.ay, bx: s.bx, by: s.by }));
   }
 
-  // Plan a drone reclaim: peel the OLDEST run of ribbon (the stretch laid first,
-  // nearest the depot) that lies within tetherRange of home, up to maxLength of
-  // ribbon. Oldest-first is the "cleanup" read -- the road you laid on the way
-  // out and are done with -- and taking a run off one end never splits the
-  // ribbon (loop-safe). Returns null when nothing in range is reclaimable.
-  reclaimPlan(home: Vec2, tetherRange: number, maxLength: number): RoadReclaimPlan | null {
+  // Plan a drone reclaim. The drone lifts a contiguous run off ONE END of the
+  // ribbon -- never a middle piece -- so the rest of the network is always left
+  // intact (loop-safe by construction). Two ends are candidates: the OLDEST
+  // (laid first, nearest the depot -- the "cleanup" read) and the NEWEST (the
+  // tip you most recently laid). Only segments whose midpoint is within
+  // tetherRange of home are taken, up to maxLength of ribbon.
+  //   - No aim (or bias 0): always the oldest run. Pure cleanup.
+  //   - aim.bias > 0: the way you're FACING when you launch picks the end. Each
+  //     end is scored by how well the direction from home to it lines up with
+  //     your heading, weighted by bias; the oldest end keeps a small baseline so
+  //     a light bias still favours cleanup and a strong one lets facing win.
+  // Returns null when neither end has anything reclaimable in range.
+  reclaimPlan(
+    home: Vec2,
+    tetherRange: number,
+    maxLength: number,
+    aim?: { heading: number; bias: number }
+  ): RoadReclaimPlan | null {
+    const fromOldest = this.peelRun(true, home, tetherRange, maxLength);
+    if (!aim || aim.bias <= 0) return fromOldest;
+    const fromNewest = this.peelRun(false, home, tetherRange, maxLength);
+    if (!fromOldest) return fromNewest;
+    if (!fromNewest) return fromOldest;
+    const fh = Math.cos(aim.heading);
+    const fv = Math.sin(aim.heading);
+    const align = (p: RoadReclaimPlan): number => {
+      const dx = p.point.x - home.x;
+      const dy = p.point.y - home.y;
+      const len = Math.hypot(dx, dy) || 1;
+      return (dx / len) * fh + (dy / len) * fv;
+    };
+    const scoreOldest = 0.5 + aim.bias * align(fromOldest);
+    const scoreNewest = aim.bias * align(fromNewest);
+    return scoreNewest > scoreOldest ? fromNewest : fromOldest;
+  }
+
+  // Peel a contiguous run off one END (oldest = index 0 outward, newest = last
+  // index inward), taking only segments whose midpoint is within tetherRange of
+  // home, up to maxLength. The fly-to point is the outermost point of the run
+  // (farthest from home). Returns null when that end has nothing in range.
+  private peelRun(fromOldest: boolean, home: Vec2, tetherRange: number, maxLength: number): RoadReclaimPlan | null {
     const indices: number[] = [];
     const edges: RoadEdge[] = [];
     let length = 0;
-    let point: Vec2 | null = null;
-    for (let i = 0; i < this.segs.length && length < maxLength; i += 1) {
+    const n = this.segs.length;
+    for (let k = 0; k < n && length < maxLength; k += 1) {
+      const i = fromOldest ? k : n - 1 - k;
       const s = this.segs[i];
       const mx = (s.ax + s.bx) / 2;
       const my = (s.ay + s.by) / 2;
@@ -127,9 +164,17 @@ export class RoadModel {
       indices.push(i);
       edges.push({ ax: s.ax, ay: s.ay, bx: s.bx, by: s.by });
       length += Math.hypot(s.bx - s.ax, s.by - s.ay);
-      point = { x: s.bx, y: s.by };
     }
-    if (!point || indices.length === 0) return null;
+    if (indices.length === 0) return null;
+    let point: Vec2 | null = null;
+    let best = -1;
+    for (const e of edges) {
+      for (const [ex, ey] of [[e.ax, e.ay], [e.bx, e.by]] as const) {
+        const d = Math.hypot(ex - home.x, ey - home.y);
+        if (d > best) { best = d; point = { x: ex, y: ey }; }
+      }
+    }
+    if (!point) return null;
     return { edges, length, point, indices };
   }
 
@@ -240,7 +285,8 @@ export class RoadModel {
   }
 
   updateBoost(deltaSeconds: number, onRoad: boolean): void {
-    const rate = onRoad ? deltaSeconds / ROAD_BOOST_RAMP_SECONDS : -deltaSeconds / ROAD_BOOST_DECAY_SECONDS;
+    const rampSeconds = Math.max(0.05, this.config.spinUpSeconds);
+    const rate = onRoad ? deltaSeconds / rampSeconds : -deltaSeconds / ROAD_BOOST_DECAY_SECONDS;
     this.boost = Math.max(0, Math.min(ROAD_SLIDE_MAX, this.boost + rate));
   }
   updateCharge(deltaSeconds: number, atTopSpeed: boolean): void {

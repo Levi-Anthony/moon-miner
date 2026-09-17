@@ -724,7 +724,10 @@ let ribbonDrone: RibbonDrone | null = null;
 function launchRibbonReclaim(): void {
   if (ribbonDrone) { flash = { text: 'Drone is already out.', until: performance.now() + 1500 }; return; }
   const home = state.arena.extraction ?? state.arena.start;
-  const plan = road.reclaimPlan(home, state.tuning.droneTetherRange, road.config.reclaimBite);
+  const plan = road.reclaimPlan(home, state.tuning.droneTetherRange, road.config.reclaimBite, {
+    heading: state.rover.heading,
+    bias: state.tuning.reclaimAimBias
+  });
   if (!plan) { flash = { text: 'No road within tether range to reclaim.', until: performance.now() + 1800 }; return; }
   const perUnit = state.tuning.fabricateCostPerSecond / Math.max(1, state.tuning.fabricatingSpeed);
   ribbonDrone = { phase: 'out', pos: { x: home.x, y: home.y }, home: { x: home.x, y: home.y }, plan, refund: plan.length * perUnit, lifted: false };
