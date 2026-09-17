@@ -75,6 +75,11 @@ campaign.tuningOverrides = {
   droneTetherRange: 560, // keep a line home
   reclaimAimBias: 3, // your facing aims the drone
   ribbonEconomy: true, // build cost + rail key off the ribbon you see, not hidden fields
+  // Pace so the loop is completable/legible: move at a real clip on bare ground
+  // and give a learnable day length (the arena's fixed 36s "last light" is
+  // brutal). Both are panel knobs; these are just gentler defaults.
+  fabricatingSpeed: 130,
+  startingSolarSeconds: 75,
   ...savedConfig.tuning
 };
 let state!: ContinuousWorldState;
@@ -420,6 +425,10 @@ function repaintCanvas(edges: RoadEdge[]): void {
 // drivable and painted), and rebuild the seam/extraction meshes for this layout.
 function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }): void {
   state = built.state;
+  // 3D app: the day length is the Sun-window knob, not the arena's fixed 36s
+  // (so the panel knob bites and the default is learnable).
+  state.solarWindowSeconds = state.tuning.startingSolarSeconds;
+  state.solarSeconds = state.tuning.startingSolarSeconds;
   road.seed(built.road);
   road.boost = 0;
   terrainFeatures = generateTerrain(state.seed); // this world's own terrain
@@ -860,7 +869,7 @@ function applyTuning(patch: Partial<ContinuousTuning>): void {
   state.tuning = resolveContinuousTuning({ ...state.tuning, ...patch });
   state.maxNanobots = state.tuning.maxNanobots;
   state.nanobots = Math.min(state.nanobots, state.maxNanobots);
-  state.solarWindowSeconds = state.arena.solarWindowSeconds ?? state.tuning.startingSolarSeconds;
+  state.solarWindowSeconds = state.tuning.startingSolarSeconds;
   state.solarSeconds = Math.min(state.solarSeconds, state.solarWindowSeconds);
 }
 

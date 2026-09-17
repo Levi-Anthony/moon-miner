@@ -31,7 +31,7 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   quota: 12,
   underQuotaFeePct: 0.5,
   hardFailRoadResetPct: 0,
-  arenaScale: 1.5
+  arenaScale: 1.15
 };
 
 const SAVE_KEY = 'mm3d-campaign-v1';
