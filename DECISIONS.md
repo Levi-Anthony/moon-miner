@@ -1,5 +1,24 @@
 # Decisions
 
+## 2026-09-17: Anti-blob road laying + more explicit knobs
+
+- **The rover can no longer lay a confusing blob** (playtest fix). `RoadModel.sample`
+  gains a directional-spread guard: it measures how AXIAL the road already around
+  a candidate point is (the cos/sin-of-2θ resultant, so a straight line's two
+  opposite ends still read as one axis). A clean single crossing is one axis →
+  allowed; scribbling one patch is multidirectional → refused. The current stroke's
+  recent tail is excluded so forward laying never counts against itself. A raw
+  point-count was rejected first — a legit crossing already has ~10 nearby points,
+  so count can't tell a crossing from a blob; axial spread can. Knob `blobGuard`
+  (0 = off, higher = cleaner); `laneGapFactor` and `followStrength` are config now
+  too. `src/three/road.test.ts` (3): straight lays freely, scribble starved
+  (<60 pts vs ~240), crossing still lays through.
+- **More explicit knobs, higher maxes.** New "Grip & Rail" section (road lock
+  strength, grip floor, grip-while-steering, rail center pull, rail heading snap,
+  rail capture width, rail runway) and "Anti-blob"/"Lane gap" rows. Maxes raised
+  to deliberately-too-high (Level size 2.4→5, Daily quota→120, Rail speed→900,
+  etc.) so extremes are reachable, and every row carries explicit hint text.
+
 ## 2026-09-17: Bigger featured level, earned slurp, and a repurposed drone
 
 Three player asks, all exposed as panel knobs.
