@@ -10,18 +10,19 @@ export const CAR_WIDTH = 54;
 const ROAD_TRAIL_SPACING = 6;
 const ROAD_CURE_SECONDS = 1.2;
 const ROAD_ALIGN_MIN = 0.6;
-const ROAD_FOLLOW_STEER = 9;
 const ROAD_FOLLOW_LOOKAHEAD_MULT = 2.4;
 const ROAD_BOOST_RAMP_SECONDS = 1.1;
 const ROAD_BOOST_DECAY_SECONDS = 0.45;
 const ROAD_SLIDE_MAX = 1.0;
-const ROAD_LANE_GAP_FACTOR = 0.4;
 
 export interface RoadConfig {
   roadWidthCars: number; // road width in car-widths
   slurpBandPct: number; // central fraction of a seam a fast pass slurps (0 = off)
   slurpMinBoost: number; // rail boost needed for a slurp
   slurpChargeSeconds: number; // sustained-top-speed time needed before a slurp arms
+  laneGapFactor: number; // min gap between parallel lanes, in half-widths
+  followStrength: number; // how hard laid road pulls the rover onto its line
+  blobGuard: number; // max existing road allowed near a new point before laying is refused (anti-blob)
 }
 
 export const DEFAULT_ROAD_CONFIG: RoadConfig = {
@@ -35,7 +36,16 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
   // You have to hold rail top speed for this long before it arms, so it can
   // never instantly swallow the pool you're sitting on -- you have to build the
   // run first. Dropping off top speed disarms it immediately.
-  slurpChargeSeconds: 1.6
+  slurpChargeSeconds: 1.6,
+  laneGapFactor: 0.4,
+  followStrength: 9,
+  // Anti-blob, 0..1. The rover refuses to lay a new point where nearby road
+  // already runs in many directions -- a scribbled patch that would confuse the
+  // lock later. It measures how AXIAL the surrounding road is (a single clean
+  // crossing is one axis -> high; a blob points every way -> low) and refuses
+  // when that falls below this threshold. 0 = off (blobs allowed); higher =
+  // stricter / cleaner network.
+  blobGuard: 0.5
 };
 
 export interface TrailPoint { x: number; y: number; t: number }
@@ -72,6 +82,32 @@ export class RoadModel {
     let limit = this.trail.length;
     while (limit > 0 && elapsed - this.trail[limit - 1].t < ROAD_CURE_SECONDS) limit -= 1;
     return limit;
+  }
+
+  // Look at the road already around `at` (ignoring the current stroke's recent
+  // tail) and report how many points are near and how AXIAL they are. Axial ~1
+  // means the surrounding road forms a single line (a clean crossing you can
+  // drive through); axial ~0 means it points every which way (a blob). Uses the
+  // cos/sin-of-2*theta resultant so a straight line -- whose two ends bear in
+  // opposite directions -- still reads as one axis.
+  private roadSpreadAt(at: Vec2, radius: number, excludeFromEnd: number): { count: number; axial: number } {
+    const r2 = radius * radius;
+    const upTo = this.trail.length - excludeFromEnd;
+    let count = 0;
+    let sumC = 0;
+    let sumS = 0;
+    for (let i = 0; i < upTo; i += 1) {
+      const dx = this.trail[i].x - at.x;
+      const dy = this.trail[i].y - at.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < r2 && d2 > 1) {
+        const theta = Math.atan2(dy, dx);
+        sumC += Math.cos(2 * theta);
+        sumS += Math.sin(2 * theta);
+        count += 1;
+      }
+    }
+    return { count, axial: count > 0 ? Math.hypot(sumC, sumS) / count : 1 };
   }
 
   private nearest(limit: number, at: Vec2): { index: number; dist: number } {
@@ -116,7 +152,7 @@ export class RoadModel {
       centre.y + Math.sin(tangent) * lookahead - rover.y,
       centre.x + Math.cos(tangent) * lookahead - rover.x
     );
-    return Math.max(-1, Math.min(1, angleDifference(desired, rover.heading) / 0.18)) * ROAD_FOLLOW_STEER;
+    return Math.max(-1, Math.min(1, angleDifference(desired, rover.heading) / 0.18)) * this.config.followStrength;
   }
 
   isOnLaidRoad(state: ContinuousWorldState): boolean {
@@ -138,10 +174,19 @@ export class RoadModel {
     if (limit >= 2) {
       const near = this.nearest(limit, rover);
       const half = this.halfWidth();
-      const laneGap = half * ROAD_LANE_GAP_FACTOR;
+      const laneGap = half * this.config.laneGapFactor;
       const onRibbon = near.index >= 0 && near.dist < half * 0.55;
       const tooAdjacent = near.index >= 0 && near.dist < half * 2 + laneGap && this.alignmentAt(near.index, limit, rover.heading) >= ROAD_ALIGN_MIN;
       if (onRibbon || tooAdjacent) return null;
+      // Anti-blob: refuse to add road where the surrounding road already runs
+      // in many directions. A clean single crossing reads as one axis and is
+      // allowed; scribbling the same patch (which confuses the lock later) reads
+      // as multidirectional and is refused. The recent tail is excluded so the
+      // stroke you're currently laying never counts against itself.
+      if (this.config.blobGuard > 0) {
+        const spread = this.roadSpreadAt(rover, half * 1.4, 20);
+        if (spread.count >= 6 && spread.axial < this.config.blobGuard) return null;
+      }
     }
     const point = { x: rover.x, y: rover.y, t: state.elapsedSeconds };
     this.trail.push(point);
