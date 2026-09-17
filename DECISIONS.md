@@ -1,5 +1,39 @@
 # Decisions
 
+## 2026-09-17: Conceit reset — one road (ribbon-authoritative economy)
+
+Levi: "Back to the nanobot/rail/road/drone conceit. This needs to be reapproached
+from the ground up rather than chasing patches." Root cause found: there were
+secretly **two roads**. The sim ran the economy (fabrication drain, "prepared"
+speed, the grip magnet, the whole drone reclaim) on an **invisible** hex-field
+lattice, while the player saw a **separate** ribbon we'd been tuning. In the 3D
+build the *feel* already comes from the ribbon (`input.roadRunway` sets speed,
+`input.onRoad` sets grip — the sim's field-based prepared/rail is overridden);
+the hidden fields only still gated the nanobot drain and fed the drone. So the
+drone reclaimed road you couldn't see and your build cost tracked coverage you
+couldn't see.
+
+Decision (Levi delegated A-vs-C to whichever is lower blast-radius on *feel*,
+keep rollback; resources stay two = nanobots logistics + ore objective): go
+**ribbon-authoritative for the economy**. Because the feel already lives in the
+ribbon, moving drain + reclaim onto it is lower-risk than reconciling two
+geometries forever (force-correspondence = the fragile path). Built behind a
+`ribbonEconomy` tuning flag, **default off** (self-play / tests / old scene
+byte-for-byte unchanged → fully rollback-able); the 3D app opts on. Staged:
+- **S1 — build cost on the road you see.** `resolveSpeedState(state, onRoad)`:
+  "prepared" = being on the visible ribbon, not on field coverage, so rolling
+  your own ribbon is free/rail and laying fresh ribbon spends stock.
+- **S2 — the drone reclaims the ribbon.** `RoadModel.reclaimPlan/removeSegments`
+  peel the oldest run within tether (loop-safe); a presentation-side reclaim
+  drone flies out, lifts the visible ribbon, and refunds nanobots on return
+  (conservation: refund == lay cost per unit). The sim field-drone still runs
+  when the flag is off.
+- **S3 (todo)** — skip the now-unused field lattice under ribbonEconomy to
+  retire it fully.
+- Tests: `ribbonEconomy.test.ts` (flag off unchanged; on = onRoad free, off-road
+  drains) + `road.test.ts` reclaim (peels within tether, never splits). The
+  conceit is coherent on one road after S2 — ready to playtest.
+
 ## 2026-09-17: Free ribbon + separation/crossing (supersedes the lattice)
 
 The lattice (below) read as "too gridded and controlling." Levi: "You should
