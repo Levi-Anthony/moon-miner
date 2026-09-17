@@ -1,5 +1,41 @@
 # Decisions
 
+## 2026-09-17: Bigger featured level, earned slurp, and a repurposed drone
+
+Three player asks, all exposed as panel knobs.
+
+- **Slurp must be earned.** It could fire the instant you were on road near a
+  seam, grabbing the pool you were sitting on. Now `RoadModel` tracks a `charge`
+  that builds only while at rail top speed on road and hard-resets when you drop
+  off; the slurp arms only past `slurpChargeSeconds` (1.6s). HUD shows "Rail ⚡"
+  when armed; panel "Slurp charge (s)".
+- **Bigger, featured level.** Seam-spread bounds widened (depot stays at the
+  east edge, you sortie in), default Level size 1.35→1.5 with the ceiling at
+  2.4. The ground gained real lunar features: seeded craters (lit rim + shadow
+  crescent + darker bowl), rilles, and mare/highland value patches painted into
+  the ground canvas (composited under the road, so aligned), plus a low, downward-
+  biased relief displacement of the ground mesh for parallax (biased down so the
+  rover never clips). New "Terrain" panel section (Relief, Crater density).
+- **Drone → tethered, aimed, loop-safe cleanup/reclaim** (Levi's steer, over the
+  four options offered). The sim already had degree-based topology that *ranked*
+  reclaim candidates; the ask makes it *gate*. New tuning, all defaulted to the
+  classic behaviour so the 147 reclaim tests stay green, opted into by the 3D app:
+  - `reclaimProtectLoop`: targets gated to loose ends, and the lifted cluster is
+    **leaf-peeled** — only tiles that are *currently* degree≤1 come off, so a
+    removal can never split the network (the junction of a Y is never taken).
+    This is provably safe and replaced an earlier BFS-to-home attempt that was
+    fragile about what "connected to home" means.
+  - `droneTetherRange`: a reclaim target must stay within range of home; a tether
+    line is drawn from the depot to the drone while it's out.
+  - `reclaimAimBias`: the rover's facing biases which section the drone grabs.
+  - More valuable on day 2/3 by construction (road carries within a shift).
+  3D app defaults: protect-loop on, tether 560, aim bias 3; new "Drone" panel
+  section. `src/game/droneReclaim.test.ts` (3) pins tether, aim, and junction-survival.
+- Test baseline unchanged: still the 9 `continuous.test` + 1 `routeAffordance`
+  DEV-23 sim-tuning reds; this batch added 6 passing tests (5 arena earlier + 3
+  drone, minus none). The "stages the starter level" seam-window assertion was
+  updated to the new bigger field.
+
 ## 2026-09-16: Art direction (moody atmospheric) + better procedural maps
 
 Levi's picks after parity: art direction = **Moody atmospheric**, level design =
