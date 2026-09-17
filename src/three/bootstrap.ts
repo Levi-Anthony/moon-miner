@@ -718,7 +718,7 @@ const launchBtn = document.getElementById('launch') as HTMLButtonElement;
 // --- Ribbon reclaim (ribbonEconomy): the drone lifts the VISIBLE ribbon and
 // refunds nanobots for the road it carries home. Runs in the presentation
 // (the ribbon lives here); the sim drone stays idle in this mode. --------------
-const RECLAIM_MAX_LEN = 460; // most ribbon one flight lifts
+const RECLAIM_MAX_LEN = 150; // one flight lifts a modest CHUNK of road, not the whole run
 interface RibbonDrone { phase: 'out' | 'back'; pos: { x: number; y: number }; home: { x: number; y: number }; plan: RoadReclaimPlan; refund: number; lifted: boolean }
 let ribbonDrone: RibbonDrone | null = null;
 

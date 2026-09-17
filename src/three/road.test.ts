@@ -26,38 +26,35 @@ describe('road ribbon — free to lay, but separated (no adjacency/overlap)', ()
     expect(road.edgeCount()).toBeGreaterThan(80);
   });
 
-  it('refuses to lay a second ribbon directly alongside an existing one', () => {
+  it("won't double-stack: re-driving the SAME line lays (almost) nothing new", () => {
     t = 0;
     const road = new RoadModel();
     for (let x = 0; x <= 1000; x += 8) road.sample(state(x, 0)); // ribbon A along y=0
     const afterA = road.edgeCount();
-    // Wait out the cure window so ribbon A is "older", then drive back parallel,
-    // ~half the road width to the side -- direct adjacency.
-    for (let k = 0; k < 40; k += 1) road.sample(state(1000, 0)); // idle time passes (no movement -> no points)
+    for (let k = 0; k < 40; k += 1) road.sample(state(1000, 0)); // idle
     let laid = 0;
-    for (let x = 1000; x >= 0; x -= 8) laid += road.sample(state(x, 20)).length; // 20 units beside A
-    expect(road.edgeCount() - afterA).toBeLessThan(10); // almost nothing new: separation refused it
-    expect(laid).toBeLessThan(10);
+    for (let x = 1000; x >= 0; x -= 8) laid += road.sample(state(x, 0)).length; // drive straight back over A
+    expect(laid).toBeLessThan(12); // re-uses the road, doesn't pile a second layer
+    expect(road.edgeCount() - afterA).toBeLessThan(12);
   });
 
-  it('allows a separated parallel ribbon when the gap is respected', () => {
+  it('lays a parallel lane freely once it clears the road width', () => {
     t = 0;
     const road = new RoadModel();
     for (let x = 0; x <= 1000; x += 8) road.sample(state(x, 0));
     const afterA = road.edgeCount();
-    for (let x = 0; x <= 1000; x += 8) road.sample(state(x, 300)); // well beyond separation
+    for (let x = 0; x <= 1000; x += 8) road.sample(state(x, 120)); // a lane's width over -> lays
     expect(road.edgeCount() - afterA).toBeGreaterThan(100);
   });
 
-  it('allows a genuine crossing (clean intersection), not an overlap', () => {
+  it('lays a crossing straight through (only the exact overlap point is skipped)', () => {
     t = 0;
     const road = new RoadModel();
     for (let x = -400; x <= 400; x += 8) road.sample(state(x, 0)); // horizontal ribbon through origin
     const afterH = road.edgeCount();
-    // Drive a vertical ribbon straight across it.
     let laid = 0;
     for (let y = -400; y <= 400; y += 8) laid += road.sample(state(0, y)).length;
-    expect(laid).toBeGreaterThan(80); // the crossing ribbon lays through the intersection
+    expect(laid).toBeGreaterThan(80); // vertical ribbon lays across, bar the overlap notch
     expect(road.edgeCount()).toBeGreaterThan(afterH + 80);
   });
 

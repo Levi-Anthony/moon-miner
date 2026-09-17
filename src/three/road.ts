@@ -26,8 +26,7 @@ export interface RoadConfig {
   slurpBandPct: number; // central fraction of a seam a fast pass slurps (0 = off)
   slurpMinBoost: number; // rail boost needed for a slurp
   slurpChargeSeconds: number; // sustained-top-speed time needed before a slurp arms
-  laneGapCars: number; // enforced gap between DISTINCT ribbons, beyond the road width, in car-widths
-  crossAngleDeg: number; // min angle for a meeting to count as a crossing (intersection) rather than an overlap
+  laneGapCars: number; // how close a NEW ribbon may come to existing ribbon before it's refused as double-stacking, beyond the road width
   followStrength: number; // how hard laid road pulls the rover onto its line
 }
 
@@ -37,11 +36,9 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
   slurpMinBoost: 0.55,
   slurpChargeSeconds: 1.6,
   // Distinct ribbons keep at least (road width + this) apart, so lanes never sit
-  // edge-to-edge and the network stays legible.
-  laneGapCars: 0.7,
-  // Meet an existing ribbon shallower than this and it's an overlap (refused);
-  // steeper and it's a crossing (allowed -> a clean intersection).
-  crossAngleDeg: 32,
+  // edge-to-edge -- kept small so the "no-lay" band around your road is thin and
+  // ordinary driving keeps laying rather than hitting dead zones.
+  laneGapCars: 0.3,
   followStrength: 9
 };
 
@@ -82,17 +79,18 @@ export class RoadModel {
   halfWidth(): number {
     return (this.config.roadWidthCars * CAR_WIDTH) / 2;
   }
-  // Min centre-to-centre distance between two DISTINCT ribbons.
-  private separation(): number {
-    return this.halfWidth() * 2 + this.config.laneGapCars * CAR_WIDTH;
+  // How close a NEW point may come to EXISTING ribbon before we refuse it as
+  // double-stacking. ~one road width, so you can lay a fresh lane right beside
+  // an old one but never pile a second layer on the same ground.
+  private noLayDistance(): number {
+    return this.halfWidth() * (1 + this.config.laneGapCars);
   }
-  // How much of the ribbon just behind you counts as "the stroke you're on" and
-  // is exempt from the separation/crossing checks, so continuing your own line
-  // is never refused. Distance-based (via the fixed point spacing), so it's the
-  // same at any speed. Kept just over one separation so an ordinary curve lays,
-  // while curling all the way back onto older ribbon still trips the rule.
+  // The stretch of ribbon just behind you that's exempt from the check, so the
+  // line under the rover never refuses itself. Small -- just past the no-lay
+  // radius -- so ordinary driving always lays, but a tight scribble still gets
+  // its older loops checked and bounded.
   private recentPointCount(): number {
-    return Math.min(300, Math.max(20, Math.round((this.separation() * 1.5) / ROAD_TRAIL_SPACING)));
+    return Math.min(120, Math.max(14, Math.round((this.noLayDistance() * 2.5) / ROAD_TRAIL_SPACING)));
   }
 
   reset(): void {
@@ -158,22 +156,18 @@ export class RoadModel {
     // passes straight through, making a clean intersection. Continuing your own
     // line is exempt (the recent window is wider than the separation), so
     // straight and curving driving lay a smooth ribbon.
+    // The one rule: don't lay a SECOND layer on ground existing ribbon already
+    // covers. If the new point sits within a road-width of an older segment
+    // (older than the recent stroke under the rover), it would double-stack, so
+    // skip it -- you're re-using that road, not building new. No angle test:
+    // driving anywhere else always lays, so there are no dead zones, and a tight
+    // scribble still can't pile up because its older loops trip this.
     const olderSegs = this.segs.length - this.recentPointCount();
-    if (prev && olderSegs > 0) {
-      const sep = this.separation();
-      // Meet an older ribbon shallower than crossAngleDeg => running alongside
-      // it (adjacency/overlap) => refuse. Steeper => a crossing => allow.
-      const minCos = Math.cos((this.config.crossAngleDeg * Math.PI) / 180);
-      const hx = cur.x - prev.x;
-      const hy = cur.y - prev.y;
-      const hlen = Math.hypot(hx, hy) || 1;
+    if (olderSegs > 0) {
+      const noLay = this.noLayDistance();
       for (let i = 0; i < olderSegs; i += 1) {
         const s = this.segs[i];
-        if (segDist(cur.x, cur.y, s.ax, s.ay, s.bx, s.by).d >= sep) continue;
-        const sx = s.bx - s.ax;
-        const sy = s.by - s.ay;
-        const slen = Math.hypot(sx, sy) || 1;
-        if (Math.abs((hx * sx + hy * sy) / (hlen * slen)) > minCos) return []; // alongside/over -> refuse
+        if (segDist(cur.x, cur.y, s.ax, s.ay, s.bx, s.by).d < noLay) return [];
       }
     }
 
