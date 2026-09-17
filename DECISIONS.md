@@ -1,5 +1,29 @@
 # Decisions
 
+## 2026-09-17: Free ribbon + separation/crossing (supersedes the lattice)
+
+The lattice (below) read as "too gridded and controlling." Levi: "You should
+still be able to drive wherever you want and lay ribbon-like roads however you
+want, but it just controls the intersection to preserve separation and doesn't
+allow direct adjacency or overlap." So the grid is gone; the road is a free
+smooth polyline ribbon again, and the whole constraint is one rule at lay time:
+- **Don't lay ribbon that runs alongside existing ribbon.** For each older
+  segment (excluding the recent stroke under the rover), if the new point is
+  within the separation gap AND heading roughly along it, that's adjacency/
+  overlap → refuse. A transversal meeting (steeper than the crossing angle) is
+  a crossing and paints through → a clean intersection.
+- Continuing your own line is exempt: the recent-stroke window is wider than
+  the separation, so straight and curving driving lay a smooth ribbon with no
+  interference. Only coming back alongside existing road (what a blob is made
+  of) is refused; a dense scribble stays a bounded thin ribbon.
+- The lock / on-road / boost / slurp read the ribbon segments (nearest cured
+  segment). The edge API (sample→RoadEdge[], edgesForPaint, serialize/seed as
+  segment quads) is unchanged, so bootstrap painting + persistence are untouched.
+- Config: dropped `gridCars`; added `laneGapCars` (0.7) and `crossAngleDeg`
+  (32). Panel: "Road grid" → "Ribbon separation" + "Crossing angle".
+- `road.test.ts`: straight & curve lay freely; adjacent parallel refused, gapped
+  parallel allowed; crossing lays through; 600-step scribble < 160 segments.
+
 ## 2026-09-17: Road is a maze lattice (supersedes the refusal-based anti-blob)
 
 Levi, after playing: "something needs to enforce separation… maze-like
