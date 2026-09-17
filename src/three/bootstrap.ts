@@ -718,14 +718,13 @@ const launchBtn = document.getElementById('launch') as HTMLButtonElement;
 // --- Ribbon reclaim (ribbonEconomy): the drone lifts the VISIBLE ribbon and
 // refunds nanobots for the road it carries home. Runs in the presentation
 // (the ribbon lives here); the sim drone stays idle in this mode. --------------
-const RECLAIM_MAX_LEN = 150; // one flight lifts a modest CHUNK of road, not the whole run
 interface RibbonDrone { phase: 'out' | 'back'; pos: { x: number; y: number }; home: { x: number; y: number }; plan: RoadReclaimPlan; refund: number; lifted: boolean }
 let ribbonDrone: RibbonDrone | null = null;
 
 function launchRibbonReclaim(): void {
   if (ribbonDrone) { flash = { text: 'Drone is already out.', until: performance.now() + 1500 }; return; }
   const home = state.arena.extraction ?? state.arena.start;
-  const plan = road.reclaimPlan(home, state.tuning.droneTetherRange, RECLAIM_MAX_LEN);
+  const plan = road.reclaimPlan(home, state.tuning.droneTetherRange, road.config.reclaimBite);
   if (!plan) { flash = { text: 'No road within tether range to reclaim.', until: performance.now() + 1800 }; return; }
   const perUnit = state.tuning.fabricateCostPerSecond / Math.max(1, state.tuning.fabricatingSpeed);
   ribbonDrone = { phase: 'out', pos: { x: home.x, y: home.y }, home: { x: home.x, y: home.y }, plan, refund: plan.length * perUnit, lifted: false };

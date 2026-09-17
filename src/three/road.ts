@@ -28,6 +28,7 @@ export interface RoadConfig {
   slurpChargeSeconds: number; // sustained-top-speed time needed before a slurp arms
   laneGapCars: number; // how close a NEW ribbon may come to existing ribbon before it's refused as double-stacking, beyond the road width
   followStrength: number; // how hard laid road pulls the rover onto its line
+  reclaimBite: number; // world units of ribbon one drone flight lifts (the reclaim chunk size)
 }
 
 export const DEFAULT_ROAD_CONFIG: RoadConfig = {
@@ -39,7 +40,8 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
   // edge-to-edge -- kept small so the "no-lay" band around your road is thin and
   // ordinary driving keeps laying rather than hitting dead zones.
   laneGapCars: 0.3,
-  followStrength: 9
+  followStrength: 9,
+  reclaimBite: 150 // a modest chunk per flight, not the whole run
 };
 
 export interface SlurpEvent { x: number; y: number; gained: number }

@@ -167,6 +167,7 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Protect the loop', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off'), hint: 'On = the drone only lifts loose ends, never a section that would split the road.', get: () => (ctx.getState().tuning.reclaimProtectLoop ? 1 : 0), set: (v) => ctx.applyTuning({ reclaimProtectLoop: v >= 0.5 }) });
   addRow({ label: 'Tether range', min: 120, max: 3000, step: 20, fmt: int, hint: 'How far from home the drone may reclaim. It keeps a line back. Max ≈ whole map.', get: tget('droneTetherRange'), set: tset('droneTetherRange') });
   addRow({ label: 'Aim bias', min: 0, max: 15, step: 0.5, fmt: p2, hint: 'How hard the rover’s facing steers which section the drone grabs. 0 = off, high = facing dominates.', get: tget('reclaimAimBias'), set: tset('reclaimAimBias') });
+  addRow({ label: 'Reclaim bite', min: 40, max: 1200, step: 20, fmt: int, hint: 'World units of road one drone flight lifts. Lower = takes a small chunk; higher = reels in more per trip.', get: () => rc.reclaimBite, set: (v) => (rc.reclaimBite = v) });
 
   const btns = document.createElement('div');
   btns.className = 'btns';
