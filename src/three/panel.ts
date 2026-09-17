@@ -17,7 +17,7 @@ export interface TerrainConfig {
   relief: number; // 0 = flat painted-only, 1 = full displacement height
   craterDensity: number; // scales how many craters/features the ground carries
 }
-export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 1 };
+export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 0.6 };
 
 export interface PanelCtx {
   campaign: Campaign;

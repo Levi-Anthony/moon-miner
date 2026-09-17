@@ -253,9 +253,10 @@ function paintTerrain(feat: TerrainFeatures): void {
     rctx.beginPath();
     rctx.arc(cx, cy, rp * 0.86, feat.sun + 0.5, feat.sun + Math.PI * 2 - 0.5);
     rctx.stroke();
-    // lit rim (sun side)
-    rctx.lineWidth = rp * 0.14;
-    rctx.strokeStyle = 'rgba(120,140,170,0.5)';
+    // lit rim (sun side) -- faint, so a crater reads as a shallow dent in the
+    // ground and never as a ring-shaped marker like HOME.
+    rctx.lineWidth = rp * 0.1;
+    rctx.strokeStyle = 'rgba(90,105,130,0.22)';
     rctx.beginPath();
     rctx.arc(cx, cy, rp * 0.95, feat.sun - 0.9, feat.sun + 0.9);
     rctx.stroke();
@@ -328,20 +329,26 @@ scene.add(extractionGroup);
 // A soft radial-glow sprite (bright core -> transparent rim) shared by every
 // seam disc. Additively blended + tinted, seams read as glowing ore pools that
 // give the bloom a bright core to catch without flattening into solid plates.
-function makeGlowTexture(): THREE.CanvasTexture {
+// A CRISP ore-deposit sprite: a solid filled core with a hard bright rim and a
+// clean edge, so a seam reads as a defined "ore here" marker rather than the
+// out-of-focus smudge the old soft glow gave. Tinted white so the mesh colour
+// sets the hue.
+function makeOreTexture(): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const g = c.getContext('2d') as CanvasRenderingContext2D;
   const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.35, 'rgba(255,255,255,0.75)');
-  grad.addColorStop(0.7, 'rgba(255,255,255,0.22)');
+  grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(0.6, 'rgba(255,255,255,0.8)');
+  grad.addColorStop(0.82, 'rgba(255,255,255,0.85)'); // solid body
+  grad.addColorStop(0.9, 'rgba(255,255,255,1)'); // bright hard rim
+  grad.addColorStop(0.94, 'rgba(255,255,255,0)'); // clean cut edge
   grad.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = grad;
   g.fillRect(0, 0, 128, 128);
   return new THREE.CanvasTexture(c);
 }
-const seamGlowTexture = makeGlowTexture();
+const seamGlowTexture = makeOreTexture();
 
 function clearGroup(group: THREE.Group): void {
   for (const child of group.children) {
@@ -356,16 +363,11 @@ function rebuildWorldMeshes(): void {
   clearGroup(seamGroup);
   for (const zone of state.fertileZones) {
     const r = Math.max(40, zone.radius * 1.05);
+    // Solid gold ore deposit with a crisp rim (normal blending, not additive)
+    // so it reads as a distinct "go mine here" marker, not a fuzzy light.
     const disc = new THREE.Mesh(
       new THREE.PlaneGeometry(r * 2, r * 2),
-      new THREE.MeshBasicMaterial({
-        map: seamGlowTexture,
-        color: 0xffb340,
-        transparent: true,
-        opacity: 0.9,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending
-      })
+      new THREE.MeshBasicMaterial({ map: seamGlowTexture, color: 0xffb020, transparent: true, opacity: 0.95, depthWrite: false })
     );
     disc.rotation.x = -Math.PI / 2;
     disc.position.set(zone.x - W / 2, 4, zone.y - H / 2);
@@ -374,13 +376,32 @@ function rebuildWorldMeshes(): void {
   }
   clearGroup(extractionGroup);
   if (state.arena.extraction) {
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(state.arena.extraction.radius - 4, state.arena.extraction.radius, 40),
-      new THREE.MeshBasicMaterial({ color: 0x77f2ca, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
+    const ex = state.arena.extraction;
+    const px = ex.x - W / 2;
+    const pz = ex.y - H / 2;
+    // HOME is its own colour (magenta) -- used by nothing else, so it can't be
+    // confused with the teal road, the gold ore, or the grey craters -- plus a
+    // tall beacon you can see from anywhere on the map.
+    const pad = new THREE.Mesh(
+      new THREE.CircleGeometry(ex.radius, 40),
+      new THREE.MeshBasicMaterial({ color: 0x1a0f2a, transparent: true, opacity: 0.9 })
     );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(state.arena.extraction.x - W / 2, 4.5, state.arena.extraction.y - H / 2);
-    extractionGroup.add(ring);
+    pad.rotation.x = -Math.PI / 2;
+    pad.position.set(px, 3.5, pz);
+    extractionGroup.add(pad);
+    const rim = new THREE.Mesh(
+      new THREE.RingGeometry(ex.radius - 6, ex.radius, 40),
+      new THREE.MeshBasicMaterial({ color: 0xc06cff, transparent: true, opacity: 0.95, side: THREE.DoubleSide })
+    );
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.set(px, 4, pz);
+    extractionGroup.add(rim);
+    const beacon = new THREE.Mesh(
+      new THREE.CylinderGeometry(3, 3, 150, 8),
+      new THREE.MeshStandardMaterial({ color: 0xc06cff, emissive: 0xa83bff, emissiveIntensity: 1.4, roughness: 0.5 })
+    );
+    beacon.position.set(px, 75, pz);
+    extractionGroup.add(beacon);
   }
 }
 
