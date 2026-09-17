@@ -1,67 +1,86 @@
 import { describe, expect, it } from 'vitest';
-import { CAR_WIDTH, RoadModel } from './road';
+import { RoadModel } from './road';
 import type { ContinuousWorldState } from '../game/continuous';
 
-// sample() only reads speedState + rover x/y.
+// sample() reads speedState, rover x/y, elapsedSeconds.
+let t = 0;
 function state(x: number, y: number): ContinuousWorldState {
-  return { speedState: 'prepared', rover: { x, y, heading: 0 } } as unknown as ContinuousWorldState;
+  t += 0.1;
+  return { speedState: 'prepared', rover: { x, y, heading: 0 }, elapsedSeconds: t } as unknown as ContinuousWorldState;
 }
 
-describe('road lattice — maze structure, never a blob', () => {
-  it('lays a connected corridor along a straight drive', () => {
+describe('road ribbon — free to lay, but separated (no adjacency/overlap)', () => {
+  it('lays a smooth ribbon straight ahead, unimpeded', () => {
+    t = 0;
     const road = new RoadModel();
-    const s = road.gridSize();
-    for (let i = 0; i <= 10; i += 1) road.sample(state(i * s, 0)); // one cell per step
-    // 10 steps across the grid => ~10 edges, all collinear.
-    expect(road.edgeCount()).toBeGreaterThanOrEqual(9);
-    expect(road.edgeCount()).toBeLessThanOrEqual(11);
+    for (let x = 0; x <= 1000; x += 8) road.sample(state(x, 0));
+    // A point roughly every spacing along 1000 units -> a long continuous ribbon.
+    expect(road.edgeCount()).toBeGreaterThan(100);
   });
 
-  it('cannot scribble a blob: revisiting one patch adds no new road', () => {
+  it('lays a smooth CURVE unimpeded (continuing your own line is never refused)', () => {
+    t = 0;
     const road = new RoadModel();
-    const s = road.gridSize();
-    // Wander densely inside a 2x2-cell box for a long time.
-    let n = 0;
-    for (let i = 0; i < 400; i += 1) {
-      const x = (0.5 + Math.sin(i * 1.3)) * s;
-      const y = (0.5 + Math.cos(i * 0.9)) * s;
+    // A big arc: each step advances well beyond the point spacing.
+    for (let a = 0; a < Math.PI; a += 0.03) road.sample(state(Math.cos(a) * 600, Math.sin(a) * 600));
+    expect(road.edgeCount()).toBeGreaterThan(80);
+  });
+
+  it('refuses to lay a second ribbon directly alongside an existing one', () => {
+    t = 0;
+    const road = new RoadModel();
+    for (let x = 0; x <= 1000; x += 8) road.sample(state(x, 0)); // ribbon A along y=0
+    const afterA = road.edgeCount();
+    // Wait out the cure window so ribbon A is "older", then drive back parallel,
+    // ~half the road width to the side -- direct adjacency.
+    for (let k = 0; k < 40; k += 1) road.sample(state(1000, 0)); // idle time passes (no movement -> no points)
+    let laid = 0;
+    for (let x = 1000; x >= 0; x -= 8) laid += road.sample(state(x, 20)).length; // 20 units beside A
+    expect(road.edgeCount() - afterA).toBeLessThan(10); // almost nothing new: separation refused it
+    expect(laid).toBeLessThan(10);
+  });
+
+  it('allows a separated parallel ribbon when the gap is respected', () => {
+    t = 0;
+    const road = new RoadModel();
+    for (let x = 0; x <= 1000; x += 8) road.sample(state(x, 0));
+    const afterA = road.edgeCount();
+    for (let x = 0; x <= 1000; x += 8) road.sample(state(x, 300)); // well beyond separation
+    expect(road.edgeCount() - afterA).toBeGreaterThan(100);
+  });
+
+  it('allows a genuine crossing (clean intersection), not an overlap', () => {
+    t = 0;
+    const road = new RoadModel();
+    for (let x = -400; x <= 400; x += 8) road.sample(state(x, 0)); // horizontal ribbon through origin
+    const afterH = road.edgeCount();
+    // Drive a vertical ribbon straight across it.
+    let laid = 0;
+    for (let y = -400; y <= 400; y += 8) laid += road.sample(state(0, y)).length;
+    expect(laid).toBeGreaterThan(80); // the crossing ribbon lays through the intersection
+    expect(road.edgeCount()).toBeGreaterThan(afterH + 80);
+  });
+
+  it("can't scribble a blob: a tight patch stays a bounded ribbon", () => {
+    t = 0;
+    const road = new RoadModel();
+    for (let i = 0; i < 600; i += 1) {
+      const x = Math.cos(i * 0.5) * 40 + Math.sin(i * 0.11) * 20;
+      const y = Math.sin(i * 0.5) * 40 + Math.cos(i * 0.13) * 20;
       road.sample(state(x, y));
-      n += 1;
     }
-    // A 2x2 cell box has a tiny finite number of possible lattice edges; the
-    // scribble can only ever fill those, never pile up into a blob.
-    expect(n).toBe(400);
-    expect(road.edgeCount()).toBeLessThan(12);
+    // Free-to-lay, but the separation rule keeps a dense scribble from filling
+    // the patch: it stays a bounded thin ribbon, not a growing blob.
+    expect(road.edgeCount()).toBeLessThan(160);
   });
 
-  it('re-driving an existing corridor stacks no new road', () => {
+  it('serializes and re-seeds the same ribbon', () => {
+    t = 0;
     const road = new RoadModel();
-    const s = road.gridSize();
-    for (let gx = 0; gx <= 6; gx += 1) road.sample(state(gx * s, 0));
-    const after = road.edgeCount();
-    // Drive the same corridor back and forth several times.
-    for (let pass = 0; pass < 4; pass += 1) {
-      const range = pass % 2 ? [6, 0] : [0, 6];
-      for (let gx = range[0]; range[0] < range[1] ? gx <= range[1] : gx >= range[1]; gx += range[0] < range[1] ? 1 : -1) {
-        road.sample(state(gx * s, 0));
-      }
-    }
-    expect(road.edgeCount()).toBe(after); // the edges are a Set: no duplicates, no stacking
-  });
-
-  it('serializes and re-seeds the same lattice', () => {
-    const road = new RoadModel();
-    const s = road.gridSize();
-    for (let i = 0; i <= 6; i += 1) road.sample(state(i * s, 0));
+    for (let x = 0; x <= 200; x += 8) road.sample(state(x, 0));
     const quads = road.serialize();
     const road2 = new RoadModel();
     road2.seed(quads);
     expect(road2.edgeCount()).toBe(road.edgeCount());
-  });
-
-  it('enforces corridor separation: grid cell is wider than the road', () => {
-    const road = new RoadModel();
-    expect(road.gridSize()).toBeGreaterThan(road.halfWidth() * 2); // gap between parallel corridors
-    expect(road.gridSize()).toBeGreaterThanOrEqual(CAR_WIDTH); // and at least a car
   });
 });
