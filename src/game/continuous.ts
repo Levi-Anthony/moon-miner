@@ -299,6 +299,13 @@ export interface ContinuousTuning {
   // Set low (~0.05-0.1) so a deployed drone creates real pressure but doesn't
   // make prepared movement feel like active refill.
   preparedRefillPerSecond: number;
+  // --- Ribbon economy (ground-up conceit rework, flag-gated) ---
+  // When true, the nanobot economy keys off the VISIBLE ribbon instead of the
+  // invisible field lattice: laying fresh ribbon (off-road, driving) costs
+  // stock; rolling your own laid ribbon (onRoad) is free/fast. Requires the
+  // caller to feed input.onRoad. Default false preserves the classic behaviour
+  // (self-play, tests, the old scene) so this is fully rollback-able.
+  ribbonEconomy: boolean;
 }
 
 export type DynamicsPresetId = 'stable-first-run' | 'current-classic' | 'drone-playground' | 'strict-logistics';
@@ -523,7 +530,8 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // stock only refills during crawl. This makes time cost; the drone creates
   // friction through flight distance (weighted in compareReclaimCandidates),
   // not through a baseline cost. Tune up if crawl pressure becomes insufficient.
-  preparedRefillPerSecond: 0
+  preparedRefillPerSecond: 0,
+  ribbonEconomy: false
 };
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -621,7 +629,8 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   preparedSpeed: 96,
   // Refill while on prepared ground. Zero means consequence comes from distance
   // weighting in drone selection, not from a baseline stock mechanic.
-  preparedRefillPerSecond: 0
+  preparedRefillPerSecond: 0,
+  ribbonEconomy: false
 };
 
 export const DEFAULT_DYNAMICS_PRESET_ID: DynamicsPresetId = 'stable-first-run';
@@ -1071,7 +1080,7 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
     field.age += deltaSeconds;
   }
 
-  state.speedState = resolveSpeedState(state);
+  state.speedState = resolveSpeedState(state, input.onRoad);
   // Stock refill happens independently of field fabrication. This creates the
   // consequence that long drone flights cost time you would otherwise spend
   // refilling -- the drone is out, you're not fabricating or refilling as fast.
@@ -1729,7 +1738,14 @@ function findJoinablePatchId(state: ContinuousWorldState, at: Vec2): number | un
 }
 
 
-function resolveSpeedState(state: ContinuousWorldState): SpeedState {
+function resolveSpeedState(state: ContinuousWorldState, onRoad?: boolean): SpeedState {
+  // Ribbon economy: "prepared" is being on the visible ribbon, not on invisible
+  // field coverage -- so the drain and the road you see are the same fact.
+  if (state.tuning.ribbonEconomy && onRoad !== undefined) {
+    if (onRoad) return 'prepared';
+    const exit = state.speedState === 'crawl' ? 2 : 0.85;
+    return state.nanobots >= exit ? 'fabricating' : 'crawl';
+  }
   if (getPreparedCoverage(state, state.rover) >= state.tuning.preparedCoverageThreshold) return 'prepared';
   // Hysteresis. Crawl recovery trickles up to 1.2 while the exit threshold was
   // 0.85, so stock crossed the boundary every few frames and the speed state --

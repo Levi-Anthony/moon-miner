@@ -74,6 +74,7 @@ campaign.tuningOverrides = {
   reclaimProtectLoop: true, // never cut the loop
   droneTetherRange: 560, // keep a line home
   reclaimAimBias: 3, // your facing aims the drone
+  ribbonEconomy: true, // build cost + rail key off the ribbon you see, not hidden fields
   ...savedConfig.tuning
 };
 let state!: ContinuousWorldState;
