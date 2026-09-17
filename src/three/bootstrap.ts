@@ -68,7 +68,14 @@ const road = new RoadModel(savedConfig.road);
 
 // --- Sim + campaign (day / shift / game loop, economy, carried road) ---------
 const campaign = new Campaign(savedConfig.loop);
-campaign.tuningOverrides = savedConfig.tuning;
+// The 3D app opts the drone into its repurposed role (the sim defaults preserve
+// the classic behaviour for tests). Saved values win, so panel tweaks persist.
+campaign.tuningOverrides = {
+  reclaimProtectLoop: true, // never cut the loop
+  droneTetherRange: 560, // keep a line home
+  reclaimAimBias: 3, // your facing aims the drone
+  ...savedConfig.tuning
+};
 let state!: ContinuousWorldState;
 let runEnded = false; // guards the once-per-run bank/persist
 
@@ -448,6 +455,15 @@ const drone = new THREE.Mesh(
 drone.visible = false;
 scene.add(drone);
 
+// The drone's line home: a faint tether from the depot to the drone while it's
+// out, so "it keeps a connection back" is something you can see.
+const tether = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+  new THREE.LineBasicMaterial({ color: 0x59d6c4, transparent: true, opacity: 0.5 })
+);
+tether.visible = false;
+scene.add(tether);
+
 // --- Transient 3D bursts (slurp, mining tick) --------------------------------
 interface Burst { mesh: THREE.Mesh; born: number; ttl: number; grow: number }
 const bursts: Burst[] = [];
@@ -745,11 +761,17 @@ function frame(now: number): void {
     disc.scale.setScalar(isMining ? 1 + pulse * 0.14 : 1);
   }
 
-  // Drone flies above the ground while committed.
+  // Drone flies above the ground while committed, trailing a tether back home.
   drone.visible = state.drone.status !== 'ready';
+  tether.visible = drone.visible;
   if (drone.visible) {
     drone.position.set(state.drone.x - W / 2, 60, state.drone.y - H / 2);
     drone.rotation.y += dt * 3;
+    const home = state.arena.extraction ?? state.arena.start;
+    (tether.geometry as THREE.BufferGeometry).setFromPoints([
+      new THREE.Vector3(home.x - W / 2, 8, home.y - H / 2),
+      new THREE.Vector3(state.drone.x - W / 2, 60, state.drone.y - H / 2)
+    ]);
   }
   updateBursts(now);
 

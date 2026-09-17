@@ -113,6 +113,9 @@ export interface ReclaimCandidateDiagnostics {
   refillEtaSeconds: number;
   eta: ReclaimEtaBreakdown;
   score: number;
+  // cos of the angle between the rover's facing and the bearing to this target
+  // (-1 behind .. 1 dead ahead). Weighted by reclaimAimBias when selecting.
+  aimAlignment: number;
 }
 
 export interface DroneReclaimDiagnostics {
@@ -236,6 +239,17 @@ export interface ContinuousTuning {
   allowLowPayloadLaunch: boolean;
   minReclaimClusterPayload: number;
   minReclaimCandidateCount: number;
+  // --- Drone repurpose: tethered, aimed, loop-safe cleanup/reclaim ---
+  // When true, the drone will only lift a set whose removal keeps every
+  // remaining tile connected to home -- it never cuts the loop. When false
+  // (sim default), topology only RANKS candidates, as the classic design did.
+  reclaimProtectLoop: boolean;
+  // The drone keeps a line home: a reclaim target must be within this distance
+  // of home (extraction, else start). A large value (default) = no tether.
+  droneTetherRange: number;
+  // How hard the rover's facing biases which target the drone picks. 0 = off
+  // (pure topology/distance, the classic behaviour); higher = aim dominates.
+  reclaimAimBias: number;
   preparedCoverageThreshold: number;
   preparedFieldMinValue: number;
   preparedMagnetInfluenceMultiplier: number;
@@ -482,6 +496,10 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   allowLowPayloadLaunch: false,
   minReclaimClusterPayload: 0.08,
   minReclaimCandidateCount: 1,
+  // Drone repurpose defaults preserve the classic behaviour; the 3D app opts in.
+  reclaimProtectLoop: false,
+  droneTetherRange: 1e9, // effectively no tether (JSON-safe sentinel, not Infinity)
+  reclaimAimBias: 0,
   preparedCoverageThreshold: 0.24,
   preparedFieldMinValue: 0.08,
   preparedMagnetInfluenceMultiplier: 1.35,
@@ -1519,11 +1537,14 @@ function moveDroneToward(state: ContinuousWorldState, target: Vec2, deltaSeconds
 }
 
 function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): { payload: number; count: number } {
+  // Lift exactly the loop-safe cluster the preview promised (getReclaimCluster
+  // applies the loop protection), so what's taken never breaks the network.
+  const liftIds = new Set(getReclaimCluster(state, target).map((f) => f.id));
   const lifted: FieldPatch[] = [];
   const remainingFields: FieldPatch[] = [];
 
   for (const field of state.fields) {
-    if (isInReclaimCluster(state, field, target)) {
+    if (liftIds.has(field.id)) {
       lifted.push(field);
     } else {
       remainingFields.push({ ...field, reservedByDrone: undefined });
@@ -2171,7 +2192,16 @@ export function getDroneReclaimDiagnostics(state: ContinuousWorldState): DroneRe
 }
 
 function selectDroneTarget(state: ContinuousWorldState): ReclaimCandidateDiagnostics | undefined {
-  return getReclaimCandidateDiagnostics(state).sort(compareReclaimCandidates)[0];
+  const bias = state.tuning.reclaimAimBias;
+  return getReclaimCandidateDiagnostics(state).sort((a, b) => compareReclaimCandidates(a, b, bias))[0];
+}
+
+// The exact set of tiles the drone would lift if launched now: the selected
+// target's loop-safe cluster. Exported for tests and for previewing the lift.
+export function getDroneLiftSet(state: ContinuousWorldState): FieldPatch[] {
+  const target = selectDroneTarget(state);
+  if (!target) return [];
+  return getReclaimCluster(state, target.target);
 }
 
 function getDroneBlockedReason(
@@ -2251,6 +2281,10 @@ function createReclaimCandidateDiagnostics(
   // by distance, but more so by connection" the design asks for.
   const distanceFromRover = distance(field, state.rover);
   const score = MAX_TRACK_DEGREE - getTrackDegree(state, field);
+  // How well the target sits in the direction the rover is facing: aiming the
+  // machine aims the drone.
+  const bearing = Math.atan2(field.y - state.rover.y, field.x - state.rover.x);
+  const aimAlignment = Math.cos(bearing - state.rover.heading);
   return {
     targetPatchId: field.id,
     target: { x: field.x, y: field.y },
@@ -2261,13 +2295,17 @@ function createReclaimCandidateDiagnostics(
     spread,
     refillEtaSeconds: eta.totalSeconds,
     eta,
-    score
+    score,
+    aimAlignment
   };
 }
 
-function compareReclaimCandidates(a: ReclaimCandidateDiagnostics, b: ReclaimCandidateDiagnostics): number {
-  const scoreDelta = b.score - a.score;
-  if (Math.abs(scoreDelta) > 0.000001) return scoreDelta;
+function compareReclaimCandidates(a: ReclaimCandidateDiagnostics, b: ReclaimCandidateDiagnostics, aimBias = 0): number {
+  // Fold the aim bias into the topology score, so facing a direction pulls the
+  // pick that way. aimAlignment is [-1,1]; a bias of ~2-3 makes it rival a full
+  // degree step. At bias 0 (sim default) this is the classic pure-topology sort.
+  const rankDelta = (b.score + aimBias * b.aimAlignment) - (a.score + aimBias * a.aimAlignment);
+  if (Math.abs(rankDelta) > 0.000001) return rankDelta;
 
   const distanceDelta = a.distanceFromRover - b.distanceFromRover;
   if (Math.abs(distanceDelta) > 0.000001) return distanceDelta;
@@ -2297,12 +2335,23 @@ function isLiftableRoad(state: ContinuousWorldState, field: FieldPatch): boolean
   return field.value >= state.tuning.reclaimMinFieldValue;
 }
 
+// Home is where the drone must keep a line back to: the extraction/depot if the
+// arena has one, otherwise the rover's start.
+function reclaimHome(state: ContinuousWorldState): Vec2 {
+  return state.arena.extraction ?? state.arena.start;
+}
+
 function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatch): boolean {
-  return (
-    !field.reservedByDrone &&
-    isLiftableRoad(state, field) &&
-    (state.tuning.allowCloseReclaim || distance(field, state.rover) >= state.tuning.reclaimMinDistanceFromRover)
-  );
+  if (field.reservedByDrone || !isLiftableRoad(state, field)) return false;
+  if (!(state.tuning.allowCloseReclaim || distance(field, state.rover) >= state.tuning.reclaimMinDistanceFromRover)) return false;
+  // Tether: a target must stay within reach of home so the drone keeps a
+  // connection back. (Default range is effectively unlimited.)
+  if (distance(field, reclaimHome(state)) > state.tuning.droneTetherRange) return false;
+  // Loop protection: only loose ends / isolated tiles are targetable, so lifting
+  // the target can never sever the network. (getReclaimCluster then keeps the
+  // whole lifted set loop-safe.)
+  if (state.tuning.reclaimProtectLoop && getTrackDegree(state, field) > 1) return false;
+  return true;
 }
 
 // The drone takes loose ends, never the middle of a path.
@@ -2347,7 +2396,36 @@ export function getTrackDegree(
 
 
 function getReclaimCluster(state: ContinuousWorldState, target: Vec2): FieldPatch[] {
-  return state.fields.filter((field) => isInReclaimCluster(state, field, target));
+  const raw = state.fields.filter((field) => isInReclaimCluster(state, field, target));
+  return loopSafeCluster(state, raw);
+}
+
+// Keep the reclaim from ever splitting the road into islands: lift a tile from
+// the cluster only while it is CURRENTLY a loose end (degree <= 1) of what's
+// left. Removing a degree<=1 vertex can never disconnect a graph, so peeling
+// leaves off the cluster one layer at a time leaves the remaining network in
+// one piece -- the rover's road home is never cut in two. When loop protection
+// is off this is a no-op, preserving the classic behaviour.
+function loopSafeCluster(state: ContinuousWorldState, cluster: FieldPatch[]): FieldPatch[] {
+  if (!state.tuning.reclaimProtectLoop || cluster.length <= 1) return cluster;
+  const clusterIds = new Set(cluster.map((f) => f.id));
+  const remaining = new Map(state.fields.map((f) => [f.id, f] as const));
+  const lifted: FieldPatch[] = [];
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    const index = buildTileIndex([...remaining.values()], state.tuning.tileSize);
+    for (const field of remaining.values()) {
+      if (!clusterIds.has(field.id)) continue;
+      if (fieldNeighbours(field, index, state.tuning.tileSize).length <= 1) {
+        remaining.delete(field.id);
+        lifted.push(field);
+        progressed = true;
+        break; // rebuild the index; degrees shift as leaves come off
+      }
+    }
+  }
+  return lifted;
 }
 
 function isInReclaimCluster(state: ContinuousWorldState, field: FieldPatch, target: Vec2): boolean {

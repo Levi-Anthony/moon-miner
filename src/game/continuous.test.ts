@@ -76,8 +76,9 @@ describe('continuous Moon Miner spike rules', () => {
     // Layout is shuffled per seed now, so assert the shuffle INVARIANTS rather
     // than fixed coordinates: every seam is inside the field, clear of the depot
     // and the extraction, and keeps its vein.
+    // Field widened for the bigger level (base spread bounds 90..905 x 150..675).
     const inBounds = (zone: (typeof world.fertileZones)[number]) =>
-      zone.x >= 140 && zone.x <= 910 && zone.y >= 190 && zone.y <= 620;
+      zone.x >= 80 && zone.x <= 915 && zone.y >= 140 && zone.y <= 685;
     expect(world.fertileZones.every(inBounds)).toBe(true);
     expect(
       world.fertileZones.every(

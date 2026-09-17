@@ -153,6 +153,11 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Start stock', min: 0, max: 24, step: 1, fmt: int, hint: 'Applies next day.', get: tget('startingNanobots'), set: tset('startingNanobots') });
   addRow({ label: 'Sun window', min: 30, max: 220, step: 5, fmt: int, hint: 'Applies next day.', get: tget('startingSolarSeconds'), set: tset('startingSolarSeconds') });
 
+  section('Drone (cleanup / reclaim)');
+  addRow({ label: 'Protect the loop', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off'), hint: 'On = the drone only lifts loose ends, never a section that would split the road.', get: () => (ctx.getState().tuning.reclaimProtectLoop ? 1 : 0), set: (v) => ctx.applyTuning({ reclaimProtectLoop: v >= 0.5 }) });
+  addRow({ label: 'Tether range', min: 120, max: 1200, step: 20, fmt: int, hint: 'How far from home the drone may reclaim. It keeps a line back.', get: tget('droneTetherRange'), set: tset('droneTetherRange') });
+  addRow({ label: 'Aim bias', min: 0, max: 6, step: 0.5, fmt: p2, hint: 'How hard the rover’s facing steers which section the drone grabs. 0 = off.', get: tget('reclaimAimBias'), set: tset('reclaimAimBias') });
+
   const btns = document.createElement('div');
   btns.className = 'btns';
   const mk = (text: string, fn: () => void) => {
