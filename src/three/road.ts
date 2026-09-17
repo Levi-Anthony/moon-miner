@@ -1,63 +1,66 @@
-// Engine-agnostic road presentation: the driven trail, the pure-pursuit carry
-// (road lock), the rail-boost momentum, the on-road test, and the turbo slurp.
-// This is the feel we tuned in the old scene, lifted out of Phaser -- it is pure
-// math over the sim state and a {x,y,t} trail, so it drives the 3D app (or any
-// renderer). The renderer paints the trail; this decides where the trail goes
-// and what carry/boost/onRoad to feed back into the sim each tick.
+// Engine-agnostic road presentation as a MAZE LATTICE. The road is not a free
+// polyline any more -- that let the rover scribble contiguous blobs that snarled
+// its own lock. Here the road lives on a square grid: the rover's path snaps to
+// grid nodes and road is laid as EDGES between adjacent nodes, so the structure
+// can only ever be corridors and intersections. Driving the same patch over and
+// over just re-occupies the same cells -- it self-organizes onto the lattice
+// instead of piling up. Separation is enforced by the grid: two parallel
+// corridors are at least one cell (> road width) apart.
+//
+// Everything else -- the pure-pursuit lock, the rail boost, the on-road test,
+// the turbo slurp -- reads this graph and the sim state, so it still drives the
+// 3D app (or any renderer). The renderer paints the edges.
 import type { ContinuousWorldState, Vec2 } from '../game/continuous';
 
 export const CAR_WIDTH = 54;
-const ROAD_TRAIL_SPACING = 6;
-const ROAD_CURE_SECONDS = 1.2;
 const ROAD_ALIGN_MIN = 0.6;
 const ROAD_FOLLOW_LOOKAHEAD_MULT = 2.4;
 const ROAD_BOOST_RAMP_SECONDS = 1.1;
 const ROAD_BOOST_DECAY_SECONDS = 0.45;
 const ROAD_SLIDE_MAX = 1.0;
+const MAX_EDGES = 4000;
 
 export interface RoadConfig {
   roadWidthCars: number; // road width in car-widths
   slurpBandPct: number; // central fraction of a seam a fast pass slurps (0 = off)
   slurpMinBoost: number; // rail boost needed for a slurp
   slurpChargeSeconds: number; // sustained-top-speed time needed before a slurp arms
-  laneGapFactor: number; // min gap between parallel lanes, in half-widths
+  gridCars: number; // lattice cell size in car-widths -- the maze grain + the enforced corridor separation
   followStrength: number; // how hard laid road pulls the rover onto its line
-  blobGuard: number; // max existing road allowed near a new point before laying is refused (anti-blob)
 }
 
 export const DEFAULT_ROAD_CONFIG: RoadConfig = {
-  // The 2.2-car width was a workaround for the old vector road (too narrow/
-  // obscuring/pinching). On the real substrate those are gone, so this is back
-  // down to a natural road that's just comfortably wider than the rover.
   roadWidthCars: 1.4,
   slurpBandPct: 0.34,
   slurpMinBoost: 0.55,
   // The slurp is a REWARD for a committed high-speed run, not a park-and-grab.
-  // You have to hold rail top speed for this long before it arms, so it can
-  // never instantly swallow the pool you're sitting on -- you have to build the
-  // run first. Dropping off top speed disarms it immediately.
   slurpChargeSeconds: 1.6,
-  laneGapFactor: 0.4,
-  followStrength: 9,
-  // Anti-blob, 0..1. The rover refuses to lay a new point where nearby road
-  // already runs in many directions -- a scribbled patch that would confuse the
-  // lock later. It measures how AXIAL the surrounding road is (a single clean
-  // crossing is one axis -> high; a blob points every way -> low) and refuses
-  // when that falls below this threshold. 0 = off (blobs allowed); higher =
-  // stricter / cleaner network.
-  blobGuard: 0.5
+  // Cell just over the road width, so parallel corridors always carry a real
+  // gap and the lattice reads as a maze, not a filled field -- but fine enough
+  // that ordinary driving lays a visible corridor rather than the odd chunk.
+  gridCars: 1.5,
+  followStrength: 9
 };
 
-export interface TrailPoint { x: number; y: number; t: number }
 export interface SlurpEvent { x: number; y: number; gained: number }
+// A laid road segment between two lattice nodes, in world coordinates (for the
+// renderer). The lattice cell indices are kept for persistence.
+export interface RoadEdge { ax: number; ay: number; bx: number; by: number }
+// Compact persisted form: [gx0, gy0, gx1, gy1] cell indices.
+export type RoadEdgeQuad = [number, number, number, number];
 
 function angleDifference(target: number, current: number): number {
   const twoPi = Math.PI * 2;
   return (((target - current + Math.PI) % twoPi) + twoPi) % twoPi - Math.PI;
 }
+const nodeKey = (gx: number, gy: number): string => `${gx},${gy}`;
+const edgeKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
 
 export class RoadModel {
-  readonly trail: TrailPoint[] = [];
+  // The lattice: occupied nodes and the edges between them (canonical keys).
+  private nodes = new Set<string>();
+  private edges = new Map<string, RoadEdgeQuad>();
+  private lastCell: { gx: number; gy: number } | null = null;
   boost = 0; // 0..1 rail momentum, fed to the sim as roadRunway
   charge = 0; // seconds held at rail top speed; the slurp arms once it passes slurpChargeSeconds
   config: RoadConfig;
@@ -69,129 +72,146 @@ export class RoadModel {
   halfWidth(): number {
     return (this.config.roadWidthCars * CAR_WIDTH) / 2;
   }
+  gridSize(): number {
+    return Math.max(this.halfWidth() * 1.2, this.config.gridCars * CAR_WIDTH);
+  }
+  private cellOf(x: number, y: number): { gx: number; gy: number } {
+    const s = this.gridSize();
+    return { gx: Math.round(x / s), gy: Math.round(y / s) };
+  }
+  private centre(gx: number, gy: number): Vec2 {
+    const s = this.gridSize();
+    return { x: gx * s, y: gy * s };
+  }
 
   reset(): void {
-    this.trail.length = 0;
+    this.nodes.clear();
+    this.edges.clear();
+    this.lastCell = null;
     this.boost = 0;
     this.charge = 0;
   }
 
-  // Index up to which the trail has "cured" (points older than the cure window
-  // are pre-laid road; the fresh tail is what you are laying right now).
-  private curedLimit(elapsed: number): number {
-    let limit = this.trail.length;
-    while (limit > 0 && elapsed - this.trail[limit - 1].t < ROAD_CURE_SECONDS) limit -= 1;
-    return limit;
+  edgeCount(): number {
+    return this.edges.size;
   }
 
-  // Look at the road already around `at` (ignoring the current stroke's recent
-  // tail) and report how many points are near and how AXIAL they are. Axial ~1
-  // means the surrounding road forms a single line (a clean crossing you can
-  // drive through); axial ~0 means it points every which way (a blob). Uses the
-  // cos/sin-of-2*theta resultant so a straight line -- whose two ends bear in
-  // opposite directions -- still reads as one axis.
-  private roadSpreadAt(at: Vec2, radius: number, excludeFromEnd: number): { count: number; axial: number } {
-    const r2 = radius * radius;
-    const upTo = this.trail.length - excludeFromEnd;
-    let count = 0;
-    let sumC = 0;
-    let sumS = 0;
-    for (let i = 0; i < upTo; i += 1) {
-      const dx = this.trail[i].x - at.x;
-      const dy = this.trail[i].y - at.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < r2 && d2 > 1) {
-        const theta = Math.atan2(dy, dx);
-        sumC += Math.cos(2 * theta);
-        sumS += Math.sin(2 * theta);
-        count += 1;
-      }
+  // Every laid edge in world coordinates, for painting a fresh canvas.
+  edgesForPaint(): RoadEdge[] {
+    const s = this.gridSize();
+    const out: RoadEdge[] = [];
+    for (const [gx0, gy0, gx1, gy1] of this.edges.values()) {
+      out.push({ ax: gx0 * s, ay: gy0 * s, bx: gx1 * s, by: gy1 * s });
     }
-    return { count, axial: count > 0 ? Math.hypot(sumC, sumS) / count : 1 };
+    return out;
   }
 
-  private nearest(limit: number, at: Vec2): { index: number; dist: number } {
-    let index = -1;
+  // Add a node + the edge to its predecessor; returns the world-space edge if it
+  // was new (so the renderer can paint just the addition).
+  private link(gx0: number, gy0: number, gx1: number, gy1: number, out: RoadEdge[]): void {
+    this.nodes.add(nodeKey(gx1, gy1));
+    if (gx0 === gx1 && gy0 === gy1) return;
+    const key = edgeKey(nodeKey(gx0, gy0), nodeKey(gx1, gy1));
+    if (this.edges.has(key) || this.edges.size >= MAX_EDGES) return;
+    this.edges.set(key, [gx0, gy0, gx1, gy1]);
+    const a = this.centre(gx0, gy0);
+    const b = this.centre(gx1, gy1);
+    out.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+  }
+
+  // Lay road along the rover's path, snapped to the lattice. Walks a king-step
+  // line of cells from the last cell to the current one, so fast driving still
+  // lays a connected corridor and no cell is ever skipped. Returns the newly
+  // laid edges (world coords) for the renderer; a cell already threaded adds
+  // nothing, which is exactly why the same patch can't grow into a blob.
+  sample(state: ContinuousWorldState): RoadEdge[] {
+    if (state.speedState === 'crawl') return [];
+    const cur = this.cellOf(state.rover.x, state.rover.y);
+    const out: RoadEdge[] = [];
+    if (!this.lastCell) {
+      this.nodes.add(nodeKey(cur.gx, cur.gy));
+      this.lastCell = cur;
+      return out;
+    }
+    let { gx, gy } = this.lastCell;
+    let guard = 0;
+    while ((gx !== cur.gx || gy !== cur.gy) && guard < 512) {
+      const nx = gx + Math.sign(cur.gx - gx);
+      const ny = gy + Math.sign(cur.gy - gy);
+      this.link(gx, gy, nx, ny, out);
+      gx = nx;
+      gy = ny;
+      guard += 1;
+    }
+    this.lastCell = cur;
+    return out;
+  }
+
+  // --- persistence: carry the lattice across days within a shift --------------
+  serialize(): RoadEdgeQuad[] {
+    return [...this.edges.values()].map((q) => [...q] as RoadEdgeQuad);
+  }
+  seed(quads: RoadEdgeQuad[]): void {
+    this.reset();
+    for (const q of quads) {
+      if (!Array.isArray(q) || q.length < 4) continue;
+      const [gx0, gy0, gx1, gy1] = q;
+      this.nodes.add(nodeKey(gx0, gy0));
+      this.nodes.add(nodeKey(gx1, gy1));
+      this.edges.set(edgeKey(nodeKey(gx0, gy0), nodeKey(gx1, gy1)), [gx0, gy0, gx1, gy1]);
+    }
+  }
+
+  // Nearest laid edge to a point: its perpendicular distance, the closest point
+  // on it, and its (unit) tangent. O(edges); the lattice keeps that bounded.
+  private nearestEdge(at: Vec2): { dist: number; px: number; py: number; tx: number; ty: number } | null {
     let best = Infinity;
-    for (let i = 0; i < limit; i += 1) {
-      const d = Math.hypot(this.trail[i].x - at.x, this.trail[i].y - at.y);
+    let res: { dist: number; px: number; py: number; tx: number; ty: number } | null = null;
+    const s = this.gridSize();
+    for (const [gx0, gy0, gx1, gy1] of this.edges.values()) {
+      const ax = gx0 * s;
+      const ay = gy0 * s;
+      const bx = gx1 * s;
+      const by = gy1 * s;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len2 = dx * dx + dy * dy || 1;
+      let t = ((at.x - ax) * dx + (at.y - ay) * dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const px = ax + dx * t;
+      const py = ay + dy * t;
+      const d = Math.hypot(at.x - px, at.y - py);
       if (d < best) {
         best = d;
-        index = i;
+        const len = Math.sqrt(len2);
+        res = { dist: d, px, py, tx: dx / len, ty: dy / len };
       }
     }
-    return { index, dist: best };
+    return res;
   }
 
-  private alignmentAt(index: number, limit: number, heading: number): number {
-    const a = this.trail[Math.max(0, index - 1)];
-    const b = this.trail[Math.min(limit - 1, index + 1)];
-    const tx = b.x - a.x;
-    const ty = b.y - a.y;
-    const len = Math.hypot(tx, ty) || 1;
-    return Math.abs((tx / len) * Math.cos(heading) + (ty / len) * Math.sin(heading));
-  }
-
-  // Pure-pursuit carry toward the road (the lock). Returns a steer command the
-  // sim applies as assistSteer, or 0 when off the road / crossing it.
+  // Pure-pursuit carry toward the nearest laid edge (the lock). Returns a steer
+  // command the sim applies as assistSteer, or 0 when off the road / crossing it.
   carrySteer(state: ContinuousWorldState): number {
-    const limit = this.curedLimit(state.elapsedSeconds);
-    if (limit < 2) return 0;
     const rover = state.rover;
-    const near = this.nearest(limit, rover);
-    if (near.index < 1 || near.dist >= this.halfWidth()) return 0;
-    if (this.alignmentAt(near.index, limit, rover.heading) < ROAD_ALIGN_MIN) return 0;
-    const a = this.trail[Math.max(0, near.index - 1)];
-    const b = this.trail[Math.min(limit - 1, near.index + 1)];
-    let tangent = Math.atan2(b.y - a.y, b.x - a.x);
-    const forward = Math.cos(tangent) * Math.cos(rover.heading) + Math.sin(tangent) * Math.sin(rover.heading) >= 0 ? 1 : -1;
-    if (forward < 0) tangent += Math.PI;
-    const centre = this.trail[near.index];
+    const ne = this.nearestEdge(rover);
+    if (!ne || ne.dist >= this.halfWidth()) return 0;
+    const align = Math.abs(ne.tx * Math.cos(rover.heading) + ne.ty * Math.sin(rover.heading));
+    if (align < ROAD_ALIGN_MIN) return 0; // crossing it, not running along it
+    let tangent = Math.atan2(ne.ty, ne.tx);
+    if (Math.cos(tangent) * Math.cos(rover.heading) + Math.sin(tangent) * Math.sin(rover.heading) < 0) tangent += Math.PI;
     const lookahead = this.halfWidth() * ROAD_FOLLOW_LOOKAHEAD_MULT;
     const desired = Math.atan2(
-      centre.y + Math.sin(tangent) * lookahead - rover.y,
-      centre.x + Math.cos(tangent) * lookahead - rover.x
+      ne.py + Math.sin(tangent) * lookahead - rover.y,
+      ne.px + Math.cos(tangent) * lookahead - rover.x
     );
     return Math.max(-1, Math.min(1, angleDifference(desired, rover.heading) / 0.18)) * this.config.followStrength;
   }
 
   isOnLaidRoad(state: ContinuousWorldState): boolean {
-    const limit = this.curedLimit(state.elapsedSeconds);
-    if (limit < 2) return false;
-    const near = this.nearest(limit, state.rover);
-    return near.index >= 1 && near.dist < this.halfWidth() && this.alignmentAt(near.index, limit, state.rover.heading) >= ROAD_ALIGN_MIN;
-  }
-
-  // Lay road where the rover drives, honouring the same non-overlap / regular-gap
-  // rules as the tuned game. Returns the newly added point (for the renderer to
-  // paint) or null when nothing was laid.
-  sample(state: ContinuousWorldState): TrailPoint | null {
-    if (state.speedState === 'crawl') return null;
-    const rover = state.rover;
-    const last = this.trail[this.trail.length - 1];
-    if (last && Math.hypot(rover.x - last.x, rover.y - last.y) < ROAD_TRAIL_SPACING) return null;
-    const limit = this.curedLimit(state.elapsedSeconds);
-    if (limit >= 2) {
-      const near = this.nearest(limit, rover);
-      const half = this.halfWidth();
-      const laneGap = half * this.config.laneGapFactor;
-      const onRibbon = near.index >= 0 && near.dist < half * 0.55;
-      const tooAdjacent = near.index >= 0 && near.dist < half * 2 + laneGap && this.alignmentAt(near.index, limit, rover.heading) >= ROAD_ALIGN_MIN;
-      if (onRibbon || tooAdjacent) return null;
-      // Anti-blob: refuse to add road where the surrounding road already runs
-      // in many directions. A clean single crossing reads as one axis and is
-      // allowed; scribbling the same patch (which confuses the lock later) reads
-      // as multidirectional and is refused. The recent tail is excluded so the
-      // stroke you're currently laying never counts against itself.
-      if (this.config.blobGuard > 0) {
-        const spread = this.roadSpreadAt(rover, half * 1.4, 20);
-        if (spread.count >= 6 && spread.axial < this.config.blobGuard) return null;
-      }
-    }
-    const point = { x: rover.x, y: rover.y, t: state.elapsedSeconds };
-    this.trail.push(point);
-    if (this.trail.length > 6000) this.trail.shift();
-    return point;
+    const ne = this.nearestEdge(state.rover);
+    if (!ne || ne.dist >= this.halfWidth()) return false;
+    return Math.abs(ne.tx * Math.cos(state.rover.heading) + ne.ty * Math.sin(state.rover.heading)) >= ROAD_ALIGN_MIN;
   }
 
   updateBoost(deltaSeconds: number, onRoad: boolean): void {
@@ -199,16 +219,12 @@ export class RoadModel {
     this.boost = Math.max(0, Math.min(ROAD_SLIDE_MAX, this.boost + rate));
   }
 
-  // Accumulate "time at rail top speed". Ramps up only while the rover is
-  // genuinely at top speed; the moment it drops off, the charge hard-resets so
-  // the slurp disarms. This is what forces a slurp to be earned by a sustained
-  // run rather than granted the instant you're on road near a seam.
+  // Accumulate "time at rail top speed"; hard-resets the moment the rover drops
+  // off, so a slurp is earned by a sustained run, not granted on arrival.
   updateCharge(deltaSeconds: number, atTopSpeed: boolean): void {
     this.charge = atTopSpeed ? Math.min(this.config.slurpChargeSeconds + 1, this.charge + deltaSeconds) : 0;
   }
 
-  // True once a committed top-speed run has charged the slurp (and boost/band
-  // allow it at all). The renderer reads this to show the "armed" cue.
   slurpArmed(): boolean {
     return this.config.slurpBandPct > 0 && this.boost >= this.config.slurpMinBoost && this.charge >= this.config.slurpChargeSeconds;
   }

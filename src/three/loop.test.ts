@@ -61,9 +61,10 @@ describe('Campaign economy', () => {
 });
 
 describe('Campaign carried road', () => {
-  const trail = [
-    { x: 100, y: 100, t: 0 },
-    { x: 120, y: 100, t: 0 }
+  // Road is a lattice now: edges are [gx0, gy0, gx1, gy1] cell quads.
+  const road: [number, number, number, number][] = [
+    [0, 0, 1, 0],
+    [1, 0, 2, 0]
   ];
 
   it('carries the road into the next day WITHIN a shift', () => {
@@ -71,8 +72,8 @@ describe('Campaign carried road', () => {
     c.dayNumber = 1; // next day (2) is same shift
     const world = createContinuousWorld('t', {}, 'last-light-return');
     world.phase = 'won';
-    c.endRun(world, trail);
-    expect(c.carriedTrail.length).toBe(trail.length);
+    c.endRun(world, road);
+    expect(c.carriedRoad.length).toBe(road.length);
   });
 
   it('wipes the road at a shift boundary', () => {
@@ -80,7 +81,7 @@ describe('Campaign carried road', () => {
     c.dayNumber = 3; // next day (4) starts a new shift
     const world = createContinuousWorld('t', {}, 'last-light-return');
     world.phase = 'won';
-    c.endRun(world, trail);
-    expect(c.carriedTrail.length).toBe(0);
+    c.endRun(world, road);
+    expect(c.carriedRoad.length).toBe(0);
   });
 });

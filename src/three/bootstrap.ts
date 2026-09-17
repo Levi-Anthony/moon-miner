@@ -21,7 +21,7 @@ import {
   type ContinuousWorldState,
   type Vec2
 } from '../game/continuous';
-import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type TrailPoint, type SlurpEvent } from './road';
+import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type RoadEdgeQuad, type SlurpEvent } from './road';
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type TerrainConfig } from './panel';
 
@@ -306,17 +306,10 @@ function strokeRoadSeg(ax: number, ay: number, bx: number, by: number): void {
   roadTexture.needsUpdate = true;
 }
 
-// Stroke the segment from the previous laid point to a newly laid one. A big
-// jump means a skipped stretch (junction / lane-gap): don't bridge it, just cap
-// a round end at the new point so the ribbon stays clean and separate.
-function paintTrailPoint(added: TrailPoint): void {
-  const prev = road.trail[road.trail.length - 2];
-  const jump = road.halfWidth() * 3;
-  if (!prev || Math.hypot(added.x - prev.x, added.y - prev.y) > jump) {
-    strokeRoadSeg(added.x, added.y, added.x, added.y); // round dot cap
-    return;
-  }
-  strokeRoadSeg(prev.x, prev.y, added.x, added.y);
+// Stroke one lattice edge as a round-capped segment. Round caps mean edges meet
+// cleanly at shared nodes (intersections) with no gaps or beading.
+function paintEdge(e: RoadEdge): void {
+  strokeRoadSeg(e.ax, e.ay, e.bx, e.by);
 }
 
 // The slurp's visible cue is the 3D gold burst (spawnBurst); no permanent scar.
@@ -390,42 +383,26 @@ function rebuildWorldMeshes(): void {
   }
 }
 
-// Clear the ground to the lunar base and stroke an inherited road trail as one
-// continuous ribbon, breaking the path across skip-gaps so junctions stay clean.
-function repaintCanvas(trail: TrailPoint[]): void {
+// Clear the ground to the lunar base + terrain, then stroke every laid lattice
+// edge. Round caps make edges meet cleanly at shared nodes (intersections).
+function repaintCanvas(edges: RoadEdge[]): void {
   rctx.fillStyle = GROUND_BASE;
   rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
   paintTerrain(terrainFeatures); // features composite under the road
-  if (trail.length > 0) {
-    const jump = road.halfWidth() * 3;
-    rctx.strokeStyle = ROAD_TEAL;
-    rctx.lineWidth = road.halfWidth() * 2 * PX;
-    rctx.lineCap = 'round';
-    rctx.lineJoin = 'round';
-    rctx.beginPath();
-    rctx.moveTo(trail[0].x * PX, trail[0].y * PX);
-    for (let i = 1; i < trail.length; i += 1) {
-      const prev = trail[i - 1];
-      const p = trail[i];
-      if (Math.hypot(p.x - prev.x, p.y - prev.y) > jump) rctx.moveTo(p.x * PX, p.y * PX);
-      else rctx.lineTo(p.x * PX, p.y * PX);
-    }
-    rctx.stroke();
-  }
+  for (const e of edges) paintEdge(e);
   roadTexture.needsUpdate = true;
 }
 
 // Install a freshly built world (start of day, next day, or new game): adopt the
-// sim state, seed the road with the carried trail (so inherited road is drivable
-// and painted), and rebuild the seam/extraction meshes for this layout.
-function applyWorld(built: { state: ContinuousWorldState; trail: TrailPoint[] }): void {
+// sim state, seed the road lattice with the carried edges (so inherited road is
+// drivable and painted), and rebuild the seam/extraction meshes for this layout.
+function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }): void {
   state = built.state;
-  road.reset();
-  road.trail.push(...built.trail);
+  road.seed(built.road);
   road.boost = 0;
   terrainFeatures = generateTerrain(state.seed); // this world's own terrain
   applyRelief(terrainFeatures);
-  repaintCanvas(built.trail);
+  repaintCanvas(road.edgesForPaint());
   rebuildWorldMeshes();
   runEnded = false;
 }
@@ -733,9 +710,8 @@ function frame(now: number): void {
 
   state = tickContinuousWorld(state, input, dt);
 
-  // Lay the road by the sim's own rules and paint what was laid.
-  const added = road.sample(state);
-  if (added) paintTrailPoint(added);
+  // Lay the road onto the lattice and paint whichever edges are new.
+  for (const e of road.sample(state)) paintEdge(e);
   const onRoadNow = road.isOnLaidRoad(state);
   road.updateBoost(dt, onRoadNow);
   // Slurp charge: only builds while genuinely at rail top speed on road, so the
@@ -781,7 +757,7 @@ function frame(now: number): void {
   // Run just ended: bank + compute carry once, then show the result banner.
   if (state.phase !== 'playing' && !runEnded) {
     runEnded = true;
-    campaign.endRun(state, road.trail);
+    campaign.endRun(state, road.serialize());
     showBanner();
   }
 
@@ -807,11 +783,11 @@ function applyTuning(patch: Partial<ContinuousTuning>): void {
 // Install the first day's world, mount the control panel, then start the loop.
 applyWorld(campaign.buildWorld());
 // Terrain-knob change: regenerate this world's features and redraw the ground
-// (relief + painted craters), keeping the current road trail.
+// (relief + painted craters), keeping the current road lattice.
 function applyTerrain(): void {
   terrainFeatures = generateTerrain(state.seed);
   applyRelief(terrainFeatures);
-  repaintCanvas(road.trail);
+  repaintCanvas(road.edgesForPaint());
 }
 createPanel({
   campaign,

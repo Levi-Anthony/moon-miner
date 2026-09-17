@@ -12,7 +12,7 @@ import {
   type FieldPatch
 } from '../game/continuous';
 import type { ContinuousArenaId } from '../game/continuousArena';
-import type { TrailPoint } from './road';
+import type { RoadEdgeQuad } from './road';
 
 export interface LoopConfig {
   daysPerShift: number;
@@ -42,7 +42,7 @@ interface Save {
   fields: FieldPatch[];
   depletion: Record<string, number>;
   banked: number;
-  trail: TrailPoint[];
+  road: RoadEdgeQuad[];
 }
 
 export class Campaign {
@@ -53,7 +53,7 @@ export class Campaign {
   bankedOre = 0;
   carriedFields: FieldPatch[] = [];
   carriedDepletion: Record<string, number> = {};
-  carriedTrail: TrailPoint[] = [];
+  carriedRoad: RoadEdgeQuad[] = [];
   // Live sim-tuning overrides from the control panel, applied to every world we
   // build so panel tweaks persist across days.
   tuningOverrides: Partial<ContinuousTuning> = {};
@@ -84,9 +84,9 @@ export class Campaign {
   }
 
   // Build the world for the current day (block seed + quota override + level
-  // scale + carried road/depletion). Returns the state and the carried trail to
-  // repaint/seed the road with.
-  buildWorld(): { state: ContinuousWorldState; trail: TrailPoint[] } {
+  // scale + carried road/depletion). Returns the state and the carried road
+  // lattice to seed/repaint the road with.
+  buildWorld(): { state: ContinuousWorldState; road: RoadEdgeQuad[] } {
     const state = createContinuousWorld(
       this.worldSeedFor(this.dayNumber),
       this.tuningOverrides,
@@ -101,7 +101,7 @@ export class Campaign {
         extraction: { ...state.arena.extraction, oreRequired: this.config.quota }
       };
     }
-    return { state, trail: this.carriedTrail.slice() };
+    return { state, road: this.carriedRoad.map((q) => [...q] as RoadEdgeQuad) };
   }
 
   // A run ended: bank the day's haul (full on a clean win, minus the fee on an
@@ -109,7 +109,7 @@ export class Campaign {
   // next day (road persists within a shift, wiped at a shift boundary; a hard
   // fail can shed a tunable fraction), and persist. Does NOT advance the day --
   // the banner shows this day's result; advance() moves on.
-  endRun(state: ContinuousWorldState, trail: TrailPoint[]): void {
+  endRun(state: ContinuousWorldState, road: RoadEdgeQuad[]): void {
     const won = state.phase === 'won';
     const fee = state.returnedUnderQuota ? 1 - this.config.underQuotaFeePct : 1;
     this.bankedOre += won ? state.rover.ore * fee : 0;
@@ -120,14 +120,14 @@ export class Campaign {
     const nextDay = this.dayNumber + 1;
     const sameShift = this.shiftOfDay(nextDay) === this.shiftOfDay(this.dayNumber);
     let fields = sameShift ? carryFieldsOvernight(state.fields, state.tuning) : [];
-    let carriedTrail = sameShift ? trail.slice() : [];
+    let carriedRoad = sameShift ? road.slice() : [];
     if (!won && sameShift && this.config.hardFailRoadResetPct > 0) {
       const keepF = Math.round(fields.length * (1 - this.config.hardFailRoadResetPct));
-      const keepT = Math.round(carriedTrail.length * (1 - this.config.hardFailRoadResetPct));
+      const keepR = Math.round(carriedRoad.length * (1 - this.config.hardFailRoadResetPct));
       fields = fields.slice(0, Math.max(0, keepF));
-      carriedTrail = carriedTrail.slice(0, Math.max(0, keepT));
+      carriedRoad = carriedRoad.slice(0, Math.max(0, keepR));
     }
-    this.persist(nextDay, fields, carryDepletionOvernight(state.fertileZones), carriedTrail);
+    this.persist(nextDay, fields, carryDepletionOvernight(state.fertileZones), carriedRoad);
   }
 
   // Advance to the next day (or a fresh game after the last day), loading
@@ -146,7 +146,7 @@ export class Campaign {
     this.bankedOre = 0;
     this.carriedFields = [];
     this.carriedDepletion = {};
-    this.carriedTrail = [];
+    this.carriedRoad = [];
     try {
       window.localStorage.setItem(SEED_KEY, this.gameSeed);
       window.localStorage.removeItem(SAVE_KEY);
@@ -178,22 +178,22 @@ export class Campaign {
       this.carriedFields = Array.isArray(p?.fields) ? (p!.fields as FieldPatch[]) : [];
       this.carriedDepletion = p?.depletion && typeof p.depletion === 'object' ? p.depletion : {};
       this.bankedOre = typeof p?.banked === 'number' ? p.banked : 0;
-      this.carriedTrail = Array.isArray(p?.trail) ? (p!.trail as TrailPoint[]) : [];
+      this.carriedRoad = Array.isArray(p?.road) ? (p!.road as RoadEdgeQuad[]) : [];
     } catch {
       this.dayNumber = 1;
       this.carriedFields = [];
       this.carriedDepletion = {};
       this.bankedOre = 0;
-      this.carriedTrail = [];
+      this.carriedRoad = [];
     }
   }
-  private persist(day: number, fields: FieldPatch[], depletion: Record<string, number>, trail: TrailPoint[]): void {
+  private persist(day: number, fields: FieldPatch[], depletion: Record<string, number>, road: RoadEdgeQuad[]): void {
     // Update in-memory carry too, so advance() reflects it even if storage fails.
     this.carriedFields = fields;
     this.carriedDepletion = depletion;
-    this.carriedTrail = trail;
+    this.carriedRoad = road;
     try {
-      window.localStorage.setItem(SAVE_KEY, JSON.stringify({ day, fields, depletion, banked: this.bankedOre, trail } satisfies Save));
+      window.localStorage.setItem(SAVE_KEY, JSON.stringify({ day, fields, depletion, banked: this.bankedOre, road } satisfies Save));
     } catch {
       /* storage may be unavailable */
     }

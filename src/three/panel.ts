@@ -139,8 +139,7 @@ export function createPanel(ctx: PanelCtx): void {
 
   section('Road & Slurp');
   addRow({ label: 'Road width (cars)', min: 1, max: 6, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Width of the laid road, in car-widths. Applies live.', get: () => rc.roadWidthCars, set: (v) => (rc.roadWidthCars = v) });
-  addRow({ label: 'Lane gap', min: 0, max: 3, step: 0.1, fmt: p2, hint: 'Min gap kept between parallel lanes, in half-widths. Bigger = lanes stay farther apart.', get: () => rc.laneGapFactor, set: (v) => (rc.laneGapFactor = v) });
-  addRow({ label: 'Anti-blob', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Refuses to lay road that would scribble a confusing blob. 0 = off, higher = cleaner network (only clean crossings). ', get: () => rc.blobGuard, set: (v) => (rc.blobGuard = v) });
+  addRow({ label: 'Road grid', min: 1, max: 6, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Maze cell size (car-widths). Road snaps to this lattice, so it can only make corridors + intersections, never blobs. Bigger = coarser maze, wider gaps between corridors. Applies live.', get: () => rc.gridCars, set: (v) => (rc.gridCars = v) });
   addRow({ label: 'Slurp band', min: 0, max: 0.8, step: 0.02, fmt: p2, hint: 'Central fraction of a seam a fast pass slurps whole. 0 = slurp off.', get: () => rc.slurpBandPct, set: (v) => (rc.slurpBandPct = v) });
   addRow({ label: 'Slurp min boost', min: 0.1, max: 1, step: 0.05, fmt: p2, hint: 'Rail boost (0..1) needed before a slurp can fire at all.', get: () => rc.slurpMinBoost, set: (v) => (rc.slurpMinBoost = v) });
   addRow({ label: 'Slurp charge (s)', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Seconds at rail top speed before the slurp arms. Higher = must earn a longer run first.', get: () => rc.slurpChargeSeconds, set: (v) => (rc.slurpChargeSeconds = v) });
