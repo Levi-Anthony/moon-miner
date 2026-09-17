@@ -1,5 +1,28 @@
 # Decisions
 
+## 2026-09-17: Road is a maze lattice (supersedes the refusal-based anti-blob)
+
+Levi, after playing: "something needs to enforce separation… maze-like
+construction. The road must self-organize/repair into roadways and
+intersections, not contiguous blob fields." The earlier `blobGuard` only
+*refused* to lay in a scribbled spot — a refusal can't create structure. So the
+road representation changed: from a free polyline to a **square lattice graph**.
+- The rover's path snaps to grid nodes; road is laid as EDGES between adjacent
+  nodes (a Set, deduped). The laid network can therefore only be corridors and
+  intersections; a scribble just re-occupies the same cells and re-threads the
+  same edges — it self-organizes instead of piling up.
+- Separation is a property of the grid: cell size > road width, so parallel
+  corridors always carry a gap. Crossings share a node (clean intersection).
+- Fast driving walks a king-step line of cells so corridors stay connected.
+- The lock / on-road / rail-boost / slurp read the edge graph (nearest-edge
+  pure pursuit). Persistence carries edge cell-quads across days within a shift.
+- `RoadConfig` dropped `laneGapFactor` + `blobGuard`, added `gridCars` (default
+  1.5 — cell just over the road width). Panel "Lane gap"/"Anti-blob" → "Road grid".
+- `src/three/road.test.ts` rewritten for the lattice (corridor connectivity, a
+  400-step scribble stays <12 edges, re-driving stacks nothing, serialize/seed,
+  cell wider than road). Overhead capture: a clean corridor + right-angle turn,
+  scribble leaves only a stub.
+
 ## 2026-09-17: Anti-blob road laying + more explicit knobs
 
 - **The rover can no longer lay a confusing blob** (playtest fix). `RoadModel.sample`
