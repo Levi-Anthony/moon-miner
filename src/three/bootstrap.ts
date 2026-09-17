@@ -21,7 +21,7 @@ import {
   type ContinuousWorldState,
   type Vec2
 } from '../game/continuous';
-import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type RoadEdgeQuad, type SlurpEvent } from './road';
+import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type RoadEdgeQuad, type RoadReclaimPlan, type SlurpEvent } from './road';
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type TerrainConfig } from './panel';
 
@@ -659,7 +659,7 @@ function updateHud(): void {
         : (MODE_LABEL[state.speedState] ?? state.speedState);
   const flashing = flash && performance.now() < flash.until;
   hud.line.textContent = flashing ? flash!.text : state.phase === 'playing' ? getContinuousGuidance(state).objective : '';
-  launchBtn.disabled = state.phase !== 'playing' || state.drone.status !== 'ready';
+  launchBtn.disabled = state.phase !== 'playing' || (state.tuning.ribbonEconomy ? ribbonDrone !== null : state.drone.status !== 'ready');
 }
 
 const cta = hud.banner.querySelector('.cta') as HTMLElement;
@@ -685,8 +685,64 @@ hud.banner.addEventListener('pointerdown', onContinue);
 // --- Drone launch + transient message flash ----------------------------------
 let flash: { text: string; until: number } | null = null;
 const launchBtn = document.getElementById('launch') as HTMLButtonElement;
+// --- Ribbon reclaim (ribbonEconomy): the drone lifts the VISIBLE ribbon and
+// refunds nanobots for the road it carries home. Runs in the presentation
+// (the ribbon lives here); the sim drone stays idle in this mode. --------------
+const RECLAIM_MAX_LEN = 460; // most ribbon one flight lifts
+interface RibbonDrone { phase: 'out' | 'back'; pos: { x: number; y: number }; home: { x: number; y: number }; plan: RoadReclaimPlan; refund: number; lifted: boolean }
+let ribbonDrone: RibbonDrone | null = null;
+
+function launchRibbonReclaim(): void {
+  if (ribbonDrone) { flash = { text: 'Drone is already out.', until: performance.now() + 1500 }; return; }
+  const home = state.arena.extraction ?? state.arena.start;
+  const plan = road.reclaimPlan(home, state.tuning.droneTetherRange, RECLAIM_MAX_LEN);
+  if (!plan) { flash = { text: 'No road within tether range to reclaim.', until: performance.now() + 1800 }; return; }
+  const perUnit = state.tuning.fabricateCostPerSecond / Math.max(1, state.tuning.fabricatingSpeed);
+  ribbonDrone = { phase: 'out', pos: { x: home.x, y: home.y }, home: { x: home.x, y: home.y }, plan, refund: plan.length * perUnit, lifted: false };
+  flash = { text: `Drone reclaiming ${plan.length.toFixed(0)} of road…`, until: performance.now() + 2000 };
+}
+
+// Fly the reclaim drone out to the lift point, lift the ribbon, and carry the
+// refunded nanobots home. Drives the shared drone mesh + tether.
+function updateRibbonDrone(dt: number): void {
+  if (!ribbonDrone) { drone.visible = false; tether.visible = false; return; }
+  const rd = ribbonDrone;
+  const goal = rd.phase === 'out' ? rd.plan.point : rd.home;
+  const dx = goal.x - rd.pos.x;
+  const dy = goal.y - rd.pos.y;
+  const dist = Math.hypot(dx, dy);
+  const step = state.tuning.droneSpeed * dt;
+  if (dist <= step || dist === 0) {
+    rd.pos.x = goal.x;
+    rd.pos.y = goal.y;
+    if (rd.phase === 'out') {
+      if (!rd.lifted) { road.removeSegments(rd.plan.indices); repaintCanvas(road.edgesForPaint()); rd.lifted = true; }
+      rd.phase = 'back';
+    } else {
+      state.nanobots = Math.min(state.maxNanobots, state.nanobots + rd.refund);
+      flash = { text: `Drone delivered ${rd.refund.toFixed(1)} nanobots.`, until: performance.now() + 1800 };
+      ribbonDrone = null;
+      drone.visible = false;
+      tether.visible = false;
+      return;
+    }
+  } else {
+    rd.pos.x += (dx / dist) * step;
+    rd.pos.y += (dy / dist) * step;
+  }
+  drone.visible = true;
+  tether.visible = true;
+  drone.position.set(rd.pos.x - W / 2, 60, rd.pos.y - H / 2);
+  drone.rotation.y += dt * 3;
+  (tether.geometry as THREE.BufferGeometry).setFromPoints([
+    new THREE.Vector3(rd.home.x - W / 2, 8, rd.home.y - H / 2),
+    new THREE.Vector3(rd.pos.x - W / 2, 60, rd.pos.y - H / 2)
+  ]);
+}
+
 function launch(): void {
   if (state.phase !== 'playing') return;
+  if (state.tuning.ribbonEconomy) { launchRibbonReclaim(); return; }
   const res = launchReclaimDrone(state);
   state = res.state;
   flash = { text: res.message, until: performance.now() + 2000 };
@@ -739,16 +795,22 @@ function frame(now: number): void {
   }
 
   // Drone flies above the ground while committed, trailing a tether back home.
-  drone.visible = state.drone.status !== 'ready';
-  tether.visible = drone.visible;
-  if (drone.visible) {
-    drone.position.set(state.drone.x - W / 2, 60, state.drone.y - H / 2);
-    drone.rotation.y += dt * 3;
-    const home = state.arena.extraction ?? state.arena.start;
-    (tether.geometry as THREE.BufferGeometry).setFromPoints([
-      new THREE.Vector3(home.x - W / 2, 8, home.y - H / 2),
-      new THREE.Vector3(state.drone.x - W / 2, 60, state.drone.y - H / 2)
-    ]);
+  // In ribbon-economy mode it reclaims the visible ribbon (presentation-driven);
+  // otherwise it runs the sim's field reclaim.
+  if (state.tuning.ribbonEconomy) {
+    updateRibbonDrone(dt);
+  } else {
+    drone.visible = state.drone.status !== 'ready';
+    tether.visible = drone.visible;
+    if (drone.visible) {
+      drone.position.set(state.drone.x - W / 2, 60, state.drone.y - H / 2);
+      drone.rotation.y += dt * 3;
+      const home = state.arena.extraction ?? state.arena.start;
+      (tether.geometry as THREE.BufferGeometry).setFromPoints([
+        new THREE.Vector3(home.x - W / 2, 8, home.y - H / 2),
+        new THREE.Vector3(state.drone.x - W / 2, 60, state.drone.y - H / 2)
+      ]);
+    }
   }
   updateBursts(now);
 

@@ -48,6 +48,7 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
 export interface SlurpEvent { x: number; y: number; gained: number }
 export interface RoadEdge { ax: number; ay: number; bx: number; by: number }
 export type RoadEdgeQuad = [number, number, number, number];
+export interface RoadReclaimPlan { edges: RoadEdge[]; length: number; point: Vec2; indices: number[] }
 interface Pt { x: number; y: number; t: number }
 interface Seg { ax: number; ay: number; bx: number; by: number; t: number }
 
@@ -106,6 +107,38 @@ export class RoadModel {
   }
   edgesForPaint(): RoadEdge[] {
     return this.segs.map((s) => ({ ax: s.ax, ay: s.ay, bx: s.bx, by: s.by }));
+  }
+
+  // Plan a drone reclaim: peel the OLDEST run of ribbon (the stretch laid first,
+  // nearest the depot) that lies within tetherRange of home, up to maxLength of
+  // ribbon. Oldest-first is the "cleanup" read -- the road you laid on the way
+  // out and are done with -- and taking a run off one end never splits the
+  // ribbon (loop-safe). Returns null when nothing in range is reclaimable.
+  reclaimPlan(home: Vec2, tetherRange: number, maxLength: number): RoadReclaimPlan | null {
+    const indices: number[] = [];
+    const edges: RoadEdge[] = [];
+    let length = 0;
+    let point: Vec2 | null = null;
+    for (let i = 0; i < this.segs.length && length < maxLength; i += 1) {
+      const s = this.segs[i];
+      const mx = (s.ax + s.bx) / 2;
+      const my = (s.ay + s.by) / 2;
+      if (Math.hypot(mx - home.x, my - home.y) > tetherRange) break; // beyond the tether: keep a line home
+      indices.push(i);
+      edges.push({ ax: s.ax, ay: s.ay, bx: s.bx, by: s.by });
+      length += Math.hypot(s.bx - s.ax, s.by - s.ay);
+      point = { x: s.bx, y: s.by };
+    }
+    if (!point || indices.length === 0) return null;
+    return { edges, length, point, indices };
+  }
+
+  // Lift the planned segments (the drone finished) and rebuild the point set.
+  removeSegments(indices: number[]): void {
+    const drop = new Set(indices);
+    this.segs = this.segs.filter((_, i) => !drop.has(i));
+    this.pts = [];
+    for (const s of this.segs) this.pts.push({ x: s.ax, y: s.ay, t: s.t }, { x: s.bx, y: s.by, t: s.t });
   }
 
   // Lay ribbon at the rover, unless doing so would run alongside or over OTHER

@@ -74,6 +74,23 @@ describe('road ribbon — free to lay, but separated (no adjacency/overlap)', ()
     expect(road.edgeCount()).toBeLessThan(160);
   });
 
+  it('reclaim plan peels the oldest run within tether, and removal never splits', () => {
+    t = 0;
+    const road = new RoadModel();
+    for (let x = 0; x <= 600; x += 8) road.sample(state(x, 0)); // ribbon from home(0,0) outward
+    const before = road.edgeCount();
+    const plan = road.reclaimPlan({ x: 0, y: 0 }, 250, 1e9)!; // home at origin, tether 250
+    expect(plan).toBeTruthy();
+    expect(plan.length).toBeGreaterThan(0);
+    // Everything reclaimed is within tether of home.
+    for (const e of plan.edges) expect(Math.hypot((e.ax + e.bx) / 2, (e.ay + e.by) / 2)).toBeLessThanOrEqual(250 + 1);
+    // The far end (x ~ 600) is beyond the tether, so it is NOT reclaimed.
+    expect(plan.length).toBeLessThan(600);
+    road.removeSegments(plan.indices);
+    expect(road.edgeCount()).toBe(before - plan.indices.length);
+    expect(road.edgeCount()).toBeGreaterThan(0); // the far ribbon survives (nothing split)
+  });
+
   it('serializes and re-seeds the same ribbon', () => {
     t = 0;
     const road = new RoadModel();
