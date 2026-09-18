@@ -55,9 +55,11 @@ function saveConfig(): void {
 
 // --- World <-> scene mapping -------------------------------------------------
 // Sim world is x in [0,W], y in [0,H] (top-down). We lay it on the XZ ground
-// plane centred at the origin: X = x - W/2, Z = y - H/2, Y is up.
-const W = 1040;
-const H = 720;
+// plane centred at the origin: X = x - W/2, Z = y - H/2, Y is up. W/H are ADOPTED
+// from the sim's state.width/height in applyWorld, so a bigger Level size (which
+// scales the sim world) enlarges the ground, canvas, meshes and camera to match.
+let W = 1040;
+let H = 720;
 const PX = 1.5; // road-canvas pixels per world unit
 const GROUND_BASE = '#0e1520'; // dark lunar ground so the neon road/seams carry the light
 
@@ -425,6 +427,18 @@ function repaintCanvas(edges: RoadEdge[]): void {
 // drivable and painted), and rebuild the seam/extraction meshes for this layout.
 function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }): void {
   state = built.state;
+  // Adopt the (possibly scaled) world size from the sim, and resize the road
+  // canvas to match so the painted ground covers the whole moon. Everything else
+  // (ground plane, terrain mesh, seam/home meshes, camera mapping) reads W/H
+  // live, so it all follows. Guard the canvas against the WebGL max texture size.
+  W = state.width;
+  H = state.height;
+  const cw = Math.min(8192, Math.round(W * PX));
+  const ch = Math.min(8192, Math.round(H * PX));
+  if (roadCanvas.width !== cw || roadCanvas.height !== ch) {
+    roadCanvas.width = cw;
+    roadCanvas.height = ch;
+  }
   // 3D app: the day length is the Sun-window knob, not the arena's fixed 36s
   // (so the panel knob bites and the default is learnable).
   state.solarWindowSeconds = state.tuning.startingSolarSeconds;
@@ -644,8 +658,11 @@ function updateCamera(dt: number): void {
 
 // Zoom: wheel (desktop) and pinch (mobile) scale the camera distance+height.
 function zoomBy(factor: number): void {
-  camCfg.dist = Math.max(80, Math.min(520, camCfg.dist * factor));
-  camCfg.height = Math.max(60, Math.min(520, camCfg.height * factor));
+  // Let the zoom-out ceiling grow with the world so a big moon is actually
+  // viewable; at Level size 1 this is the original 520 (unchanged).
+  const ceil = 520 * Math.max(1, campaign.config.arenaScale);
+  camCfg.dist = Math.max(80, Math.min(ceil, camCfg.dist * factor));
+  camCfg.height = Math.max(60, Math.min(ceil, camCfg.height * factor));
   saveConfig();
 }
 renderer.domElement.addEventListener(

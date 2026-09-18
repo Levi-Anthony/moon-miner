@@ -39,6 +39,7 @@ interface Row {
   step: number;
   get: () => number;
   set: (v: number) => void;
+  commit?: () => void; // fires once on release (change), for expensive applies like a world rebuild
   fmt?: (v: number) => string;
   hint?: string;
 }
@@ -98,6 +99,9 @@ export function createPanel(ctx: PanelCtx): void {
       val.textContent = (def.fmt ?? String)(def.get());
       ctx.save();
     });
+    // Expensive applies (e.g. rebuilding the world for a Level-size change) run
+    // once on release, not on every drag tick.
+    if (def.commit) range.addEventListener('change', () => def.commit!());
     row.append(name, val, range);
     panel.appendChild(row);
     rows.push({ def, range, val });
@@ -124,7 +128,7 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Daily quota', min: 1, max: 120, step: 1, fmt: int, hint: 'Ore you must bank per day. Return under it and you pay the fee below.', get: () => cfg.quota, set: (v) => { cfg.quota = Math.round(v); const ex = ctx.getState().arena.extraction; if (ex) ex.oreRequired = cfg.quota; } });
   addRow({ label: 'Under-quota fee', min: 0, max: 0.9, step: 0.05, fmt: p2, hint: 'Fraction of the haul skimmed when you return under quota.', get: () => cfg.underQuotaFeePct, set: (v) => (cfg.underQuotaFeePct = v) });
   addRow({ label: 'Sunset road wipe', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Fraction of laid road lost if you miss a sunset.', get: () => cfg.hardFailRoadResetPct, set: (v) => (cfg.hardFailRoadResetPct = v) });
-  addRow({ label: 'Level size', min: 1, max: 5, step: 0.05, fmt: p2, hint: 'How far the seams spread = how long the hauls are. Max is deliberately huge. Applies on next regen / New Game.', get: () => cfg.arenaScale, set: (v) => (cfg.arenaScale = v) });
+  addRow({ label: 'Level size', min: 1, max: 5, step: 0.1, fmt: p2, hint: 'How big the moon is — ground, seam spread and haul length all scale together. Rebuilds the day when you release the slider (New Game for a clean slate). Max is deliberately huge.', get: () => cfg.arenaScale, set: (v) => (cfg.arenaScale = v), commit: () => ctx.rebuildDay() });
 
   const cam = ctx.cam;
   section('Camera');

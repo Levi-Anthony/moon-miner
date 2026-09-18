@@ -2,6 +2,7 @@ import {
   createArenaFertileZones,
   createArenaStarterFields,
   getContinuousArena,
+  scaleArena,
   type ContinuousArenaDefinition,
   type ContinuousArenaId
 } from './continuousArena';
@@ -691,7 +692,10 @@ export function createContinuousWorld(
   layoutScale = 1
 ): ContinuousWorldState {
   const resolvedTuning = resolveContinuousTuning(tuning);
-  const arena = getContinuousArena(arenaId);
+  // The whole world scales uniformly with layoutScale: the arena geometry and
+  // the play bounds (state.width/height, which clamp the rover) grow together, so
+  // a bigger Level size is genuinely more moon to cross. scale 1 is identity.
+  const arena = scaleArena(getContinuousArena(arenaId), layoutScale);
   const solarWindowSeconds = arena.solarWindowSeconds ?? resolvedTuning.startingSolarSeconds;
   const starter = createArenaStarterFields(arena, resolvedTuning.startingFieldValue, resolvedTuning.tileSize, resolvedTuning.fieldRadius);
   const fields = [...starter, ...carriedFields.map((field, index) => ({ ...field, id: starter.length + 1 + index }))];
@@ -701,8 +705,8 @@ export function createContinuousWorld(
     seed,
     arenaId,
     arena,
-    width: WORLD_WIDTH,
-    height: WORLD_HEIGHT,
+    width: WORLD_WIDTH * layoutScale,
+    height: WORLD_HEIGHT * layoutScale,
     tuning: resolvedTuning,
     rover: {
       ...arena.start,

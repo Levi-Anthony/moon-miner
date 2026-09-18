@@ -31,7 +31,9 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   quota: 12,
   underQuotaFeePct: 0.5,
   hardFailRoadResetPct: 0,
-  arenaScale: 1.15
+  // A genuinely big moon by default (2x the old slab). The Level-size knob now
+  // resizes the world live, so this is just the fresh-game starting point.
+  arenaScale: 2
 };
 
 const SAVE_KEY = 'mm3d-campaign-v1';
