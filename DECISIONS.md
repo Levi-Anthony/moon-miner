@@ -1,5 +1,568 @@
 # Decisions
 
+## 2026-09-17: Panel honesty — kill the dead sim-rail knobs; make aim real
+
+Levi: "I don't understand the tether system. I also don't understand the speed
+controls… I suspect we have another concept-patch clash." He was right — the
+same "two roads" split, now on the panel. The controls described the **sim's**
+rail-capture model while the 3D game runs the **ribbon** model, so ~9 knobs were
+inert or lying:
+
+- **Speed.** In the live game (ribbonEconomy + manual input) drive speed is
+  simply `off-road speed → road top speed`, interpolated by the ribbon's own
+  boost ramp, throttled. The `roadRunway` override in `updateDrive` replaces
+  `baseSpeed` regardless of any `state.rail`, and the field-magnet steering is
+  explicitly suppressed when `assistSteer` is fed. So **Prepared speed**, **Rail
+  runway for full speed**, and the whole **Grip & Rail** magnet section (grip
+  floor, grip-while-steering, rail centre pull, rail heading snap, rail capture
+  width) did nothing here. Removed them from the panel (the sim tuning fields
+  stay for self-play / flag-off, so this is presentation-only + rollback-safe).
+  Relabelled the live ones honestly: **Off-road speed** (floor) / **Road top
+  speed** (ceiling) / **Spin-up time** (new live knob = `road.config.spinUpSeconds`,
+  the boost ramp, was a hard-coded const) / **Road lock strength** (followStrength).
+- **Drone.** The ribbon drone only ever honoured Tether + Bite; **Protect the
+  loop** and **Aim bias** were sim-field-drone knobs that did nothing under
+  ribbonEconomy. A polyline peeled from an end can't split, so "protect the
+  loop" is automatic — removed the toggle. **Aim bias is now real**:
+  `reclaimPlan` builds both end-runs (oldest + newest) and your facing at launch
+  picks which, weighted by bias (0 = always oldest/cleanup; high = the end you
+  point at). Tether hint rewritten to what it does (reach radius; lifts a run
+  off one end, never a middle piece).
+- Tests: `road.test.ts` gains an aim-bias guard (face east → east end, face west
+  / no aim → oldest west end); the reclaim backward-compat (3-arg call) holds.
+
+## 2026-09-17: Legibility + pace + drone/road feel
+
+After the conceit reset the loop was coherent on one road but Levi read it as
+"still broken and illegible," then "it picks up too much road at a time, and
+sometimes you can drive without laying road at all." Three passes, all
+presentation-side or flag-gated (sim rules untouched):
+
+- **Legibility — distinct identities.** Ore is crisp gold discs (solid body,
+  hard rim, no additive glow); HOME is a dark pad + magenta rim + a tall beacon
+  pillar you can find from anywhere; road is teal; craters read as faint lit
+  rims, not noise. An objective banner (`#line`) sits high-contrast at the top.
+  Nothing shares a silhouette now.
+- **Pace + the Sun-window knob made live.** `startingSolarSeconds` /
+  `fabricatingSpeed` overrides let a day actually complete; `applyWorld` now
+  seeds `state.solarWindowSeconds`/`solarSeconds` from the knob so the Sun-window
+  slider changes the real clock, not just a label. NB: headless capture runs
+  ~5fps, so game-time crawls there — pace is only judgeable at real 60fps.
+- **Drone/road feel.** (1) Reclaim bite is capped and exposed as a live
+  `reclaimBite` panel knob (default 150) so the drone lifts a sensible run, not
+  half the map. (2) The separation rule that created dead zones (you could drive
+  without laying) is replaced by a permissive one: **lay whenever you drive;
+  only refuse double-stacking within `noLayDistance = halfWidth*(1+laneGapCars)`
+  of older ribbon past the recent stroke.** No angle test → no dead zones;
+  scribbles stay bounded because older loops trip the same check. Retired the
+  dead `crossAngleDeg`; the margin knob is now "No-restack margin." `road.test.ts`
+  rewritten to this intent (8 pass).
+
+Supersedes the separation/crossing rule in the entry below. Handed back for a
+60fps playtest; the exposed knobs (Reclaim bite, No-restack margin, Tether
+range, Aim bias) dial the feel.
+
+## 2026-09-17: Conceit reset — one road (ribbon-authoritative economy)
+
+Levi: "Back to the nanobot/rail/road/drone conceit. This needs to be reapproached
+from the ground up rather than chasing patches." Root cause found: there were
+secretly **two roads**. The sim ran the economy (fabrication drain, "prepared"
+speed, the grip magnet, the whole drone reclaim) on an **invisible** hex-field
+lattice, while the player saw a **separate** ribbon we'd been tuning. In the 3D
+build the *feel* already comes from the ribbon (`input.roadRunway` sets speed,
+`input.onRoad` sets grip — the sim's field-based prepared/rail is overridden);
+the hidden fields only still gated the nanobot drain and fed the drone. So the
+drone reclaimed road you couldn't see and your build cost tracked coverage you
+couldn't see.
+
+Decision (Levi delegated A-vs-C to whichever is lower blast-radius on *feel*,
+keep rollback; resources stay two = nanobots logistics + ore objective): go
+**ribbon-authoritative for the economy**. Because the feel already lives in the
+ribbon, moving drain + reclaim onto it is lower-risk than reconciling two
+geometries forever (force-correspondence = the fragile path). Built behind a
+`ribbonEconomy` tuning flag, **default off** (self-play / tests / old scene
+byte-for-byte unchanged → fully rollback-able); the 3D app opts on. Staged:
+- **S1 — build cost on the road you see.** `resolveSpeedState(state, onRoad)`:
+  "prepared" = being on the visible ribbon, not on field coverage, so rolling
+  your own ribbon is free/rail and laying fresh ribbon spends stock.
+- **S2 — the drone reclaims the ribbon.** `RoadModel.reclaimPlan/removeSegments`
+  peel the oldest run within tether (loop-safe); a presentation-side reclaim
+  drone flies out, lifts the visible ribbon, and refunds nanobots on return
+  (conservation: refund == lay cost per unit). The sim field-drone still runs
+  when the flag is off.
+- **S3 (todo)** — skip the now-unused field lattice under ribbonEconomy to
+  retire it fully.
+- Tests: `ribbonEconomy.test.ts` (flag off unchanged; on = onRoad free, off-road
+  drains) + `road.test.ts` reclaim (peels within tether, never splits). The
+  conceit is coherent on one road after S2 — ready to playtest.
+
+## 2026-09-17: Free ribbon + separation/crossing (supersedes the lattice)
+
+The lattice (below) read as "too gridded and controlling." Levi: "You should
+still be able to drive wherever you want and lay ribbon-like roads however you
+want, but it just controls the intersection to preserve separation and doesn't
+allow direct adjacency or overlap." So the grid is gone; the road is a free
+smooth polyline ribbon again, and the whole constraint is one rule at lay time:
+- **Don't lay ribbon that runs alongside existing ribbon.** For each older
+  segment (excluding the recent stroke under the rover), if the new point is
+  within the separation gap AND heading roughly along it, that's adjacency/
+  overlap → refuse. A transversal meeting (steeper than the crossing angle) is
+  a crossing and paints through → a clean intersection.
+- Continuing your own line is exempt: the recent-stroke window is wider than
+  the separation, so straight and curving driving lay a smooth ribbon with no
+  interference. Only coming back alongside existing road (what a blob is made
+  of) is refused; a dense scribble stays a bounded thin ribbon.
+- The lock / on-road / boost / slurp read the ribbon segments (nearest cured
+  segment). The edge API (sample→RoadEdge[], edgesForPaint, serialize/seed as
+  segment quads) is unchanged, so bootstrap painting + persistence are untouched.
+- Config: dropped `gridCars`; added `laneGapCars` (0.7) and `crossAngleDeg`
+  (32). Panel: "Road grid" → "Ribbon separation" + "Crossing angle".
+- `road.test.ts`: straight & curve lay freely; adjacent parallel refused, gapped
+  parallel allowed; crossing lays through; 600-step scribble < 160 segments.
+
+## 2026-09-17: Road is a maze lattice (supersedes the refusal-based anti-blob)
+
+Levi, after playing: "something needs to enforce separation… maze-like
+construction. The road must self-organize/repair into roadways and
+intersections, not contiguous blob fields." The earlier `blobGuard` only
+*refused* to lay in a scribbled spot — a refusal can't create structure. So the
+road representation changed: from a free polyline to a **square lattice graph**.
+- The rover's path snaps to grid nodes; road is laid as EDGES between adjacent
+  nodes (a Set, deduped). The laid network can therefore only be corridors and
+  intersections; a scribble just re-occupies the same cells and re-threads the
+  same edges — it self-organizes instead of piling up.
+- Separation is a property of the grid: cell size > road width, so parallel
+  corridors always carry a gap. Crossings share a node (clean intersection).
+- Fast driving walks a king-step line of cells so corridors stay connected.
+- The lock / on-road / rail-boost / slurp read the edge graph (nearest-edge
+  pure pursuit). Persistence carries edge cell-quads across days within a shift.
+- `RoadConfig` dropped `laneGapFactor` + `blobGuard`, added `gridCars` (default
+  1.5 — cell just over the road width). Panel "Lane gap"/"Anti-blob" → "Road grid".
+- `src/three/road.test.ts` rewritten for the lattice (corridor connectivity, a
+  400-step scribble stays <12 edges, re-driving stacks nothing, serialize/seed,
+  cell wider than road). Overhead capture: a clean corridor + right-angle turn,
+  scribble leaves only a stub.
+
+## 2026-09-17: Anti-blob road laying + more explicit knobs
+
+- **The rover can no longer lay a confusing blob** (playtest fix). `RoadModel.sample`
+  gains a directional-spread guard: it measures how AXIAL the road already around
+  a candidate point is (the cos/sin-of-2θ resultant, so a straight line's two
+  opposite ends still read as one axis). A clean single crossing is one axis →
+  allowed; scribbling one patch is multidirectional → refused. The current stroke's
+  recent tail is excluded so forward laying never counts against itself. A raw
+  point-count was rejected first — a legit crossing already has ~10 nearby points,
+  so count can't tell a crossing from a blob; axial spread can. Knob `blobGuard`
+  (0 = off, higher = cleaner); `laneGapFactor` and `followStrength` are config now
+  too. `src/three/road.test.ts` (3): straight lays freely, scribble starved
+  (<60 pts vs ~240), crossing still lays through.
+- **More explicit knobs, higher maxes.** New "Grip & Rail" section (road lock
+  strength, grip floor, grip-while-steering, rail center pull, rail heading snap,
+  rail capture width, rail runway) and "Anti-blob"/"Lane gap" rows. Maxes raised
+  to deliberately-too-high (Level size 2.4→5, Daily quota→120, Rail speed→900,
+  etc.) so extremes are reachable, and every row carries explicit hint text.
+
+## 2026-09-17: Bigger featured level, earned slurp, and a repurposed drone
+
+Three player asks, all exposed as panel knobs.
+
+- **Slurp must be earned.** It could fire the instant you were on road near a
+  seam, grabbing the pool you were sitting on. Now `RoadModel` tracks a `charge`
+  that builds only while at rail top speed on road and hard-resets when you drop
+  off; the slurp arms only past `slurpChargeSeconds` (1.6s). HUD shows "Rail ⚡"
+  when armed; panel "Slurp charge (s)".
+- **Bigger, featured level.** Seam-spread bounds widened (depot stays at the
+  east edge, you sortie in), default Level size 1.35→1.5 with the ceiling at
+  2.4. The ground gained real lunar features: seeded craters (lit rim + shadow
+  crescent + darker bowl), rilles, and mare/highland value patches painted into
+  the ground canvas (composited under the road, so aligned), plus a low, downward-
+  biased relief displacement of the ground mesh for parallax (biased down so the
+  rover never clips). New "Terrain" panel section (Relief, Crater density).
+- **Drone → tethered, aimed, loop-safe cleanup/reclaim** (Levi's steer, over the
+  four options offered). The sim already had degree-based topology that *ranked*
+  reclaim candidates; the ask makes it *gate*. New tuning, all defaulted to the
+  classic behaviour so the 147 reclaim tests stay green, opted into by the 3D app:
+  - `reclaimProtectLoop`: targets gated to loose ends, and the lifted cluster is
+    **leaf-peeled** — only tiles that are *currently* degree≤1 come off, so a
+    removal can never split the network (the junction of a Y is never taken).
+    This is provably safe and replaced an earlier BFS-to-home attempt that was
+    fragile about what "connected to home" means.
+  - `droneTetherRange`: a reclaim target must stay within range of home; a tether
+    line is drawn from the depot to the drone while it's out.
+  - `reclaimAimBias`: the rover's facing biases which section the drone grabs.
+  - More valuable on day 2/3 by construction (road carries within a shift).
+  3D app defaults: protect-loop on, tether 560, aim bias 3; new "Drone" panel
+  section. `src/game/droneReclaim.test.ts` (3) pins tether, aim, and junction-survival.
+- Test baseline unchanged: still the 9 `continuous.test` + 1 `routeAffordance`
+  DEV-23 sim-tuning reds; this batch added 6 passing tests (5 arena earlier + 3
+  drone, minus none). The "stages the starter level" seam-window assertion was
+  updated to the new bigger field.
+
+## 2026-09-16: Art direction (moody atmospheric) + better procedural maps
+
+Levi's picks after parity: art direction = **Moody atmospheric**, level design =
+**Better procedural maps** (camera controls already shipped).
+
+- **Moody atmospheric art pass** (`src/three/bootstrap.ts`). Neon-on-dark with
+  bloom: dark lunar ground, deep fog to a near-black horizon, a starfield, an
+  emissive rover cab, and a cool rim light. Bloom (UnrealBloomPass) eased to
+  strength 0.55 / radius 0.5 / threshold 0.72 so only the neon cores glow —
+  first pass at 0.9/0.55 blew the seams into solid white plates. Seams are now
+  soft **radial-glow ore pools** (a shared additive glow sprite, bright core
+  fading to a transparent rim) instead of flat saturated discs; the mining pulse
+  rides the same material. Reads as atmosphere, not blowout.
+- **Better procedural maps** (`createArenaFertileZones`, `continuousArena.ts`).
+  The uniform-noise scatter became a seeded **layout archetype** — scatter,
+  ridge (seams strung along one vein line, veins aligned to it), clusters (lean
+  near the plant, rich far out), or belt (ringing the extraction) — so each map
+  has a shape you can read a route into. A spring-separation **relaxation pass**
+  then spreads any crowded seams to a legal gap while keeping the archetype's
+  gestalt, then snaps each back inside bounds and clear of start/extraction.
+  Over 400 seeds on last-light-return: full 155-unit spread on ~89% of seeds,
+  worst pair 46 units (never stacked), zero reachability violations. "Further
+  out pays more" preserved (richest seam farthest from the plant). Seam count,
+  ids, richness and remaining ore untouched, so the economy balance and the
+  loop's carried depletion still key off stable seams. New `continuousArena.test.ts`
+  (5 tests) pins these invariants across many seeds.
+- **Not yet a panel knob.** Archetype is chosen by seed, so New Game reshuffles
+  it; forcing a specific archetype would need plumbing a value through
+  `createContinuousWorld`, deferred. (Standing taste pref: turn requests into
+  knobs where possible — this one is the exception, noted.)
+- Test baseline unchanged otherwise: the 9 `continuous.test.ts` + 1
+  `routeAffordance.test.ts` DEV-23 sim-tuning reds pre-date this work and are
+  untouched by it; +5 new arena tests pass.
+
+## 2026-09-16: 3D road-draw fix + control panel (parity complete)
+
+- **Road draw was still circles.** The 3D road was painted as a chain of filled
+  `arc()` dabs — beading + a steppy "hysteresis" look, the exact thing the flip
+  was meant to leave behind. Replaced with a CONTINUOUS round-capped **stroke**
+  into the ground canvas (`strokeRoadSeg`): round caps/joins bridge laid points
+  into a smooth ribbon that paints in immediately behind the rover; the path
+  breaks across skip-gaps so junctions stay clean. Still raster-composited on the
+  ground (overlaps never flash). Dropped the dark bed and the permanent gold
+  slurp scar (the 3D burst is the cue).
+- **Control panel (#4) — the last parity piece.** New `src/three/panel.ts`: a
+  gear toggle (⚙, bottom-left) opening a scrollable overlay of live knobs —
+  Loop & Economy (days/shift, shifts/game, regen N, quota, fee, sunset wipe,
+  level size), Road & Slurp (width, band, min boost), Drive Feel (speeds, mining
+  yield, drain, crawl recovery, start stock, sun window) — plus New Game / Reset
+  Day / Close. Changes apply live; loop+road config and sim-tuning overrides
+  persist (`mm3d-config-v1`), the latter via `Campaign.tuningOverrides` fed into
+  every world build so tweaks survive across days.
+
+Migration to parity is DONE: the 3D build has the driving feel, loop/economy,
+mining/slurp/drone, HUD, and the tuning panel — Phaser fully retired.
+
+## 2026-09-16: FLIP — the 3D build is the app; Phaser retired
+
+Levi: "Flip and continue." The player-facing parity was there (drive feel, HUD,
+day/shift/game loop + economy, mining/slurp/drone), so the 3D build becomes the
+default and Phaser is removed:
+- `index.html` now loads `src/three/bootstrap.ts` (was the Phaser entry);
+  `three.html` folded in and deleted; Vite back to a single page.
+- Deleted `src/main.ts`, `src/scenes/ContinuousMoonMinerScene.ts`,
+  `src/scenes/MoonMinerScene.ts`, orphaned `src/styles.css`.
+- Dropped the `phaser` dependency (lockfile synced). Bundle fell from ~1.6 MB
+  (Phaser) to ~570 KB (Three).
+- Replaced the Phaser-scene browser smoke with a lean 3D smoke (boots clean, HUD
+  up, driving moves the rover); it passes.
+- The gh-pages deploy (`pages.yml`, unchanged) now publishes the 3D game to
+  https://levi-anthony.github.io/moon-miner/ .
+- Sim + arena + all their tests untouched. Remaining to full parity: the control
+  panel (tunables) — the one dev-facing piece not yet ported.
+
+## 2026-09-16: 3D migration progress — driving feel, HUD, and the day/shift/game loop
+
+On the Three.js substrate, in dependency order, keeping the sim untouched:
+- **Driving feel** (`src/three/road.ts`): the driven trail, pure-pursuit carry
+  (lock), rail boost, on-road test, and turbo slurp, lifted out of Phaser as pure
+  math; fed to the sim as assistSteer/roadRunway/onRoad; road laid by the real
+  non-overlap/regular-gap rules and painted (raster, no flashing). Road width
+  backed down to 1.4 cars (the 2.2 was a vector-substrate workaround).
+- **HUD** (DOM): nanobots/ore/sun bars, drive-mode chip (Building/Prepared/Rail/
+  Crawl), objective line, win/lose banner. Mobile thumb-stick drive (drag
+  anywhere) since the target is phones.
+- **Loop & economy** (`src/three/loop.ts`, `Campaign`): day→shift→game (D=3,
+  S=4), per-day quota override, banked ore with the under-quota fee, sunset loss
+  banks nothing, road carried within a shift (fields + painted trail) and wiped
+  at a shift boundary, arena regen every N shifts via a block seed, level scale.
+  Its own `mm3d-*` localStorage keys. 7 unit tests cover the structure, banking,
+  and carry. Verified: HUD reads "D1/3 · S1/4", quota override live, zero errors.
+
+Remaining to parity: mining/drone feedback (#3), the control panel (#4), then
+retire Phaser (#5).
+
+## 2026-09-16: SUBSTRATE PIVOT — rebuild the presentation in real 3D (Three.js), keep the pure sim
+
+Levi, verbatim: "If we're in the wrong substrate and all our problems are
+downstream of trying to patch and otherwise ad hoc hack it into a shape it's not
+meant for, why do all your recommendations end in not switching substrate?" …
+"I entered this project over a week ago with an explicit request for a ground up
+reset and rebuild. Finally I'm hearing the truth. No more sunk cost fallacy."
+
+**The diagnosis, owned:** the road bugs (flashing, bowties, banding, pinch,
+obscuring, hand-rolled perspective) were all downstream of the wrong substrate —
+Phaser's immediate-mode **vector** Graphics driven by a **hand-rolled fake-3D
+projection**. Every property a real engine gives for free (perspective,
+occlusion, decals on a ground plane, overlap compositing) we were re-deriving in
+vector space every frame. Patching it was reinventing a wheel.
+
+**The split (why this is NOT sunk cost either way):**
+- KEEP `src/game/**` — the simulation, arena, seam logic, and tests. Verified
+  engine-free (`grep phaser src/game` = nothing). This is the correct tool for
+  the logic and is fully portable; re-deriving it would be the waste.
+- REBUILD the presentation on a real 3D substrate. Phaser coupling was only in
+  `src/main.ts` + the two `src/scenes/*` files.
+
+**Chosen substrate: Three.js** (installed 0.186). Real perspective camera + a
+ground plane; the ROAD is **painted into a canvas texture on the ground**
+(decal/splat), so overlaps composite in raster — flashing / bowties / banding /
+pinch are impossible by construction — and perspective/occlusion come from the
+camera. This is the standard way trails/tracks/paint are done.
+
+**Slice shipped (proof, not rewrite):** `three.html` + `src/three/bootstrap.ts`
+— a drivable vertical slice: ground plane, rover mesh driven by the UNTOUCHED
+`tickContinuousWorld`, chase camera, seams as gold ground decals (correct
+perspective, never obscured), extraction ring, and the painted road. Typecheck
+clean, zero runtime errors, screenshot-verified. Served alongside the Phaser app
+during migration (parallel until parity, then Phaser is deleted — that's a safe
+migration, not sunk cost).
+
+**Plan:** (task 8) slice ✓ → (task 9) migrate full presentation to 3D — mining/
+slurp visuals, drone, the DOM HUD + control panel (portable), day/shift/game loop
+UI, the road-lock/roadRunway/slurp presentation logic — to parity → (task 10)
+delete the Phaser scenes, drop the `phaser` dep, point `main.ts` at the 3D app,
+rewire build/smoke/screenshot harnesses; the pure-sim tests stay green throughout.
+
+## 2026-09-16: Road sits on the ground — perspective taper, draws under features, regular lane gap
+
+Playtest ask: "Make the road not obscure everything in front of it, give it
+perspective and disallow directly adjacent road path. Enforce a small regular
+space."
+
+- **Doesn't obscure (draw order).** The ribbon (was `drawFields`, now
+  `drawRoadRibbon`) drew AFTER the seams/beats/ridges/fields, painting over
+  everything ahead. Moved to right above the terrain and BELOW seams, beats,
+  ridges, fields, drone and rover — the road is ground now, features sit on it.
+- **Perspective.** The band's half-width is the WORLD road half-width projected
+  *per vertex*, so it narrows with distance like the ground does
+  (`strokeTaperedRibbon`). First tried a filled quad strip — that brought back
+  "polygon problems" (bowtie self-intersection on hard turns, winding flips, and
+  translucent-overlap banding at junctions), the exact failure the road work has
+  hit before. Fixed by building the taper from per-segment **strokes + joint
+  discs at full alpha**: strokes and discs never triangulate, so overlaps just
+  repaint the same colour — no flashing, no banding. Removed the dead
+  `strokeRoadRibbon`/`smoothPolyline`.
+- **Regular lane gap (revises the earlier "merge within a full width").** A new
+  aligned lane may not be laid closer than a full road width PLUS
+  `ROAD_LANE_GAP_FACTOR` (0.4 × half) — so two roads are never directly adjacent
+  (edges touching); there is always a small, consistent channel between separate
+  lanes. Re-driving your own lane (on the ribbon, any angle) still merges; a
+  crossing (not aligned) still lays through as a junction. The dark bed is drawn
+  a touch proud of the teal deck so the channel reads.
+
+## 2026-09-16: Turbo "railboost slurp" — zoom a seam's middle third to take it whole
+
+Playtest ask: a new condition *in addition to* stop-to-mine XOR (which is
+unchanged) — "when zooming over the middle 33% of a seam, collect all the ore at
+once with a visibly different turbojuiced railboosted mode… to encourage laying
+an effective route you can then zoom around slurping ore."
+
+- **Two regimes, no conflict.** Stopped in a seam → arms mine (XOR, untouched).
+  Wound up on road (rail boost ≥ `slurpMinBoost`, default 0.55) and passing the
+  central `slurpBandPct` (default 0.34 = middle third) of a seam's vein → **slurp
+  the whole seam at once** (`remaining → 0`, added to ore). roadBoost only builds
+  on cured road and decays fast when stopped, so the two never overlap.
+- **The reward it creates:** lay a route that threads your seams, then run it at
+  rail speed and slurp them — high-level payoff for a good road.
+- **Visibly different:** a bright gold burst with radiating spokes at the seam
+  (distinct from the teal delivery pop and the deleted mine rings) + a
+  high-priority "RAILBOOST SLURP +N ore" flash (shows even at Minimal text).
+- **Tunable (both knobs in the panel):** `slurpBandPct` (0 = off) and
+  `slurpMinBoost`. Implemented scene-side in `updateSeamSlurp`; the seam empties
+  once (overnight-depletion carry already tracks `remaining`), so it never
+  re-fires. Types/build/panel verified; the in-context firing is a playtest
+  confirmation (hard to reproduce in the slow headless harness).
+
+## 2026-09-16: Text verbosity knob (default Minimal) + eased economy defaults
+
+Two playtest asks handled together.
+
+**Cut the text.** Persistent steady-state prose ("Your own road...", the constant
+objective/how-to line) was the repeated "too much reliance on text." Added a
+`textVerbosity` knob — **Off / Minimal / Full**, default **Minimal** — in the
+panel. Minimal shows the opening controls hint (first 7s) and only important
+events briefly (priority ≥ 2: out of stock, last light, extraction now,
+deliveries); it stays quiet in steady state (the HUD + mode chip carry state).
+Full restores the constant guidance; Off shows nothing but the end-of-run banner
+(never suppressed). Gated in `getEventFeedText`.
+
+**Ease the economy.** The run lived at LOW/crawl — frantic by default not by
+choice. Stable/default preset eased: `startingNanobots` 6→9, `fabricateCostPerSecond`
+1→0.85, `crawlRecoveryPerSecond` 0.3→0.45. All three stay panel knobs; classic
+preset untouched; two stable-default guardrail assertions updated (drain-math
+tests use explicit values, unaffected).
+
+## 2026-09-16: Road is ≥2 car-widths and one width drives everything (clean maze, no pinch/overlap)
+
+Playtest ask: "The road needs to be at least two car widths wide and have strong
+and smart proximity and adjacent track interface rules to make a cleanly
+navigable maze without odd proximity overlaps and pinch points."
+
+- **One number, world-space.** `roadHalfWidth()` = `roadWidthCars × CAR_WIDTH / 2`
+  (CAR_WIDTH = 54, the rover's tread span; default `roadWidthCars` = 2.2, a live
+  panel knob). It now drives the **visible ribbon**, the **drivable on-road
+  band**, the **carry lookahead**, and the **parallel-merge distance** — so what
+  you see is exactly what you drive on, and adjacency is judged by the same
+  measure. Previously the ribbon was ~0.85 car-widths of world while the band was
+  ~1.7 (a mismatch), and both narrow.
+- **Ribbon draw** now projects the world half-width to screen (project the rover
+  and a point one half-width to its side, measure the gap) instead of an ad-hoc
+  screen-px clamp, so the band scales correctly and matches the drivable width.
+- **Smart adjacency (the maze rule).** Laying skips (merges) in exactly two
+  cases: (a) physically ON another ribbon (`< 0.55×half`, any angle — also the
+  junction centre, so a crossing isn't doubled); (b) ALONGSIDE an *aligned* track
+  within a **full road width** (`< 2×half`). So two roughly-parallel tracks
+  closer than a width become the one lane instead of an overlapping bulge with a
+  pinch between — while a *crossing* (not aligned) still lays right up to the road
+  it meets, keeping junctions clean crossroads. Verified: a U-turn return merged
+  into the single outbound lane rather than laying a second ribbon.
+- Decoupled from `fieldRadius` (still the field/patch system's own knob).
+
+## 2026-09-16: Mining fix — the band matches the drawn seam; drop the strobing mine rings
+
+Playtest: "you can be stopped on top of a visual ore seam and not be mining at
+all for some reason. Also take away the older shortcut UI mining indicator
+circles."
+
+- **Root cause of the no-mining bug:** mining detection (`isPointInFertileZone`,
+  vein zones) counted only points within `vein.width/2` of the bare vein line,
+  but the seam is DRAWN inflated — ore pulse at `width+24`, bed at `width+34`. So
+  a ring of visibly-gold ground read as "not in the seam" and the arms stowed.
+- **Fix:** mining band = `vein.width/2 + SEAM_MINE_REACH` (20), matching the drawn
+  ore. Parked on the gold now always mines. The directional-band guardrail still
+  holds (out at the circle radius still yields nothing), and a new regression test
+  locks "parked just past the bare vein, still on the gold, mines."
+- **Removed the mine indicator circles:** the expanding "mine" rings fired on
+  every ore tick and strobed over the machine. Deleted the effect and its render.
+  The mining ARMS — reaching into the seam, tips sparkling — are the read now.
+- Stationary throughput unchanged (flat `mineRate × arms × STOP_MINE_EFFICIENCY`);
+  `mineRate` remains a panel knob, so yield is player-tunable rather than hardcoded.
+- The turbo "railboosted slurp" mode (zoom the middle third of a seam, collect it
+  all at once) is the deferred next step, per Levi's "don't have to do this
+  immediately."
+
+## 2026-09-16: Day/shift/game loop, per-day economy, bigger regenerating level — all player-tunable
+
+Standing directive captured this session (ECB taste pref): **wherever possible,
+turn a request into an option the player controls.** Every new lever below is a
+control-panel knob, defaulted to the value Levi specified.
+
+### Time structure (all tunable, defaults in parens)
+- **day = one excursion** (one sunset run). **shift = D days** (D=3). **game = S
+  shifts** (S=4). A single counter `dayNumber` is the source of truth; shift and
+  day-in-shift derive from it and the config. HUD now reads `DAY d/D · SHIFT s/S`.
+
+### Road persistence + regenerating level
+- **Road persists day-to-day WITHIN a shift and resets at each shift boundary**
+  (carried only when the next day stays in the same shift).
+- **The map regenerates every N shifts** (N=2) and on New Game. Implemented as a
+  derived block seed: `${gameSeed}:blk${floor((shift-1)/N)}` — stable within a
+  block, fresh across blocks. Road wipes every shift regardless of N.
+- **Bigger level** via `arenaScale` (1.35): `createArenaFertileZones` scales its
+  seam-scatter bounds around centre (clamped to the world), so seams spread
+  farther and routes get longer. Reachability rules unchanged. Threaded through
+  `createContinuousWorld(..., layoutScale)`.
+
+### Per-day economy (answers from Levi)
+- **Quota Q=12 and the sunset deadline are per-DAY.** Quota is a live knob that
+  overrides the arena's `oreRequired` on a per-state arena clone (never mutating
+  the shared arena def).
+- **Under quota but made it back = SOFT fail:** the return still delivers, but the
+  company skims an `underQuotaFeePct` (0.5) processing fee off the banked ore.
+- **Missed sunset = HARD fail:** you lose only this run's haul (banked from prior
+  days survives — Levi's choice), and a tweakable `hardFailRoadResetPct` (default
+  0 = keep all) sheds that fraction of carried road.
+- Sim change enabling the soft fail: a **`leftExtraction` latch**. A day ends by
+  RETURNING to the depot, and the run starts parked on it, so "made it back" only
+  counts once you've actually left. This also guards the depot against ending the
+  day at t=0. Win now fires on returning regardless of quota, flagged
+  `returnedUnderQuota` for the scene to apply the fee. Guardrail test updated (a
+  direct-placement win now sets `leftExtraction=true`); the self-play/economy
+  tests that returning-under-quota-as-win shifts are the existing DEV-23 re-cut
+  bucket (still 74 pass / same 9 red; no NEW failures).
+
+### Panel
+Control panel now opens with a **Loop & Economy** group (7 knobs, each with a
+tooltip) above a collapsed **Drive Feel** group, so the loop shape and fail rules
+are reachable without scrolling past the physics sliders. Config persists to
+localStorage.
+
+Verified: typecheck + build clean, unit suite unchanged (74/9), screenshot of the
+panel + HUD ("Day 1/3 · Shift 1/4"), zero page errors.
+
+## 2026-09-16: Prepared road is a LOCK — forward follows any squiggle, only a full-stick leaves
+
+Playtest ask, verbatim intent: "Forward stick on prepared road should lock you
+onto the road and accelerate you just past the point where you could ever steer
+around those corners, and it will faithfully follow any squiggly path that's laid
+out. In order to drive off the road at full speed you have to take the stick all
+the way to 90° left or right."
+
+### What was wrong
+The on-road carry was still a soft *assist you fight*, not a lock: a partial wheel
+was only scaled to 0.25 (so a resting/half-committed stick still sawed against the
+line), and a light 0.34 steer already eased the carry and passed your wheel
+through — so the road never felt like it held you, and you slid off it too easily.
+Authority was never the bottleneck: `TURN_RATE` is 2.25, so the old 3.4× cap
+(7.65) already exceeded the carry's own 7.5 max output.
+
+### Decision
+Prepared road under forward drive is a **lock**, not a magnet:
+- **Partial stick fully subsumed** — `steerScale` 0.25 → **0** below the break. A
+  resting or half-committed wheel does nothing to the line; forward alone follows
+  the ribbon.
+- **Break only at full deflection** — new `ROAD_CARRY_BREAK_STEER = 0.9` (its own
+  threshold, separate from the sim's `railBreakSteer` 0.34, which self-play/tests
+  keep). Only taking the stick ~all the way over drops the carry and passes 100%
+  of your wheel through, to leave at a junction or seam. On keyboard this is clean:
+  **W follows the road, A/D leaves it.**
+- **Hug squiggles at boosted speed** — carry cap `3.4×` → `ROAD_CARRY_TURN_MULT =
+  5×` TURN_RATE and `ROAD_FOLLOW_STEER` 7.5 → 9, giving the lock real headroom to
+  track tight laid bends at full railSpeed (236) — speed you could never corner by
+  hand, which is the point.
+
+Speed itself unchanged (already boosts preparedSpeed → railSpeed on road). No draw
+changes. Verified: typecheck + build clean, unit suite unchanged (74 pass / same 9
+DEV-23 reds, none related), boot-and-drive screenshot renders and lays ribbon. The
+lock/break *feel* is a playtest judgement — cap/threshold are one-number tunes.
+
+## 2026-09-16: Full-speed corners + more grip; strip the obscuring rover rings
+
+Playtest: don't slow on corners, increase grip, reduce the weird UI circles that
+signalled activity before but now obscure the arms/road.
+
+### Corners & grip
+Removed the curvature speed easing outright — the slide runs to full railSpeed
+on straights AND bends. To hold the line at that speed instead of easing to make
+the turn, raised the grip: sim carry cap 2.6× → 3.4× TURN_RATE,
+`ROAD_FOLLOW_STEER` 5.5 → 7.5, response divisor 0.25 → 0.18. Cleaned out the
+now-dead bend walk in `roadCarry` and the `ROAD_BEND_*`/`roadCurveScale` code.
+Verified headless: hands-off, the carry holds a curve at a full 236. (Earlier we
+ADDED curvature easing to stop the fling; the owner prefers full-speed corners
+and more grip — accepted the trade, reversed the easing.)
+
+### UI declutter
+The road ribbon and the mode-exclusive arms now tell you the activity, so the
+old rover-centred rings were redundant clutter over the machine:
+- Reclaim preview: filled disc + three concentric rings → a small dot + one thin
+  ring (kept the "+NET / haul" text).
+- Rover state aura: dropped the stroked ellipse ring(s); kept a faint tint only.
+- Removed the prepared-coverage ellipse ring around the rover.
+Kept the extraction ring (a goal marker, not activity). The machine and arms
+read clearly now.
+
 ## 2026-09-16: Arms do one job; stop-to-mine; real layout shuffle
 
 Playtest, three asks: widen the visible delta between arm activities; mining is

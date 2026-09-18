@@ -540,41 +540,172 @@ export function createArenaStarterFields(
 
 // A real layout shuffle, not a wobble. The authored seams keep their size,
 // richness and remaining ore -- the balance -- but each is re-placed at a fresh
-// seeded position across the field, spread apart, clear of the start and
-// extraction, and its vein re-oriented at a random angle. So every seed is a
-// genuinely different map to read (New Game reshuffles; a shift keeps its seed
-// so carried road still fits). Falls back to the authored position only if
-// sampling cannot find a spot.
-export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: string): FertileZone[] {
-  const random = seededRandom(`${seed}:${arena.id}:layout-v2`);
-  const bounds = { minX: 150, maxX: 900, minY: 200, maxY: 610 };
+// seeded position and its vein re-oriented, so every seed is a genuinely
+// different map to read. What v3 adds: positions are no longer uniform noise.
+// Each seed picks one of a few readable ARCHETYPES --
+//   scatter  : seams spread across the whole field (the old behaviour),
+//   ridge    : seams strung along one vein line you can follow out and back,
+//   clusters : a lean cluster near the plant and a rich cluster far out,
+//   belt     : seams ringing the extraction at a chosen radius --
+// so a map has a shape you can read a route into, not just dots. Reachability,
+// spacing, and "further out pays more" (richest seam farthest from extraction)
+// still hold. New Game reshuffles (fresh archetype + seed); a shift keeps its
+// seed so carried road still fits. Falls back to the authored position only if
+// sampling cannot place a seam.
+export type ArenaLayoutArchetype = 'scatter' | 'ridge' | 'clusters' | 'belt';
+export const ARENA_LAYOUT_ARCHETYPES: ArenaLayoutArchetype[] = ['scatter', 'ridge', 'clusters', 'belt'];
+
+export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: string, layoutScale = 1): FertileZone[] {
+  const random = seededRandom(`${seed}:${arena.id}:layout-v3`);
+  // Bigger level = the seams scatter across a wider area (reachability rules
+  // below still hold, so they stay reachable -- just farther). Scale the base
+  // bounds around their centre, clamped to the world so nothing lands off-map.
+  // Wider than the old central band so the field is a bigger place to cross:
+  // spread west/north/south into the play area (the depot sits at the east edge
+  // and you sortie into this). arenaScale expands it further, up to the clamps.
+  const base = { minX: 90, maxX: 905, minY: 150, maxY: 675 };
+  const scale = Math.max(1, layoutScale);
+  const cx = (base.minX + base.maxX) / 2;
+  const cy = (base.minY + base.maxY) / 2;
+  const bounds = {
+    minX: Math.max(40, cx - (cx - base.minX) * scale),
+    maxX: Math.min(1000, cx + (base.maxX - cx) * scale),
+    minY: Math.max(90, cy - (cy - base.minY) * scale),
+    maxY: Math.min(700, cy + (base.maxY - cy) * scale)
+  };
   const start = arena.start;
   const extraction = arena.extraction;
   const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
+  const clampX = (x: number) => Math.min(bounds.maxX, Math.max(bounds.minX, x));
+  const clampY = (y: number) => Math.min(bounds.maxY, Math.max(bounds.minY, y));
 
-  // 1. Sample one spread-out, reachable position per seam. Positions are seam
-  //    slots; which SEAM lands in which slot is decided in step 2.
+  // Reach is measured from the extraction if there is one, else the start.
+  const focus = extraction ? { x: extraction.x, y: extraction.y } : { x: start.x, y: start.y };
+  const bcx = (bounds.minX + bounds.maxX) / 2;
+  const bcy = (bounds.minY + bounds.maxY) / 2;
+  const shortSpan = Math.min(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+
+  // Pick this seed's layout archetype and sample its anchors once.
+  const archetype = ARENA_LAYOUT_ARCHETYPES[Math.floor(random() * ARENA_LAYOUT_ARCHETYPES.length)];
+  const theta = random() * Math.PI * 2; // ridge direction
+  const ridgeHalf = shortSpan * 0.55;
+  const ridgeA = { x: bcx - Math.cos(theta) * ridgeHalf, y: bcy - Math.sin(theta) * ridgeHalf };
+  const ridgeB = { x: bcx + Math.cos(theta) * ridgeHalf, y: bcy + Math.sin(theta) * ridgeHalf };
+  const nearAngle = random() * Math.PI * 2; // cluster anchors, on spread-apart bearings
+  const farAngle = nearAngle + Math.PI * (0.55 + random() * 0.9);
+  const excl = (extraction ? extraction.radius : 0) + 150;
+  const clusterNear = { x: clampX(focus.x + Math.cos(nearAngle) * excl), y: clampY(focus.y + Math.sin(nearAngle) * excl) };
+  const clusterFar = { x: clampX(focus.x + Math.cos(farAngle) * shortSpan * 0.5), y: clampY(focus.y + Math.sin(farAngle) * shortSpan * 0.5) };
+  const beltR = excl + 40 + random() * (shortSpan * 0.28); // belt radius band centre
+
+  function candidate(): Vec2 {
+    switch (archetype) {
+      case 'ridge': {
+        const t = random();
+        const perp = (random() - 0.5) * 150;
+        return {
+          x: ridgeA.x + (ridgeB.x - ridgeA.x) * t - Math.sin(theta) * perp,
+          y: ridgeA.y + (ridgeB.y - ridgeA.y) * t + Math.cos(theta) * perp
+        };
+      }
+      case 'clusters': {
+        const c = random() < 0.5 ? clusterNear : clusterFar;
+        return { x: c.x + (random() - 0.5) * 190, y: c.y + (random() - 0.5) * 190 };
+      }
+      case 'belt': {
+        const a = random() * Math.PI * 2;
+        const r = beltR + (random() - 0.5) * 130;
+        return { x: focus.x + Math.cos(a) * r, y: focus.y + Math.sin(a) * r };
+      }
+      default:
+        return { x: bounds.minX + random() * (bounds.maxX - bounds.minX), y: bounds.minY + random() * (bounds.maxY - bounds.minY) };
+    }
+  }
+
+  // 1. Sample one spread-out, reachable position per seam from the archetype.
+  //    Positions are seam slots; which SEAM lands in which slot is step 2.
   const positions: Vec2[] = [];
   for (const zone of arena.fertileZones) {
-    let cx = zone.x;
-    let cy = zone.y;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const x = bounds.minX + random() * (bounds.maxX - bounds.minX);
-      const y = bounds.minY + random() * (bounds.maxY - bounds.minY);
+    let px = zone.x;
+    let py = zone.y;
+    // Best reachable candidate so far, ranked by how far it sits from its
+    // nearest neighbour. If no attempt clears the full 155 spacing (a tight
+    // belt/cluster can run out of room), we still take the most-spread
+    // reachable spot instead of snapping back onto another seam.
+    let bestGap = -1;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const { x, y } = candidate();
+      if (x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY) continue;
       if (dist(x, y, start.x, start.y) < 180) continue;
       if (extraction && dist(x, y, extraction.x, extraction.y) < extraction.radius + 110) continue;
-      if (positions.some((p) => dist(x, y, p.x, p.y) < 165)) continue;
-      cx = x;
-      cy = y;
-      break;
+      const gap = positions.reduce((m, p) => Math.min(m, dist(x, y, p.x, p.y)), Infinity);
+      if (gap >= 155) {
+        px = x;
+        py = y;
+        bestGap = gap;
+        break;
+      }
+      if (gap > bestGap) {
+        bestGap = gap;
+        px = x;
+        py = y;
+      }
     }
-    positions.push({ x: cx, y: cy });
+    positions.push({ x: px, y: py });
+  }
+
+  // 1b. Relaxation. The archetype gives the readable SHAPE; a few
+  //     spring-separation passes spread any crowded seams to a legal gap while
+  //     keeping the gestalt, then snap each back inside bounds and clear of the
+  //     start/extraction. Tight belts and clusters converge to a clean spread.
+  const enforce = (p: Vec2): void => {
+    p.x = clampX(p.x);
+    p.y = clampY(p.y);
+    const ds = dist(p.x, p.y, start.x, start.y);
+    if (ds < 186) {
+      const u = ds || 1;
+      p.x = clampX(start.x + ((p.x - start.x) / u) * 186);
+      p.y = clampY(start.y + ((p.y - start.y) / u) * 186);
+    }
+    if (extraction) {
+      const de = dist(p.x, p.y, extraction.x, extraction.y);
+      const need = extraction.radius + 116;
+      if (de < need) {
+        const u = de || 1;
+        p.x = clampX(extraction.x + ((p.x - extraction.x) / u) * need);
+        p.y = clampY(extraction.y + ((p.y - extraction.y) / u) * need);
+      }
+    }
+  };
+  const SPREAD = 160;
+  for (let iter = 0; iter < 80; iter += 1) {
+    let moved = false;
+    for (let i = 0; i < positions.length; i += 1) {
+      for (let j = i + 1; j < positions.length; j += 1) {
+        const dx = positions[j].x - positions[i].x;
+        const dy = positions[j].y - positions[i].y;
+        const d = Math.hypot(dx, dy) || 0.01;
+        if (d < SPREAD) {
+          const push = (SPREAD - d) / 2;
+          const ux = dx / d;
+          const uy = dy / d;
+          positions[i].x -= ux * push;
+          positions[i].y -= uy * push;
+          positions[j].x += ux * push;
+          positions[j].y += uy * push;
+          moved = true;
+        }
+      }
+    }
+    for (const p of positions) enforce(p);
+    if (!moved) break;
   }
 
   // 2. Assign seams to slots so reach stays rewarded: the richest seam lands at
   //    the slot FARTHEST from the extraction, the leanest nearest. Without an
-  //    extraction, keep the sampled order. This gives a fresh map every seed
-  //    while preserving the "further out pays more" design property.
+  //    extraction, keep the sampled order. Same property across every archetype:
+  //    the far end of a ridge, the far cluster, the outer belt all read as "the
+  //    rich haul is the long haul."
   const slotOrder = positions.map((_, index) => index);
   const zoneOrder = arena.fertileZones.map((_, index) => index);
   if (extraction) {
@@ -589,7 +720,9 @@ export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: 
     let vein = zone.vein;
     if (zone.vein) {
       const length = Math.hypot(zone.vein.to.x - zone.vein.from.x, zone.vein.to.y - zone.vein.from.y);
-      const angle = random() * Math.PI * 2;
+      // On a ridge, align veins ALONG the ridge so the seams read as one lode;
+      // otherwise give each a fresh random angle.
+      const angle = archetype === 'ridge' ? theta + (random() - 0.5) * 0.5 : random() * Math.PI * 2;
       const hx = (Math.cos(angle) * length) / 2;
       const hy = (Math.sin(angle) * length) / 2;
       vein = {

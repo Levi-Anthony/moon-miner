@@ -1,7 +1,7 @@
 name: Playtest preview (GitHub Pages)
 
-# Builds this branch and publishes the static site to the `gh-pages` branch, so
-# it can be played from a URL and every push refreshes the live preview. This
+# Builds main and publishes the static site to the `gh-pages` branch, so it can
+# be played from a URL and every push to main refreshes the live preview. This
 # "deploy from a branch" method works from any source branch (no github-pages
 # environment branch policy to fight).
 #
@@ -11,7 +11,7 @@ name: Playtest preview (GitHub Pages)
 on:
   push:
     branches:
-      - claude/current-state-report-a81tov
+      - main
   workflow_dispatch:
 
 permissions:

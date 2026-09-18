@@ -113,6 +113,9 @@ export interface ReclaimCandidateDiagnostics {
   refillEtaSeconds: number;
   eta: ReclaimEtaBreakdown;
   score: number;
+  // cos of the angle between the rover's facing and the bearing to this target
+  // (-1 behind .. 1 dead ahead). Weighted by reclaimAimBias when selecting.
+  aimAlignment: number;
 }
 
 export interface DroneReclaimDiagnostics {
@@ -236,6 +239,17 @@ export interface ContinuousTuning {
   allowLowPayloadLaunch: boolean;
   minReclaimClusterPayload: number;
   minReclaimCandidateCount: number;
+  // --- Drone repurpose: tethered, aimed, loop-safe cleanup/reclaim ---
+  // When true, the drone will only lift a set whose removal keeps every
+  // remaining tile connected to home -- it never cuts the loop. When false
+  // (sim default), topology only RANKS candidates, as the classic design did.
+  reclaimProtectLoop: boolean;
+  // The drone keeps a line home: a reclaim target must be within this distance
+  // of home (extraction, else start). A large value (default) = no tether.
+  droneTetherRange: number;
+  // How hard the rover's facing biases which target the drone picks. 0 = off
+  // (pure topology/distance, the classic behaviour); higher = aim dominates.
+  reclaimAimBias: number;
   preparedCoverageThreshold: number;
   preparedFieldMinValue: number;
   preparedMagnetInfluenceMultiplier: number;
@@ -285,6 +299,13 @@ export interface ContinuousTuning {
   // Set low (~0.05-0.1) so a deployed drone creates real pressure but doesn't
   // make prepared movement feel like active refill.
   preparedRefillPerSecond: number;
+  // --- Ribbon economy (ground-up conceit rework, flag-gated) ---
+  // When true, the nanobot economy keys off the VISIBLE ribbon instead of the
+  // invisible field lattice: laying fresh ribbon (off-road, driving) costs
+  // stock; rolling your own laid ribbon (onRoad) is free/fast. Requires the
+  // caller to feed input.onRoad. Default false preserves the classic behaviour
+  // (self-play, tests, the old scene) so this is fully rollback-able.
+  ribbonEconomy: boolean;
 }
 
 export type DynamicsPresetId = 'stable-first-run' | 'current-classic' | 'drone-playground' | 'strict-logistics';
@@ -333,6 +354,15 @@ export interface ContinuousWorldState {
   lastRoadPatchId?: number;
   fieldEmitDistance: number;
   pendingFieldValue: number;
+  // Whether the rover has left the extraction zone at least once this run. A
+  // day ends by RETURNING to the depot, and the run starts parked on it, so
+  // "made it back" only counts once you have actually left. Guards the depot
+  // against ending the day at t=0 (and lets you return under quota as a soft
+  // fail rather than being unable to end the day at all).
+  leftExtraction: boolean;
+  // True on a winning return that came in UNDER quota -- the scene reads this to
+  // charge the under-quota processing fee. Meaningless while playing.
+  returnedUnderQuota: boolean;
 }
 
 export interface ContinuousCommandResult {
@@ -349,6 +379,13 @@ const INDUSTRIAL_ARMS = 7;
 // because you mine standing still. Chosen so all seven arms together give about
 // the throughput parked mining had before (7 * 0.4 vs the old 7 * ~0.35).
 const STOP_MINE_EFFICIENCY = 0.4;
+// The mining band around a vein reaches this far BEYOND the vein's own
+// half-width, so "parked on the visibly gold seam" always mines. The seam is
+// drawn inflated (ore pulse at width+24, bed at width+34), so the old
+// exactly-width/2 detection left a ring of visible ore you could sit on without
+// the arms engaging -- the "stopped on a seam and not mining" bug. This matches
+// the drawn ore, not the bare geometric vein.
+const SEAM_MINE_REACH = 20;
 const UTILITY_ARMS = 1;
 const TOTAL_ARMS = INDUSTRIAL_ARMS + UTILITY_ARMS;
 const TURN_RATE = 2.25;
@@ -363,6 +400,15 @@ const TURN_RATE = 2.25;
 const REVERSE_SPEED_RATIO = 0.62;
 // Full lock in a little over a quarter second.
 const STEER_RAMP_PER_SECOND = 4.6;
+// Forward on prepared road LOCKS the machine onto the ribbon: the carry owns the
+// wheel and faithfully follows the laid path however it squiggles, and a partial
+// stick is fully subsumed (a resting or half-committed wheel does nothing). The
+// only way off at speed is to take the stick ALL THE WAY over -- a near-90-degree
+// deflection -- which passes your wheel straight through and drops the carry.
+const ROAD_CARRY_BREAK_STEER = 0.9;
+// The rail may out-turn a manual lock by this much so it holds a squiggly line at
+// full boosted speed -- speed the driver could never corner by hand.
+const ROAD_CARRY_TURN_MULT = 5;
 const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
 export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -457,6 +503,10 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   allowLowPayloadLaunch: false,
   minReclaimClusterPayload: 0.08,
   minReclaimCandidateCount: 1,
+  // Drone repurpose defaults preserve the classic behaviour; the 3D app opts in.
+  reclaimProtectLoop: false,
+  droneTetherRange: 1e9, // effectively no tether (JSON-safe sentinel, not Infinity)
+  reclaimAimBias: 0,
   preparedCoverageThreshold: 0.24,
   preparedFieldMinValue: 0.08,
   preparedMagnetInfluenceMultiplier: 1.35,
@@ -480,14 +530,19 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // stock only refills during crawl. This makes time cost; the drone creates
   // friction through flight distance (weighted in compareReclaimCandidates),
   // not through a baseline cost. Tune up if crawl pressure becomes insufficient.
-  preparedRefillPerSecond: 0
+  preparedRefillPerSecond: 0,
+  ribbonEconomy: false
 };
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   ...CURRENT_CLASSIC_CONTINUOUS_TUNING,
-  startingNanobots: 6,
+  // Eased on playtest: a run that spent most of its life at LOW/crawl felt
+  // frantic by default rather than by choice. More opening buffer, a gentler
+  // fabrication drain, and faster crawl recovery. All three stay panel knobs, so
+  // the tension is dialable back up.
+  startingNanobots: 9,
   maxNanobots: 24,
-  fabricateCostPerSecond: 1,
+  fabricateCostPerSecond: 0.85,
   fieldEmitDistance: 26,
   fieldRadius: 46,
   tileSize: 16,
@@ -558,7 +613,7 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   // gets you out in ~7s; the consequence stays (you slowed to a limp and lost
   // that time) without stranding. The drone is still the primary refill, and
   // reaching prepared road still flips you out of crawl instantly.
-  crawlRecoveryPerSecond: 0.3,
+  crawlRecoveryPerSecond: 0.45,
   crawlRecoveryCeiling: 3.6,
   // 16 read as frozen. 34 is an unmistakable limp -- under half fabricating --
   // but it still moves you toward your road, the ore, or home instead of pinning
@@ -574,7 +629,8 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   preparedSpeed: 96,
   // Refill while on prepared ground. Zero means consequence comes from distance
   // weighting in drone selection, not from a baseline stock mechanic.
-  preparedRefillPerSecond: 0
+  preparedRefillPerSecond: 0,
+  ribbonEconomy: false
 };
 
 export const DEFAULT_DYNAMICS_PRESET_ID: DynamicsPresetId = 'stable-first-run';
@@ -631,7 +687,8 @@ export function createContinuousWorld(
   tuning: Partial<ContinuousTuning> = {},
   arenaId: ContinuousArenaId = 'first-run-readable',
   carriedFields: FieldPatch[] = [],
-  carriedDepletion: Record<string, number> = {}
+  carriedDepletion: Record<string, number> = {},
+  layoutScale = 1
 ): ContinuousWorldState {
   const resolvedTuning = resolveContinuousTuning(tuning);
   const arena = getContinuousArena(arenaId);
@@ -665,7 +722,7 @@ export function createContinuousWorld(
       liftedPatches: 0
     },
     fields,
-    fertileZones: applyCarriedDepletion(createArenaFertileZones(arena, seed), carriedDepletion),
+    fertileZones: applyCarriedDepletion(createArenaFertileZones(arena, seed, layoutScale), carriedDepletion),
     nanobots: resolvedTuning.startingNanobots,
     maxNanobots: resolvedTuning.maxNanobots,
     targetOre: resolvedTuning.targetOre,
@@ -686,11 +743,18 @@ export function createContinuousWorld(
     nextFieldId,
     fieldEmitDistance: 0,
     pendingFieldValue: 0,
-    railReleaseRemaining: 0
+    railReleaseRemaining: 0,
+    // If the run starts parked on the depot (last-light-return), the rover has
+    // not "left" yet, so touching the depot cannot end the day until it does.
+    // Arenas with no extraction never gate on this.
+    leftExtraction: false,
+    returnedUnderQuota: false
   };
 
   state.speedState = resolveSpeedState(state);
   state.arms = allocateArms(state.speedState, Boolean(findFertileZoneAt(state, state.rover)), false, state.drone.status);
+  // Starting anywhere other than on the depot counts as already having left it.
+  state.leftExtraction = !isRoverAtExtraction(state);
   return state;
 }
 
@@ -1016,7 +1080,7 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
     field.age += deltaSeconds;
   }
 
-  state.speedState = resolveSpeedState(state);
+  state.speedState = resolveSpeedState(state, input.onRoad);
   // Stock refill happens independently of field fabrication. This creates the
   // consequence that long drone flights cost time you would otherwise spend
   // refilling -- the drone is out, you're not fabricating or refilling as fast.
@@ -1142,12 +1206,13 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   const grip = getPreparedGrip(state);
   const fieldTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * grip.strength * authority;
 
-  // On cured road, the carry is a RESCUE SLIDE, not an assist you fight. The
-  // road takes over the wheel: it may turn well past a manual lock (2.6x) so it
-  // holds a curve at speed instead of flinging you off the outside; a light
-  // touch on the wheel is subsumed so a resting finger does not saw against the
-  // line; and only a firm, deliberate steer (past railBreakSteer) eases the
-  // carry and passes your wheel through, to break off at a junction or seam.
+  // On cured road, forward LOCKS you onto the ribbon -- the carry is the whole
+  // wheel, not an assist you fight. It out-turns a manual lock (ROAD_CARRY_TURN_MULT)
+  // so it faithfully follows any squiggle the road makes, at a boosted speed you
+  // could never corner by hand; a partial stick is fully subsumed (steerScale 0),
+  // so a resting or half-committed wheel does nothing to the line. Only taking the
+  // stick ALL THE WAY over (ROAD_CARRY_BREAK_STEER, ~90 degrees) drops the carry
+  // and passes your wheel straight through, to leave the road at a junction or seam.
   let gripTurn = fieldTurn;
   let steerScale = 1;
   if (input.assistSteer !== undefined) {
@@ -1159,10 +1224,10 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     // it, the slide holds you. Self-play/tests pass no assistSteer and keep the
     // magnet unchanged.
     if (input.onRoad) {
-      const firmSteer = Math.abs(input.steer) >= state.tuning.railBreakSteer;
-      const carryCap = TURN_RATE * 2.6;
-      gripTurn = clamp(input.assistSteer, -carryCap, carryCap) * (firmSteer ? 0.3 : 1);
-      steerScale = firmSteer ? 1 : 0.25;
+      const breakingOff = Math.abs(input.steer) >= ROAD_CARRY_BREAK_STEER;
+      const carryCap = TURN_RATE * ROAD_CARRY_TURN_MULT;
+      gripTurn = breakingOff ? 0 : clamp(input.assistSteer, -carryCap, carryCap);
+      steerScale = breakingOff ? 1 : 0;
     } else {
       gripTurn = 0;
     }
@@ -1481,11 +1546,14 @@ function moveDroneToward(state: ContinuousWorldState, target: Vec2, deltaSeconds
 }
 
 function reclaimFieldCluster(state: ContinuousWorldState, target: Vec2): { payload: number; count: number } {
+  // Lift exactly the loop-safe cluster the preview promised (getReclaimCluster
+  // applies the loop protection), so what's taken never breaks the network.
+  const liftIds = new Set(getReclaimCluster(state, target).map((f) => f.id));
   const lifted: FieldPatch[] = [];
   const remainingFields: FieldPatch[] = [];
 
   for (const field of state.fields) {
-    if (isInReclaimCluster(state, field, target)) {
+    if (liftIds.has(field.id)) {
       lifted.push(field);
     } else {
       remainingFields.push({ ...field, reservedByDrone: undefined });
@@ -1670,7 +1738,14 @@ function findJoinablePatchId(state: ContinuousWorldState, at: Vec2): number | un
 }
 
 
-function resolveSpeedState(state: ContinuousWorldState): SpeedState {
+function resolveSpeedState(state: ContinuousWorldState, onRoad?: boolean): SpeedState {
+  // Ribbon economy: "prepared" is being on the visible ribbon, not on invisible
+  // field coverage -- so the drain and the road you see are the same fact.
+  if (state.tuning.ribbonEconomy && onRoad !== undefined) {
+    if (onRoad) return 'prepared';
+    const exit = state.speedState === 'crawl' ? 2 : 0.85;
+    return state.nanobots >= exit ? 'fabricating' : 'crawl';
+  }
   if (getPreparedCoverage(state, state.rover) >= state.tuning.preparedCoverageThreshold) return 'prepared';
   // Hysteresis. Crawl recovery trickles up to 1.2 while the exit threshold was
   // 0.85, so stock crossed the boundary every few frames and the speed state --
@@ -2052,17 +2127,31 @@ function describeRun(surplusRatio: number, marginSeconds: number): string {
 function applyContinuousWinLoss(state: ContinuousWorldState): void {
   if (state.arena.extraction) {
     const required = state.arena.extraction.oreRequired;
-    if (isRoverAtExtraction(state) && state.rover.ore >= required) {
+    const atExtraction = isRoverAtExtraction(state);
+    // Latch: you have to actually LEAVE the depot before returning to it can
+    // end the day. This is why the run can start parked on the depot without
+    // instantly ending, and why "made it back" means made it back.
+    if (!atExtraction) state.leftExtraction = true;
+
+    if (atExtraction && state.leftExtraction) {
+      // Returning to the depot ends the day whether or not you made quota.
+      // Over quota is a clean win; under quota still delivers, but the scene
+      // charges the company's processing fee (returnedUnderQuota tells it to).
       state.phase = 'won';
-      // A 33-ore run two seconds before sunset used to print the same shape of
-      // sentence as a 12-ore run with twenty seconds to spare. Nothing in the
-      // game distinguished them, which is a fair reading of "nothing mattered".
-      // Saying it is the least this can do; it is not yet a reason to want it.
-      const surplus = state.rover.ore - required;
       const margin = state.solarSeconds;
-      state.message =
-        `${state.rover.ore.toFixed(1)} ore delivered, ${surplus.toFixed(1)} over quota, ` +
-        `${margin.toFixed(1)}s of light left. ${describeRun(surplus / Math.max(1, required), margin)}`;
+      if (state.rover.ore >= required) {
+        state.returnedUnderQuota = false;
+        const surplus = state.rover.ore - required;
+        state.message =
+          `${state.rover.ore.toFixed(1)} ore delivered, ${surplus.toFixed(1)} over quota, ` +
+          `${margin.toFixed(1)}s of light left. ${describeRun(surplus / Math.max(1, required), margin)}`;
+      } else {
+        state.returnedUnderQuota = true;
+        const short = required - state.rover.ore;
+        state.message =
+          `Back under quota: ${state.rover.ore.toFixed(1)} of ${required} ore, ${short.toFixed(1)} short. ` +
+          `The company takes its processing fee on what you did bring.`;
+      }
       return;
     }
 
@@ -2070,7 +2159,7 @@ function applyContinuousWinLoss(state: ContinuousWorldState): void {
       state.phase = 'lost';
       state.message =
         state.rover.ore < required
-          ? `Sunset. Only ${state.rover.ore.toFixed(1)} of ${required} ore mined.`
+          ? `Sunset. Only ${state.rover.ore.toFixed(1)} of ${required} ore mined, and you never made it back.`
           : 'Sunset closed the extraction window before the rover got home.';
     }
     return;
@@ -2119,7 +2208,16 @@ export function getDroneReclaimDiagnostics(state: ContinuousWorldState): DroneRe
 }
 
 function selectDroneTarget(state: ContinuousWorldState): ReclaimCandidateDiagnostics | undefined {
-  return getReclaimCandidateDiagnostics(state).sort(compareReclaimCandidates)[0];
+  const bias = state.tuning.reclaimAimBias;
+  return getReclaimCandidateDiagnostics(state).sort((a, b) => compareReclaimCandidates(a, b, bias))[0];
+}
+
+// The exact set of tiles the drone would lift if launched now: the selected
+// target's loop-safe cluster. Exported for tests and for previewing the lift.
+export function getDroneLiftSet(state: ContinuousWorldState): FieldPatch[] {
+  const target = selectDroneTarget(state);
+  if (!target) return [];
+  return getReclaimCluster(state, target.target);
 }
 
 function getDroneBlockedReason(
@@ -2199,6 +2297,10 @@ function createReclaimCandidateDiagnostics(
   // by distance, but more so by connection" the design asks for.
   const distanceFromRover = distance(field, state.rover);
   const score = MAX_TRACK_DEGREE - getTrackDegree(state, field);
+  // How well the target sits in the direction the rover is facing: aiming the
+  // machine aims the drone.
+  const bearing = Math.atan2(field.y - state.rover.y, field.x - state.rover.x);
+  const aimAlignment = Math.cos(bearing - state.rover.heading);
   return {
     targetPatchId: field.id,
     target: { x: field.x, y: field.y },
@@ -2209,13 +2311,17 @@ function createReclaimCandidateDiagnostics(
     spread,
     refillEtaSeconds: eta.totalSeconds,
     eta,
-    score
+    score,
+    aimAlignment
   };
 }
 
-function compareReclaimCandidates(a: ReclaimCandidateDiagnostics, b: ReclaimCandidateDiagnostics): number {
-  const scoreDelta = b.score - a.score;
-  if (Math.abs(scoreDelta) > 0.000001) return scoreDelta;
+function compareReclaimCandidates(a: ReclaimCandidateDiagnostics, b: ReclaimCandidateDiagnostics, aimBias = 0): number {
+  // Fold the aim bias into the topology score, so facing a direction pulls the
+  // pick that way. aimAlignment is [-1,1]; a bias of ~2-3 makes it rival a full
+  // degree step. At bias 0 (sim default) this is the classic pure-topology sort.
+  const rankDelta = (b.score + aimBias * b.aimAlignment) - (a.score + aimBias * a.aimAlignment);
+  if (Math.abs(rankDelta) > 0.000001) return rankDelta;
 
   const distanceDelta = a.distanceFromRover - b.distanceFromRover;
   if (Math.abs(distanceDelta) > 0.000001) return distanceDelta;
@@ -2245,12 +2351,23 @@ function isLiftableRoad(state: ContinuousWorldState, field: FieldPatch): boolean
   return field.value >= state.tuning.reclaimMinFieldValue;
 }
 
+// Home is where the drone must keep a line back to: the extraction/depot if the
+// arena has one, otherwise the rover's start.
+function reclaimHome(state: ContinuousWorldState): Vec2 {
+  return state.arena.extraction ?? state.arena.start;
+}
+
 function isSelectableReclaimTarget(state: ContinuousWorldState, field: FieldPatch): boolean {
-  return (
-    !field.reservedByDrone &&
-    isLiftableRoad(state, field) &&
-    (state.tuning.allowCloseReclaim || distance(field, state.rover) >= state.tuning.reclaimMinDistanceFromRover)
-  );
+  if (field.reservedByDrone || !isLiftableRoad(state, field)) return false;
+  if (!(state.tuning.allowCloseReclaim || distance(field, state.rover) >= state.tuning.reclaimMinDistanceFromRover)) return false;
+  // Tether: a target must stay within reach of home so the drone keeps a
+  // connection back. (Default range is effectively unlimited.)
+  if (distance(field, reclaimHome(state)) > state.tuning.droneTetherRange) return false;
+  // Loop protection: only loose ends / isolated tiles are targetable, so lifting
+  // the target can never sever the network. (getReclaimCluster then keeps the
+  // whole lifted set loop-safe.)
+  if (state.tuning.reclaimProtectLoop && getTrackDegree(state, field) > 1) return false;
+  return true;
 }
 
 // The drone takes loose ends, never the middle of a path.
@@ -2295,7 +2412,36 @@ export function getTrackDegree(
 
 
 function getReclaimCluster(state: ContinuousWorldState, target: Vec2): FieldPatch[] {
-  return state.fields.filter((field) => isInReclaimCluster(state, field, target));
+  const raw = state.fields.filter((field) => isInReclaimCluster(state, field, target));
+  return loopSafeCluster(state, raw);
+}
+
+// Keep the reclaim from ever splitting the road into islands: lift a tile from
+// the cluster only while it is CURRENTLY a loose end (degree <= 1) of what's
+// left. Removing a degree<=1 vertex can never disconnect a graph, so peeling
+// leaves off the cluster one layer at a time leaves the remaining network in
+// one piece -- the rover's road home is never cut in two. When loop protection
+// is off this is a no-op, preserving the classic behaviour.
+function loopSafeCluster(state: ContinuousWorldState, cluster: FieldPatch[]): FieldPatch[] {
+  if (!state.tuning.reclaimProtectLoop || cluster.length <= 1) return cluster;
+  const clusterIds = new Set(cluster.map((f) => f.id));
+  const remaining = new Map(state.fields.map((f) => [f.id, f] as const));
+  const lifted: FieldPatch[] = [];
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    const index = buildTileIndex([...remaining.values()], state.tuning.tileSize);
+    for (const field of remaining.values()) {
+      if (!clusterIds.has(field.id)) continue;
+      if (fieldNeighbours(field, index, state.tuning.tileSize).length <= 1) {
+        remaining.delete(field.id);
+        lifted.push(field);
+        progressed = true;
+        break; // rebuild the index; degrees shift as leaves come off
+      }
+    }
+  }
+  return lifted;
 }
 
 function isInReclaimCluster(state: ContinuousWorldState, field: FieldPatch, target: Vec2): boolean {
@@ -2344,7 +2490,7 @@ function estimateActiveDroneRefillEta(state: ContinuousWorldState): number {
 
 function isPointInFertileZone(zone: FertileZone, point: Vec2): boolean {
   if (zone.vein) {
-    return distanceToSegment(point, zone.vein.from, zone.vein.to) <= zone.vein.width / 2;
+    return distanceToSegment(point, zone.vein.from, zone.vein.to) <= zone.vein.width / 2 + SEAM_MINE_REACH;
   }
 
   return distance(point, zone) <= zone.radius;

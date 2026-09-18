@@ -58,7 +58,7 @@ describe('continuous Moon Miner spike rules', () => {
     // rather than fabricating from the first metre.
     expect(world.speedState).toBe('prepared');
     expect(world.message).toBe('Prepared field online. Keep the machine supplied before sunset.');
-    expect(world.nanobots).toBe(6);
+    expect(world.nanobots).toBe(9);
     expect(world.arms.total).toBe(8);
     expect(world.arms.industrialTotal).toBe(7);
     expect(world.arms.utilityTotal).toBe(1);
@@ -76,8 +76,9 @@ describe('continuous Moon Miner spike rules', () => {
     // Layout is shuffled per seed now, so assert the shuffle INVARIANTS rather
     // than fixed coordinates: every seam is inside the field, clear of the depot
     // and the extraction, and keeps its vein.
+    // Field widened for the bigger level (base spread bounds 90..905 x 150..675).
     const inBounds = (zone: (typeof world.fertileZones)[number]) =>
-      zone.x >= 140 && zone.x <= 910 && zone.y >= 190 && zone.y <= 620;
+      zone.x >= 80 && zone.x <= 915 && zone.y >= 140 && zone.y <= 685;
     expect(world.fertileZones.every(inBounds)).toBe(true);
     expect(
       world.fertileZones.every(
@@ -118,7 +119,7 @@ describe('continuous Moon Miner spike rules', () => {
     expect(DEFAULT_CONTINUOUS_TUNING).toEqual(stable?.tuning);
     expect(classic?.tuning).toEqual(CURRENT_CLASSIC_CONTINUOUS_TUNING);
 
-    expect(stable?.tuning.startingNanobots).toBe(6);
+    expect(stable?.tuning.startingNanobots).toBe(9);
     expect(stable?.tuning.maxNanobots).toBe(24);
     expect(stable?.tuning.reclaimMinFieldAgeSeconds).toBe(4);
     expect(stable?.tuning.reclaimMinDistanceFromRover).toBe(90);
@@ -222,6 +223,27 @@ describe('continuous Moon Miner spike rules', () => {
     world.rover.x = seam.x + seam.radius * 0.72;
     world.rover.y = seam.y + seam.radius * 0.72;
     expect(tickContinuousWorld(world, idleInput, 0.1).lastYieldRate).toBe(0);
+  });
+
+  it('mines when parked on the visibly gold seam just outside the bare vein line', () => {
+    const world = createContinuousWorld();
+    const seam = world.fertileZones[1];
+    const vein = seam.vein!;
+    // Perpendicular to the vein, out past the bare half-width but still on the
+    // drawn seam (the ore bed is inflated well beyond the geometric vein). This
+    // is the "stopped on a gold seam and not mining" spot; it must now mine.
+    const dx = vein.to.x - vein.from.x;
+    const dy = vein.to.y - vein.from.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const px = -dy / len;
+    const py = dx / len;
+    const offset = vein.width / 2 + 12;
+    world.rover.x = vein.from.x + px * offset;
+    world.rover.y = vein.from.y + py * offset;
+
+    const next = tickContinuousWorld(world, idleInput, 0.1);
+    expect(next.lastYieldRate).toBeGreaterThan(0);
+    expect(next.arms.mining).toBeGreaterThan(0);
   });
 
   it('idles on barren raw terrain without moving, printing field, or mining when there is no drive intent', () => {
@@ -964,6 +986,8 @@ describe('continuous Moon Miner spike rules', () => {
     world.rover.ore = world.arena.extraction!.oreRequired;
     world.rover.x = 900;
     world.rover.y = 535;
+    // A day ends by RETURNING to the depot, so the rover must have left it once.
+    world.leftExtraction = true;
 
     const next = tickContinuousWorld(world, idleInput, 0.1);
 
