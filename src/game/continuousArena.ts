@@ -506,6 +506,35 @@ export function getContinuousArena(arenaId: ContinuousArenaId = DEFAULT_CONTINUO
   return CONTINUOUS_ARENAS[arenaId];
 }
 
+// Scale an arena's geometry uniformly by `scale` -- POSITIONS only (start,
+// extraction, starter road, seam anchors, ridges, beats). Sizes (radii, vein
+// widths, richness, quotas) are left alone on purpose: a bigger world is more
+// GROUND between the same-size deposits and the same-size truck, not a zoomed-in
+// copy. `scale === 1` returns the arena untouched (identity), so self-play and
+// tests stay byte-for-byte. Never mutates the shared arena singleton -- it
+// returns a fresh object with fresh sub-objects.
+export function scaleArena(arena: ContinuousArenaDefinition, scale: number): ContinuousArenaDefinition {
+  if (scale === 1) return arena;
+  const s = (v: Vec2): Vec2 => ({ x: v.x * scale, y: v.y * scale });
+  return {
+    ...arena,
+    start: s(arena.start),
+    extraction: arena.extraction
+      ? { ...arena.extraction, x: arena.extraction.x * scale, y: arena.extraction.y * scale }
+      : undefined,
+    safePath: arena.safePath?.map(s),
+    starterFieldPoints: arena.starterFieldPoints.map(s),
+    fertileZones: arena.fertileZones.map((z) => ({
+      ...z,
+      x: z.x * scale,
+      y: z.y * scale,
+      vein: z.vein ? { ...z.vein, from: s(z.vein.from), to: s(z.vein.to) } : z.vein
+    })),
+    ridges: arena.ridges.map((r) => ({ ...r, from: s(r.from), to: s(r.to) })),
+    beats: arena.beats.map((b) => ({ ...b, x: b.x * scale, y: b.y * scale }))
+  };
+}
+
 export function createArenaStarterFields(
   arena: ContinuousArenaDefinition,
   startingFieldValue: number,
@@ -563,15 +592,18 @@ export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: 
   // Wider than the old central band so the field is a bigger place to cross:
   // spread west/north/south into the play area (the depot sits at the east edge
   // and you sortie into this). arenaScale expands it further, up to the clamps.
-  const base = { minX: 90, maxX: 905, minY: 150, maxY: 675 };
+  // The world scales uniformly with layoutScale (the arena's positions and the
+  // 3D ground all multiply by the same factor via scaleArena + state.width), so
+  // the seam box is simply the base band times the scale. At scale 1 this is
+  // exactly the old band; bigger scales spread the seams across the
+  // correspondingly bigger moon -- no clamp saturation, because the whole
+  // coordinate space grew with them.
   const scale = Math.max(1, layoutScale);
-  const cx = (base.minX + base.maxX) / 2;
-  const cy = (base.minY + base.maxY) / 2;
   const bounds = {
-    minX: Math.max(40, cx - (cx - base.minX) * scale),
-    maxX: Math.min(1000, cx + (base.maxX - cx) * scale),
-    minY: Math.max(90, cy - (cy - base.minY) * scale),
-    maxY: Math.min(700, cy + (base.maxY - cy) * scale)
+    minX: 90 * scale,
+    maxX: 905 * scale,
+    minY: 150 * scale,
+    maxY: 675 * scale
   };
   const start = arena.start;
   const extraction = arena.extraction;
