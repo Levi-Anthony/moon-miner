@@ -60,7 +60,14 @@ function saveConfig(): void {
 // scales the sim world) enlarges the ground, canvas, meshes and camera to match.
 let W = 1040;
 let H = 720;
-const PX = 1.5; // road-canvas pixels per world unit
+const PX = 1.5; // road-canvas pixels per world unit (density at Level size 1)
+// The whole road canvas is re-uploaded to the GPU whenever road is laid, so its
+// pixel size must NOT grow with the world or big Level sizes drop frames. paintPX
+// is the live density: PX until the world is big enough that W*PX or H*PX would
+// exceed CANVAS_BUDGET, then it eases down so the texture stays a fixed, cheap
+// size (a touch softer on a huge moon, but smooth). Recomputed in applyWorld.
+const CANVAS_BUDGET = 1600; // max canvas pixels per side (~ the Level-size-1 canvas)
+let paintPX = PX;
 const GROUND_BASE = '#0e1520'; // dark lunar ground so the neon road/seams carry the light
 
 // The road: the driven trail + carry (lock) + rail boost + slurp, ported from
@@ -138,8 +145,8 @@ composer.setSize(window.innerWidth, window.innerHeight);
 
 // --- Ground with a painted road texture --------------------------------------
 const roadCanvas = document.createElement('canvas');
-roadCanvas.width = Math.round(W * PX);
-roadCanvas.height = Math.round(H * PX);
+roadCanvas.width = Math.round(W * paintPX);
+roadCanvas.height = Math.round(H * paintPX);
 const rctx = roadCanvas.getContext('2d') as CanvasRenderingContext2D;
 // Base lunar ground fill; the road is painted on top of this same canvas.
 rctx.fillStyle = GROUND_BASE;
@@ -220,13 +227,13 @@ let terrainFeatures: TerrainFeatures = generateTerrain('init');
 function paintTerrain(feat: TerrainFeatures): void {
   // Broad mare (dark) / highland (light) value patches to break up the flat fill.
   for (const b of feat.blotches) {
-    const g = rctx.createRadialGradient(b.x * PX, b.y * PX, 0, b.x * PX, b.y * PX, b.r * PX);
+    const g = rctx.createRadialGradient(b.x * paintPX, b.y * paintPX, 0, b.x * paintPX, b.y * paintPX, b.r * paintPX);
     const rgb = b.light > 0 ? '38,50,72' : '5,8,15';
     g.addColorStop(0, `rgba(${rgb},${0.06 + Math.abs(b.light) * 0.16})`);
     g.addColorStop(1, `rgba(${rgb},0)`);
     rctx.fillStyle = g;
     rctx.beginPath();
-    rctx.arc(b.x * PX, b.y * PX, b.r * PX, 0, Math.PI * 2);
+    rctx.arc(b.x * paintPX, b.y * paintPX, b.r * paintPX, 0, Math.PI * 2);
     rctx.fill();
   }
   // Rilles: thin dark meandering cracks.
@@ -234,18 +241,18 @@ function paintTerrain(feat: TerrainFeatures): void {
   rctx.lineJoin = 'round';
   for (const pts of feat.rilles) {
     rctx.strokeStyle = 'rgba(3,5,10,0.75)';
-    rctx.lineWidth = 2.4 * PX;
+    rctx.lineWidth = 2.4 * paintPX;
     rctx.beginPath();
-    rctx.moveTo(pts[0].x * PX, pts[0].y * PX);
-    for (let i = 1; i < pts.length; i += 1) rctx.lineTo(pts[i].x * PX, pts[i].y * PX);
+    rctx.moveTo(pts[0].x * paintPX, pts[0].y * paintPX);
+    for (let i = 1; i < pts.length; i += 1) rctx.lineTo(pts[i].x * paintPX, pts[i].y * paintPX);
     rctx.stroke();
   }
   // Craters: a darker bowl, a shadow crescent on the far side, a faint lit rim
   // on the sun side -- enough shading to read as a depression on flat ground.
   for (const c of feat.craters) {
-    const cx = c.x * PX;
-    const cy = c.y * PX;
-    const rp = c.r * PX;
+    const cx = c.x * paintPX;
+    const cy = c.y * paintPX;
+    const rp = c.r * paintPX;
     const bowl = rctx.createRadialGradient(cx, cy, rp * 0.1, cx, cy, rp);
     bowl.addColorStop(0, 'rgba(4,7,13,0.62)');
     bowl.addColorStop(0.7, 'rgba(7,11,19,0.34)');
@@ -305,12 +312,12 @@ function applyRelief(feat: TerrainFeatures): void {
 const ROAD_TEAL = '#37f2d8'; // neon teal so bloom picks it up
 function strokeRoadSeg(ax: number, ay: number, bx: number, by: number): void {
   rctx.strokeStyle = ROAD_TEAL;
-  rctx.lineWidth = road.halfWidth() * 2 * PX;
+  rctx.lineWidth = road.halfWidth() * 2 * paintPX;
   rctx.lineCap = 'round';
   rctx.lineJoin = 'round';
   rctx.beginPath();
-  rctx.moveTo(ax * PX, ay * PX);
-  rctx.lineTo(bx * PX, by * PX);
+  rctx.moveTo(ax * paintPX, ay * paintPX);
+  rctx.lineTo(bx * paintPX, by * paintPX);
   rctx.stroke();
   roadTexture.needsUpdate = true;
 }
@@ -427,14 +434,18 @@ function repaintCanvas(edges: RoadEdge[]): void {
 // drivable and painted), and rebuild the seam/extraction meshes for this layout.
 function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }): void {
   state = built.state;
-  // Adopt the (possibly scaled) world size from the sim, and resize the road
-  // canvas to match so the painted ground covers the whole moon. Everything else
-  // (ground plane, terrain mesh, seam/home meshes, camera mapping) reads W/H
-  // live, so it all follows. Guard the canvas against the WebGL max texture size.
+  // Adopt the (possibly scaled) world size from the sim. Everything else (ground
+  // plane, terrain mesh, seam/home meshes, camera mapping) reads W/H live, so it
+  // all follows. The road canvas is kept within CANVAS_BUDGET px per side rather
+  // than growing with the world: it is re-uploaded to the GPU on every road
+  // stroke, so a world-sized canvas dropped frames at big Level sizes. paintPX
+  // eases the density down on a big moon (a touch softer, but a fixed, cheap
+  // upload) and stays at PX at Level size 1.
   W = state.width;
   H = state.height;
-  const cw = Math.min(8192, Math.round(W * PX));
-  const ch = Math.min(8192, Math.round(H * PX));
+  paintPX = Math.min(PX, CANVAS_BUDGET / Math.max(W, H));
+  const cw = Math.max(1, Math.round(W * paintPX));
+  const ch = Math.max(1, Math.round(H * paintPX));
   if (roadCanvas.width !== cw || roadCanvas.height !== ch) {
     roadCanvas.width = cw;
     roadCanvas.height = ch;
