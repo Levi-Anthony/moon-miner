@@ -21,8 +21,9 @@ export interface TerrainConfig {
   craterDensity: number; // scales how many craters/features the ground carries
   craterSize: number; // scales each crater's radius (1 = current)
   craterSpread: number; // how far craters scatter from map centre (1 = uniform, <1 clustered, >1 pushed to edges)
+  craterBlockSize: number; // craters at least this radius are walls you drive around (huge = none block)
 }
-export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 0.6, craterSize: 1, craterSpread: 1 };
+export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 0.6, craterSize: 1, craterSpread: 1, craterBlockSize: 45 };
 
 export interface PanelCtx {
   campaign: Campaign;
@@ -193,6 +194,7 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Crater density', min: 0, max: 8, step: 0.1, fmt: p2, hint: 'How many craters/rilles the ground carries.', get: () => tc.craterDensity, set: (v) => { tc.craterDensity = v; ctx.applyTerrain(); } });
   addRow({ label: 'Crater size', min: 0.05, max: 12, step: 0.1, fmt: p2, hint: 'Scales how big each crater is. 1 = current; higher = broader craters.', get: () => tc.craterSize, set: (v) => { tc.craterSize = v; ctx.applyTerrain(); } });
   addRow({ label: 'Crater spread', min: 0.05, max: 4, step: 0.05, fmt: p2, hint: 'How far craters scatter from the map centre. 1 = spread evenly; lower clusters them mid-map; higher pushes them to the edges.', get: () => tc.craterSpread, set: (v) => { tc.craterSpread = v; ctx.applyTerrain(); } });
+  addRow({ label: 'Crater walls from', min: 5, max: 400, step: 1, fmt: (v) => (v >= 400 ? 'off' : `r ${Math.round(v)}`), hint: 'Craters at least this big (radius) are walls: you can’t drive into the bowl, you slide round the rim and your rail follows it. They carry a bright full rim and never land on home or an ore pool. Lower = more walls; max = off.', get: () => tc.craterBlockSize, set: (v) => { tc.craterBlockSize = v; ctx.applyTerrain(); } });
 
   section('Ore pools', "Reshape the day's map, so they rebuild it on release (New Game for a fresh seed). All identity at 1 / Auto.");
   addRow({ label: 'Layout', min: 0, max: 4, step: 1, fmt: (v) => oreLayouts[Math.round(v)] ?? 'Auto', hint: 'Shape of the ore layout. Auto = a seeded shape per map; or force Scatter / Ridge / Clusters / Belt.', get: tget('oreLayout'), set: tset('oreLayout'), commit: () => ctx.rebuildDay() });

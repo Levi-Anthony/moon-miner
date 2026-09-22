@@ -25,6 +25,7 @@ import {
 } from '../game/continuous';
 import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type RoadEdgeQuad, type RoadReclaimPlan, type SlurpEvent } from './road';
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
+import { pushOutOfCraters } from './craters';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type TerrainConfig } from './panel';
 
 // --- Persisted config (loop + road + sim-tuning overrides + camera) ----------
@@ -248,7 +249,7 @@ fitVista();
 // aligned), plus an optional low-amplitude displacement of the ground mesh so
 // the same features read with real parallax against the fog. All seeded per
 // world, so each map's terrain is its own and regenerates on regen / New Game.
-interface Crater { x: number; y: number; r: number }
+interface Crater { x: number; y: number; r: number; block: boolean } // block = a wall you drive around
 interface Blotch { x: number; y: number; r: number; light: number }
 interface TerrainFeatures { craters: Crater[]; rilles: Vec2[][]; blotches: Blotch[]; sun: number }
 
@@ -267,19 +268,46 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function generateTerrain(seed: string): TerrainFeatures {
+// Places blocking craters must stay clear of: home/extraction and every ore
+// pool (plus a margin), so a crater never walls off the base or a seam.
+interface KeepOut { x: number; y: number; r: number }
+function keepOutsFor(st: ContinuousWorldState | undefined): KeepOut[] {
+  if (!st) return [];
+  const out: KeepOut[] = [{ x: st.arena.start.x, y: st.arena.start.y, r: 160 }];
+  if (st.arena.extraction) out.push({ x: st.arena.extraction.x, y: st.arena.extraction.y, r: st.arena.extraction.radius + 140 });
+  for (const z of st.fertileZones) out.push({ x: z.x, y: z.y, r: z.radius + 70 });
+  return out;
+}
+
+function generateTerrain(seed: string, keepOuts: KeepOut[] = []): TerrainFeatures {
   const rnd = mulberry32(hashSeed(`${seed}:terrain-v1`));
   const density = Math.max(0, terrainCfg.craterDensity);
   const craterSize = Math.max(0, terrainCfg.craterSize ?? 1);
   const craterSpread = Math.max(0, terrainCfg.craterSpread ?? 1);
+  const blockMin = terrainCfg.craterBlockSize ?? DEFAULT_TERRAIN_CONFIG.craterBlockSize;
   const craters: Crater[] = [];
-  const nC = Math.round((10 + rnd() * 10) * density);
+  // Count scales with the world's AREA (vs the original 1040x720 slab), so a
+  // bigger moon is as cratered as a small one instead of emptier.
+  const areaScale = Math.max(0.25, (W * H) / (1040 * 720));
+  const nC = Math.round((10 + rnd() * 10) * density * areaScale);
   for (let i = 0; i < nC; i += 1) {
     // Spread scatters craters out from the map centre: at 1 this is exactly the
     // old uniform [0,W]x[0,H]; <1 clusters mid-map, >1 pushes to the edges (clamped).
-    const cx = Math.max(0, Math.min(W, W / 2 + (rnd() - 0.5) * W * craterSpread));
-    const cy = Math.max(0, Math.min(H, H / 2 + (rnd() - 0.5) * H * craterSpread));
-    craters.push({ x: cx, y: cy, r: (14 + rnd() * rnd() * 84) * craterSize }); // rnd^2 => many small, few big
+    const pick = () => ({
+      x: Math.max(0, Math.min(W, W / 2 + (rnd() - 0.5) * W * craterSpread)),
+      y: Math.max(0, Math.min(H, H / 2 + (rnd() - 0.5) * H * craterSpread))
+    });
+    let { x: cx, y: cy } = pick();
+    const r = (14 + rnd() * rnd() * 84) * craterSize; // rnd^2 => many small, few big
+    const block = r >= blockMin;
+    // A blocking crater re-rolls its spot (a few tries) off home and the pools;
+    // if it can't find one it stays as harmless decoration there instead.
+    let clear = !block || keepOuts.every((k) => Math.hypot(cx - k.x, cy - k.y) > k.r + r);
+    for (let tries = 0; !clear && tries < 8; tries += 1) {
+      ({ x: cx, y: cy } = pick());
+      clear = keepOuts.every((k) => Math.hypot(cx - k.x, cy - k.y) > k.r + r);
+    }
+    craters.push({ x: cx, y: cy, r, block: block && clear });
   }
   const blotches: Blotch[] = [];
   const nB = 4 + Math.floor(rnd() * 4);
@@ -305,6 +333,10 @@ function generateTerrain(seed: string): TerrainFeatures {
 }
 
 let terrainFeatures: TerrainFeatures = generateTerrain('init');
+
+function resolveCraterCollision(): boolean {
+  return pushOutOfCraters(state.rover, terrainFeatures.craters);
+}
 
 // Paint the terrain into the ground canvas (called by repaintCanvas before the
 // road, so the road always sits on top).
@@ -358,6 +390,19 @@ function paintTerrain(feat: TerrainFeatures): void {
     rctx.beginPath();
     rctx.arc(cx, cy, rp * 0.95, feat.sun - 0.9, feat.sun + 0.9);
     rctx.stroke();
+    if (c.block) {
+      // A blocking crater reads as a WALL: a full raised rim all the way round
+      // (brighter on the sun side), so you can see where you can't drive.
+      rctx.lineWidth = Math.max(3 * paintPX, rp * 0.09);
+      rctx.strokeStyle = 'rgba(130,145,172,0.55)';
+      rctx.beginPath();
+      rctx.arc(cx, cy, rp * 0.9, 0, Math.PI * 2);
+      rctx.stroke();
+      rctx.strokeStyle = 'rgba(190,205,230,0.75)';
+      rctx.beginPath();
+      rctx.arc(cx, cy, rp * 0.9, feat.sun - 1.3, feat.sun + 1.3);
+      rctx.stroke();
+    }
   }
 }
 
@@ -379,7 +424,8 @@ function applyRelief(feat: TerrainFeatures): void {
     h -= 3; // bias the whole sheet a touch below the driving plane
     for (const c of feat.craters) {
       const d = Math.hypot(sx - c.x, sy - c.y);
-      if (d < c.r) h -= Math.cos((d / c.r) * (Math.PI / 2)) * c.r * 0.16; // bowl
+      if (d < c.r) h -= Math.cos((d / c.r) * (Math.PI / 2)) * c.r * (c.block ? 0.28 : 0.16); // bowl (walls dig deeper)
+      else if (c.block && d < c.r * 1.25) h += Math.sin(((d - c.r) / (c.r * 0.25)) * Math.PI) * c.r * 0.05; // raised rim
     }
     const z = Math.min(4, h) * relief;
     if (z < minZ) minZ = z;
@@ -550,7 +596,7 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
   state.solarSeconds = state.tuning.startingSolarSeconds;
   road.seed(built.road);
   road.boost = 0;
-  terrainFeatures = generateTerrain(state.seed); // this world's own terrain
+  terrainFeatures = generateTerrain(state.seed, keepOutsFor(state)); // this world's own terrain
   applyRelief(terrainFeatures);
   repaintCanvas(road.edgesForPaint());
   rebuildWorldMeshes();
@@ -961,6 +1007,7 @@ function frame(now: number): void {
   const prevX = state.rover.x;
   const prevY = state.rover.y;
   state = tickContinuousWorld(state, input, dt);
+  resolveCraterCollision(); // blocking craters are walls (before laying, so rail hugs the rim)
   // Zero-steer slide: riding cured rail at speed without touching the wheel.
   if (base.steer === 0 && !reversing && road.isOnLaidRoad(state) && road.boost > 0.5) {
     slideDistance += Math.hypot(state.rover.x - prevX, state.rover.y - prevY);
@@ -1063,7 +1110,7 @@ applyWorld(campaign.buildWorld());
 // Terrain-knob change: regenerate this world's features and redraw the ground
 // (relief + painted craters), keeping the current road lattice.
 function applyTerrain(): void {
-  terrainFeatures = generateTerrain(state.seed);
+  terrainFeatures = generateTerrain(state.seed, keepOutsFor(state));
   applyRelief(terrainFeatures);
   repaintCanvas(road.edgesForPaint());
 }
