@@ -2,7 +2,7 @@
 // knobs (loop/economy, road/slurp, drive feel). Self-contained DOM (no HTML
 // changes needed). Every change applies live and persists via ctx.save().
 import type { ContinuousWorldState, ContinuousTuning } from '../game/continuous';
-import type { Campaign } from './loop';
+import { PERSISTENCE_MODES, type Campaign } from './loop';
 import type { RoadModel } from './road';
 
 export interface CameraConfig {
@@ -131,6 +131,8 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Daily quota', min: 1, max: 600, step: 1, fmt: int, hint: 'Ore you must bank per day. Return under it and you pay the fee below.', get: () => cfg.quota, set: (v) => { cfg.quota = Math.round(v); const ex = ctx.getState().arena.extraction; if (ex) ex.oreRequired = cfg.quota; } });
   addRow({ label: 'Under-quota fee', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Fraction of the haul skimmed when you return under quota.', get: () => cfg.underQuotaFeePct, set: (v) => (cfg.underQuotaFeePct = v) });
   addRow({ label: 'Sunset road wipe', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Fraction of laid road lost if you miss a sunset.', get: () => cfg.hardFailRoadResetPct, set: (v) => (cfg.hardFailRoadResetPct = v) });
+  addRow({ label: 'Network at shift end', min: 0, max: 2, step: 1, fmt: (v) => PERSISTENCE_MODES[Math.round(v)] ?? 'Reset each shift', hint: 'What your laid rail does when a shift ends (it always carries day-to-day within a shift). Reset = wipe; Decay = lose the fringe, keep the trunk from home; Persist = carry it all. A map regen always starts clean.', get: () => cfg.networkPersistence, set: (v) => (cfg.networkPersistence = Math.round(v)) });
+  addRow({ label: 'Shift decay', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Decay mode only: fraction of the network lost at a shift boundary, shed from the newest (outermost) rail first.', get: () => cfg.shiftDecayPct, set: (v) => (cfg.shiftDecayPct = v) });
   addRow({ label: 'Level size', min: 0.4, max: 12, step: 0.1, fmt: p2, hint: 'How big the moon is — ground, seam spread and haul length all scale together. Rebuilds the day when you release the slider (New Game for a clean slate). Range runs past usable both ways so you can bracket the sweet spot.', get: () => cfg.arenaScale, set: (v) => (cfg.arenaScale = v), commit: () => ctx.rebuildDay() });
 
   const cam = ctx.cam;
