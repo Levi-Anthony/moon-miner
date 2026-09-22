@@ -61,13 +61,20 @@ function saveConfig(): void {
 let W = 1040;
 let H = 720;
 const PX = 1.5; // road-canvas pixels per world unit (density at Level size 1)
-// The whole road canvas is re-uploaded to the GPU whenever road is laid, so its
-// pixel size must NOT grow with the world or big Level sizes drop frames. paintPX
-// is the live density: PX until the world is big enough that W*PX or H*PX would
-// exceed CANVAS_BUDGET, then it eases down so the texture stays a fixed, cheap
-// size (a touch softer on a huge moon, but smooth). Recomputed in applyWorld.
-const CANVAS_BUDGET = 1600; // max canvas pixels per side (~ the Level-size-1 canvas)
+// The whole road canvas is re-uploaded to the GPU whenever road is laid. Two
+// levers keep that from either (a) blurring the road or (b) dropping frames:
+//  - paintPX holds full density (PX) until the world is big enough that W*PX or
+//    H*PX would exceed CANVAS_BUDGET, then eases down. The budget is generous
+//    (crisp road through ~2.6x Level size) but capped under the WebGL texture
+//    limit; only a very big moon softens.
+//  - the upload itself is THROTTLED (roadDirty + ROAD_FLUSH_MS below): strokes
+//    draw to the 2D canvas every frame, but the GPU re-upload fires at most
+//    ~30x/s, so a bigger canvas no longer jitters while laying.
+const CANVAS_BUDGET = 2600; // max canvas px per side (crisp road, under the 4096 WebGL cap)
 let paintPX = PX;
+let roadDirty = false; // a stroke changed the canvas since the last GPU upload
+let lastRoadFlush = 0; // performance.now() of the last upload
+const ROAD_FLUSH_MS = 33; // throttle road-texture uploads to ~30/s (coalesce strokes)
 const GROUND_BASE = '#0e1520'; // dark lunar ground so the neon road/seams carry the light
 
 // The road: the driven trail + carry (lock) + rail boost + slurp, ported from
@@ -374,7 +381,7 @@ function strokeRoadSeg(ax: number, ay: number, bx: number, by: number): void {
   rctx.moveTo(ax * paintPX, ay * paintPX);
   rctx.lineTo(bx * paintPX, by * paintPX);
   rctx.stroke();
-  roadTexture.needsUpdate = true;
+  roadDirty = true; // flushed to the GPU at most ~30x/s by the frame loop (avoids per-stroke upload jitter)
 }
 
 // Stroke one lattice edge as a round-capped segment. Round caps mean edges meet
@@ -481,7 +488,8 @@ function repaintCanvas(edges: RoadEdge[]): void {
   rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
   paintTerrain(terrainFeatures); // features composite under the road
   for (const e of edges) paintEdge(e);
-  roadTexture.needsUpdate = true;
+  roadTexture.needsUpdate = true; // a full repaint is rare (world build / emergency) -> upload now
+  roadDirty = false;
 }
 
 // Install a freshly built world (start of day, next day, or new game): adopt the
@@ -927,6 +935,13 @@ function frame(now: number): void {
   } else {
     for (const e of road.sample(state)) paintEdge(e);
     emergencyShake = Math.max(0, emergencyShake - dt * 2.5);
+  }
+  // Flush new strokes to the GPU at most ~30x/s (see ROAD_FLUSH_MS): the road
+  // stays crisp (full-res canvas) without a per-stroke texture upload stalling frames.
+  if (roadDirty && now - lastRoadFlush >= ROAD_FLUSH_MS) {
+    roadTexture.needsUpdate = true;
+    roadDirty = false;
+    lastRoadFlush = now;
   }
   const onRoadNow = road.isOnLaidRoad(state);
   road.updateBoost(dt, onRoadNow);
