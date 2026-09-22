@@ -23,7 +23,15 @@ export interface LoopConfig {
   underQuotaFeePct: number;
   hardFailRoadResetPct: number;
   arenaScale: number;
+  // WS4: what the laid network does at a SHIFT boundary (within a shift it
+  // always carries). 0 = reset (wipe), 1 = decay (shed shiftDecayPct from the
+  // fringe, keep the trunk), 2 = persist (carry intact). A map regen always
+  // wipes -- the old road would sit on a different moon.
+  networkPersistence: number;
+  shiftDecayPct: number;
 }
+
+export const PERSISTENCE_MODES = ['Reset each shift', 'Decay at shift', 'Persist'] as const;
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   daysPerShift: 3,
@@ -34,7 +42,9 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   hardFailRoadResetPct: 0,
   // A genuinely big moon by default (2x the old slab). The Level-size knob now
   // resizes the world live, so this is just the fresh-game starting point.
-  arenaScale: 2
+  arenaScale: 2,
+  networkPersistence: 1,
+  shiftDecayPct: 0.4
 };
 
 const SAVE_KEY = 'mm3d-campaign-v1';
@@ -48,6 +58,10 @@ interface Save {
   road: RoadEdgeQuad[];
   railGrowth?: number;
   bonus?: number;
+}
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
 }
 
 export class Campaign {
@@ -138,14 +152,22 @@ export class Campaign {
     }
     const nextDay = this.dayNumber + 1;
     const sameShift = this.shiftOfDay(nextDay) === this.shiftOfDay(this.dayNumber);
-    let fields = sameShift ? carryFieldsOvernight(state.fields, state.tuning) : [];
-    let carriedRoad = sameShift ? road.slice() : [];
-    if (!won && sameShift && this.config.hardFailRoadResetPct > 0) {
-      const keepF = Math.round(fields.length * (1 - this.config.hardFailRoadResetPct));
-      const keepR = Math.round(carriedRoad.length * (1 - this.config.hardFailRoadResetPct));
-      fields = fields.slice(0, Math.max(0, keepF));
-      carriedRoad = carriedRoad.slice(0, Math.max(0, keepR));
+    const sameMap = this.worldSeedFor(nextDay) === this.worldSeedFor(this.dayNumber);
+    // Within a shift everything carries. At a shift boundary the persistence
+    // mode decides; a regenerated map always starts clean.
+    let keep = 1;
+    if (!sameMap) keep = 0;
+    else if (!sameShift) {
+      const mode = Math.round(this.config.networkPersistence ?? 0);
+      keep = mode >= 2 ? 1 : mode === 1 ? 1 - clamp01(this.config.shiftDecayPct ?? 0) : 0;
     }
+    // A hard fail can shed a further fraction on top.
+    if (!won && this.config.hardFailRoadResetPct > 0) keep *= 1 - clamp01(this.config.hardFailRoadResetPct);
+    // Road/fields are stored oldest-first, so keeping a prefix keeps the trunk
+    // (laid out from home) and sheds the fringe -- the network stays connected.
+    const allFields = keep > 0 ? carryFieldsOvernight(state.fields, state.tuning) : [];
+    const fields = allFields.slice(0, Math.round(allFields.length * keep));
+    const carriedRoad = road.slice(0, Math.round(road.length * keep));
     this.persist(nextDay, fields, carryDepletionOvernight(state.fertileZones), carriedRoad);
   }
 

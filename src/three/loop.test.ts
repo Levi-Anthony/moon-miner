@@ -76,12 +76,36 @@ describe('Campaign carried road', () => {
     expect(c.carriedRoad.length).toBe(road.length);
   });
 
-  it('wipes the road at a shift boundary', () => {
-    const c = fresh();
-    c.dayNumber = 3; // next day (4) starts a new shift
+  // Shift 1 -> 2 stays on the same map (arenaRegenShifts 2); 2 -> 3 regenerates it.
+  const tenRoad: [number, number, number, number][] = Array.from({ length: 10 }, (_, i) => [i, 0, i + 1, 0]);
+  const boundary = (networkPersistence: number, day: number, shiftDecayPct = 0.4) => {
+    const c = new Campaign({ ...DEFAULT_LOOP_CONFIG, daysPerShift: 3, shiftsPerGame: 4, arenaRegenShifts: 2, networkPersistence, shiftDecayPct });
+    c.dayNumber = day;
     const world = createContinuousWorld('t', {}, 'last-light-return');
     world.phase = 'won';
-    c.endRun(world, road);
-    expect(c.carriedRoad.length).toBe(0);
+    c.endRun(world, tenRoad);
+    return c.carriedRoad;
+  };
+
+  it('reset mode wipes the road at a shift boundary', () => {
+    expect(boundary(0, 3).length).toBe(0);
+  });
+
+  it('decay mode sheds the fringe at a shift boundary and keeps the trunk', () => {
+    const kept = boundary(1, 3, 0.4);
+    expect(kept.length).toBe(6);
+    expect(kept[0]).toEqual(tenRoad[0]); // oldest (nearest home) survives
+  });
+
+  it('persist mode carries the road intact across a shift boundary', () => {
+    expect(boundary(2, 3).length).toBe(10);
+  });
+
+  it('a map regeneration always starts clean, whatever the mode', () => {
+    expect(boundary(2, 6).length).toBe(0); // day 6 -> 7: shift 2 -> 3, new map block
+  });
+
+  it('decay only bites at the boundary: mid-shift carries everything', () => {
+    expect(boundary(1, 1).length).toBe(10);
   });
 });
