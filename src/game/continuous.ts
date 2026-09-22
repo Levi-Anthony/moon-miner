@@ -307,6 +307,15 @@ export interface ContinuousTuning {
   // caller to feed input.onRoad. Default false preserves the classic behaviour
   // (self-play, tests, the old scene) so this is fully rollback-able.
   ribbonEconomy: boolean;
+
+  // --- Ore-pool generation controls (3D-app panel knobs) ---
+  // Consumed only by createArenaFertileZones. Every field is identity at these
+  // defaults, so self-play / tests are byte-for-byte; only the 3D app moves them.
+  oreSpread: number; // scatter multiplier around the map centre (1 = current)
+  oreLayout: number; // 0 = auto (seeded) | 1 scatter | 2 ridge | 3 clusters | 4 belt
+  oreCount: number; // multiplier on the number of pools (1 = the authored count)
+  oreAmount: number; // scale on each pool's richness + remaining (1 = current)
+  orePoolSize: number; // scale on each pool's radius + vein footprint (1 = current)
 }
 
 export type DynamicsPresetId = 'stable-first-run' | 'current-classic' | 'drone-playground' | 'strict-logistics';
@@ -532,7 +541,12 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   // friction through flight distance (weighted in compareReclaimCandidates),
   // not through a baseline cost. Tune up if crawl pressure becomes insufficient.
   preparedRefillPerSecond: 0,
-  ribbonEconomy: false
+  ribbonEconomy: false,
+  oreSpread: 1,
+  oreLayout: 0,
+  oreCount: 1,
+  oreAmount: 1,
+  orePoolSize: 1
 };
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -726,7 +740,16 @@ export function createContinuousWorld(
       liftedPatches: 0
     },
     fields,
-    fertileZones: applyCarriedDepletion(createArenaFertileZones(arena, seed, layoutScale), carriedDepletion),
+    fertileZones: applyCarriedDepletion(
+      createArenaFertileZones(arena, seed, layoutScale, {
+        spread: resolvedTuning.oreSpread,
+        layout: resolvedTuning.oreLayout,
+        count: resolvedTuning.oreCount,
+        amount: resolvedTuning.oreAmount,
+        poolSize: resolvedTuning.orePoolSize
+      }),
+      carriedDepletion
+    ),
     nanobots: resolvedTuning.startingNanobots,
     maxNanobots: resolvedTuning.maxNanobots,
     targetOre: resolvedTuning.targetOre,
