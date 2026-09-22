@@ -104,7 +104,7 @@ mount.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x03040a);
 // Deep-space haze: things fade into the dark instead of ending on a hard edge.
-scene.fog = new THREE.Fog(0x04060e, 520, 1500);
+scene.fog = new THREE.Fog(0x03040a, 520, 1500); // fades to the black sky (airless moon); near/far set per world by fitVista
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 4000);
 
@@ -162,6 +162,54 @@ const ground = new THREE.Mesh(
 );
 ground.rotation.x = -Math.PI / 2; // lie flat on XZ
 scene.add(ground);
+
+// --- Moon vista: sell scale WITHOUT a bigger playfield ------------------------
+// The playfield is a finite textured plane; without this you SEE it end into
+// black, which reads as a cramped arena. A large dark ground "skirt" ring
+// extends the surface far past the playfield so it recedes into fog instead of
+// ending on a hard edge, and a distant Earth gives the eye a real scale anchor.
+// Both are cheap static meshes; fitVista() sizes the ring + fog depth per world
+// so the playfield stays clear while its edge melts into the horizon.
+const skirt = new THREE.Mesh(
+  new THREE.RingGeometry(500, 12000, 96),
+  // The SAME tone as the playfield ground, so it reads as one continuous surface
+  // stretching to the horizon -- not a separate island. The road/craters make the
+  // playfield visually distinct; the skirt just keeps the ground from ending.
+  new THREE.MeshBasicMaterial({ color: 0x0e1520, side: THREE.DoubleSide })
+);
+skirt.rotation.x = -Math.PI / 2;
+skirt.position.y = -0.3; // just under the play ground; its inner edge underlaps so there's no seam
+scene.add(skirt);
+
+// Earth hanging in the black -- the single strongest "you are on the moon" cue,
+// and a fixed far landmark that anchors scale as you drive.
+const earth = new THREE.Mesh(
+  new THREE.SphereGeometry(340, 40, 40),
+  new THREE.MeshStandardMaterial({ color: 0x2b5c96, emissive: 0x1b3f66, emissiveIntensity: 1.15, roughness: 0.85, metalness: 0 })
+);
+earth.material.fog = false; // a celestial body doesn't sit in the ground haze
+earth.position.set(-1500, 1200, -3200); // far, high, off to one side (dist ~3700, inside the far plane at every scale)
+scene.add(earth);
+
+// Size the skirt, fog fade AND camera far-plane to the current world, so the
+// ground fully fades to the black sky BEFORE the far plane would clip it (no
+// hard clip circle) and the playfield stays clear. Called at init + every
+// rebuild.
+function fitVista(): void {
+  const span = Math.max(W, H);
+  const inner = Math.min(W, H) * 0.42; // underlap the nearest play edge
+  const outer = Math.max(12000, span * 6);
+  skirt.geometry.dispose();
+  skirt.geometry = new THREE.RingGeometry(inner, outer, 96);
+  // Far plane grows with the world (floor keeps the Earth + stars in view).
+  camera.far = Math.max(6000, span * 3.4);
+  camera.updateProjectionMatrix();
+  if (scene.fog instanceof THREE.Fog) {
+    scene.fog.near = span * 1.3; // ground fully solid across the playfield and well beyond
+    scene.fog.far = camera.far * 0.92; // fully black by just inside the far plane -> a clean distant horizon
+  }
+}
+fitVista();
 
 // --- Terrain features (craters, rilles, mare blotches, relief) ----------------
 // The field was an empty dark sheet. This gives it actual lunar features: a
@@ -450,6 +498,7 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
     roadCanvas.width = cw;
     roadCanvas.height = ch;
   }
+  fitVista(); // resize the horizon skirt + fog fade to this world
   // 3D app: the day length is the Sun-window knob, not the arena's fixed 36s
   // (so the panel knob bites and the default is learnable).
   state.solarWindowSeconds = state.tuning.startingSolarSeconds;
