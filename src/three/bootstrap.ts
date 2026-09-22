@@ -348,6 +348,7 @@ function applyRelief(feat: TerrainFeatures): void {
   const geo = new THREE.PlaneGeometry(W, H, GROUND_SEG_X, GROUND_SEG_Z);
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const relief = Math.max(0, terrainCfg.relief);
+  let minZ = 0;
   for (let i = 0; i < pos.count; i += 1) {
     const sx = pos.getX(i) + W / 2; // sim x
     const sy = H / 2 - pos.getY(i); // sim y (see world<->plane mapping note)
@@ -358,8 +359,15 @@ function applyRelief(feat: TerrainFeatures): void {
       const d = Math.hypot(sx - c.x, sy - c.y);
       if (d < c.r) h -= Math.cos((d / c.r) * (Math.PI / 2)) * c.r * 0.16; // bowl
     }
-    pos.setZ(i, Math.min(4, h) * relief); // local Z -> world Y after the -90deg X rotation
+    const z = Math.min(4, h) * relief;
+    if (z < minZ) minZ = z;
+    pos.setZ(i, z); // local Z -> world Y after the -90deg X rotation
   }
+  // The vista skirt underlaps the playfield; wherever relief dips the ground
+  // below it (craters, the downward bias) the opaque skirt would cut straight-
+  // edged holes through the ground AND the road painted on it. Keep it under the
+  // deepest point so the playfield always wins the depth test.
+  skirt.position.y = Math.min(-0.3, minZ - 1.5);
   pos.needsUpdate = true;
   geo.computeVertexNormals();
   ground.geometry.dispose();
