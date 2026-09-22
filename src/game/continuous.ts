@@ -316,6 +316,13 @@ export interface ContinuousTuning {
   oreCount: number; // multiplier on the number of pools (1 = the authored count)
   oreAmount: number; // scale on each pool's richness + remaining (1 = current)
   orePoolSize: number; // scale on each pool's radius + vein footprint (1 = current)
+
+  // --- Track-spine (no-off-road + emergency mode, flag-gated) ---
+  // When true (3D app only), the presentation enforces "you are always on your
+  // own track": out of fresh stock you enter EMERGENCY -- crawl forward while the
+  // arms cannibalise your own laid rail to build ahead, never a silent bare-ground
+  // roll. Default false preserves classic behaviour for self-play/tests.
+  trackSpine: boolean;
 }
 
 export type DynamicsPresetId = 'stable-first-run' | 'current-classic' | 'drone-playground' | 'strict-logistics';
@@ -546,7 +553,8 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   oreLayout: 0,
   oreCount: 1,
   oreAmount: 1,
-  orePoolSize: 1
+  orePoolSize: 1,
+  trackSpine: false
 };
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {

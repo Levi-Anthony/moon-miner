@@ -186,6 +186,43 @@ export class RoadModel {
     for (const s of this.segs) this.pts.push({ x: s.ax, y: s.ay, t: s.t }, { x: s.bx, y: s.by, t: s.t });
   }
 
+  // EMERGENCY (no fresh stock left): is there any OLDER laid rail — beyond the
+  // fresh tail under the rover — that the arms could cannibalise to keep moving?
+  // When false, the rover is truly out of material and must halt.
+  canCannibalise(): boolean {
+    return this.segs.length - this.recentPointCount() > 0;
+  }
+
+  // EMERGENCY advance: out of stock but still pushing into new ground. The arms
+  // lay a fresh stub under the rover AND eat the nearest OLDER laid rail to pay
+  // for it, at a loss (eat ~2 : lay 1), so the network visibly shrinks as you
+  // limp forward. Bypasses the crawl-guard + double-stack rule (this is the
+  // "you can always go somewhere new, at a price" path). Returns the laid stub
+  // (for repaint) and whether it managed to advance.
+  emergencyAdvance(state: ContinuousWorldState): { laid: RoadEdge[]; advanced: boolean } {
+    const cur = { x: state.rover.x, y: state.rover.y };
+    if (!this.last || Math.hypot(cur.x - this.last.x, cur.y - this.last.y) < ROAD_TRAIL_SPACING) {
+      return { laid: [], advanced: false };
+    }
+    // Nearest OLDER cured segments to eat (exclude the recent tail we're laying).
+    const older = this.segs.length - this.recentPointCount();
+    if (older <= 0) return { laid: [], advanced: false };
+    const ranked: Array<{ i: number; d: number }> = [];
+    for (let i = 0; i < older; i += 1) {
+      const s = this.segs[i];
+      ranked.push({ i, d: segDist(cur.x, cur.y, s.ax, s.ay, s.bx, s.by).d });
+    }
+    ranked.sort((a, b) => a.d - b.d);
+    const eat = ranked.slice(0, Math.min(2, ranked.length)).map((r) => r.i);
+    // Lay the stub under the rover (forced), then eat the cannibalised segments.
+    const prev = this.last;
+    const seg: Seg = { ax: prev.x, ay: prev.y, bx: cur.x, by: cur.y, t: state.elapsedSeconds };
+    this.segs.push(seg);
+    this.last = cur;
+    this.removeSegments(eat); // also rebuilds pts to include the new stub
+    return { laid: [{ ax: seg.ax, ay: seg.ay, bx: seg.bx, by: seg.by }], advanced: true };
+  }
+
   // Lay ribbon at the rover, unless doing so would run alongside or over OTHER
   // ribbon. Returns the new segment (for the renderer) or [] when nothing was
   // laid. A genuine crossing is allowed and paints straight through, making an

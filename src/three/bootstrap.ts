@@ -84,6 +84,7 @@ campaign.tuningOverrides = {
   droneTetherRange: 560, // keep a line home
   reclaimAimBias: 3, // your facing aims the drone
   ribbonEconomy: true, // build cost + rail key off the ribbon you see, not hidden fields
+  trackSpine: true, // no off-road: out of stock => emergency (cannibalise your own rail)
   // Pace so the loop is completable/legible: move at a real clip on bare ground
   // and give a learnable day length (the arena's fixed 36s "last light" is
   // brutal). Both are panel knobs; these are just gentler defaults.
@@ -695,6 +696,8 @@ function readInput(): ContinuousInput {
 // --- Camera follow ------------------------------------------------------------
 const camPos = new THREE.Vector3(0, 220, 320);
 const camLook = new THREE.Vector3();
+let emergencyShake = 0; // 0..1, ramps while the arms cannibalise rail (WS2 emergency)
+let emergencyActive = false; // set each frame; drives the HUD mode label
 function updateCamera(dt: number): void {
   const rx = state.rover.x - W / 2;
   const rz = state.rover.y - H / 2;
@@ -720,6 +723,13 @@ function updateCamera(dt: number): void {
   }
   camPos.lerp(target, k);
   camera.position.copy(camPos);
+  if (emergencyShake > 0.001) {
+    // Grinding-arms judder while cannibalising rail: a small escalating jitter.
+    const amp = emergencyShake * emergencyShake * 6;
+    camera.position.x += (Math.random() - 0.5) * amp;
+    camera.position.y += (Math.random() - 0.5) * amp * 0.6;
+    camera.position.z += (Math.random() - 0.5) * amp;
+  }
   camLook.lerp(look, k);
   camera.lookAt(camLook);
   if (camera.fov !== camCfg.fov) {
@@ -771,8 +781,10 @@ function updateHud(): void {
   const onRoad = road.isOnLaidRoad(state);
   hud.mode.textContent = state.arms.mining > 0
     ? 'Mining'
-    : state.speedState === 'crawl'
-      ? 'Crawl'
+    : emergencyActive
+      ? 'Emergency ⚠'
+      : state.speedState === 'crawl'
+        ? 'Crawl'
       : onRoad && road.boost > 0.5
         ? (road.slurpArmed() ? 'Rail ⚡' : 'Rail') // ⚡ = slurp charged and armed
         : (MODE_LABEL[state.speedState] ?? state.speedState);
@@ -882,14 +894,40 @@ function frame(now: number): void {
   // exactly what the sim expects, so the 3D drive feels like the tuned game.
   const base = readInput();
   const reversing = Boolean(base.reverseIntent);
-  const input: ContinuousInput = reversing
+  // WS2 EMERGENCY (trackSpine): out of fresh stock (crawl), off your cured rail,
+  // still pushing forward. You never roll free on bare ground -- either you
+  // cannibalise your own rail to inch ahead, or (nothing left to eat) you halt.
+  const emergency = Boolean(
+    state.tuning.trackSpine &&
+      state.tuning.ribbonEconomy &&
+      !reversing &&
+      base.driveIntent &&
+      state.speedState === 'crawl' &&
+      !road.isOnLaidRoad(state)
+  );
+  const emergencyStuck = emergency && !road.canCannibalise();
+  emergencyActive = emergency;
+  let input: ContinuousInput = reversing
     ? base
     : { ...base, assistSteer: road.carrySteer(state), roadRunway: road.boost, onRoad: road.isOnLaidRoad(state) };
+  if (emergencyStuck) {
+    input = { ...input, throttle: 0, driveIntent: false }; // out of rail to eat -> stall
+    if (!flash || performance.now() > flash.until) flash = { text: 'Out of rail — mine or reclaim to move', until: performance.now() + 1200 };
+  }
 
   state = tickContinuousWorld(state, input, dt);
 
-  // Lay the road onto the lattice and paint whichever edges are new.
-  for (const e of road.sample(state)) paintEdge(e);
+  // Lay the road. Normal drive paints the new stroke; in emergency the arms lay a
+  // stub AND eat older rail (net shrink), so we repaint the whole ribbon to show
+  // it being drawn ahead and vanishing behind.
+  if (emergency && !emergencyStuck) {
+    const adv = road.emergencyAdvance(state);
+    if (adv.advanced) repaintCanvas(road.edgesForPaint());
+    emergencyShake = Math.min(1, emergencyShake + dt * 0.9);
+  } else {
+    for (const e of road.sample(state)) paintEdge(e);
+    emergencyShake = Math.max(0, emergencyShake - dt * 2.5);
+  }
   const onRoadNow = road.isOnLaidRoad(state);
   road.updateBoost(dt, onRoadNow);
   // Slurp charge: only builds while genuinely at rail top speed on road, so the
