@@ -102,6 +102,26 @@ describe('road ribbon — free to lay, but separated (no adjacency/overlap)', ()
     expect(road.reclaimPlan(home, 1e9, 100, { heading: Math.PI, bias: 6 })!.point.x).toBeLessThan(0);
   });
 
+  it('emergency advance lays a stub and cannibalises older rail (net shrink)', () => {
+    t = 0;
+    const road = new RoadModel();
+    for (let x = 0; x <= 800; x += 8) road.sample(state(x, 0)); // long ribbon from home
+    const before = road.edgeCount();
+    expect(road.canCannibalise()).toBe(true);
+    const adv = road.emergencyAdvance(state(808, 0)); // push one spacing into new ground
+    expect(adv.advanced).toBe(true);
+    expect(adv.laid.length).toBe(1); // a stub is laid under the rover
+    expect(road.edgeCount()).toBe(before - 1); // +1 stub, -2 eaten = net shrink
+  });
+
+  it('emergency: a ribbon too short to spare any older rail cannot cannibalise', () => {
+    t = 0;
+    const road = new RoadModel();
+    for (let x = 0; x <= 40; x += 8) road.sample(state(x, 0)); // shorter than the recent tail window
+    expect(road.canCannibalise()).toBe(false);
+    expect(road.emergencyAdvance(state(48, 0)).advanced).toBe(false); // nothing to eat -> no advance
+  });
+
   it('serializes and re-seeds the same ribbon', () => {
     t = 0;
     const road = new RoadModel();
