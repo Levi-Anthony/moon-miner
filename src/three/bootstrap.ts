@@ -26,6 +26,7 @@ import {
 import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type RoadEdgeQuad, type RoadReclaimPlan, type SlurpEvent } from './road';
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
 import { pushOutOfCraters } from './craters';
+import { START_BEARING, sunState } from './sun';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type TerrainConfig } from './panel';
 
 // --- Persisted config (loop + road + sim-tuning overrides + camera) ----------
@@ -130,6 +131,9 @@ const mount = document.getElementById('app3d') as HTMLDivElement;
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
+// Real cast shadows: the single strongest read of "the sun is moving".
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 mount.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -141,13 +145,67 @@ const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerH
 
 // Moody key + a cool rim from behind, low ambient so the dark reads as dark and
 // the neon road/seams carry the light.
-scene.add(new THREE.AmbientLight(0x2a3550, 0.5));
+const ambient = new THREE.AmbientLight(0x2a3550, 0.5);
+scene.add(ambient);
 const sun = new THREE.DirectionalLight(0xbfd0ff, 0.7);
 sun.position.set(-300, 500, -260);
+// The sun casts; its shadow box follows the rover so the map size doesn't cost
+// shadow resolution (a world-sized box would be a smear at Level size 4).
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 3000;
+const SHADOW_HALF = 520; // world units either side of the rover
+sun.shadow.camera.left = -SHADOW_HALF;
+sun.shadow.camera.right = SHADOW_HALF;
+sun.shadow.camera.top = SHADOW_HALF;
+sun.shadow.camera.bottom = -SHADOW_HALF;
+sun.shadow.bias = -0.002;
 scene.add(sun);
+scene.add(sun.target);
 const rim = new THREE.DirectionalLight(0x7fe9ff, 0.9);
 rim.position.set(220, 240, 420);
 scene.add(rim);
+
+// --- Sun / time of day -------------------------------------------------------
+// The solar window IS the day: as it drains the sun swings down toward the
+// horizon and warms, shadows stretch, and the light dims. You can read how long
+// you have left off the ground without looking at the HUD -- which is the whole
+// point of a "get home before sunset" run.
+const DAY_COLOR = new THREE.Color(0xbfd0ff); // cold high-sun white
+const DUSK_COLOR = new THREE.Color(0xff9a54); // low-sun amber
+const AMBIENT_DAY = new THREE.Color(0x2a3550);
+const AMBIENT_DUSK = new THREE.Color(0x1a1526);
+let paintedSunBearing = START_BEARING; // bearing the ground canvas was painted at
+
+// t = 0 at first light, 1 at sunset.
+function updateSun(t: number): void {
+  const sky = sunState(t);
+  const rx = state.rover.x - W / 2;
+  const rz = state.rover.y - H / 2;
+  // Keep the light (and so its shadow box) over the rover: the box is small for
+  // resolution, so a fixed world-centre sun would drop shadows entirely far out.
+  sun.position.set(rx + sky.offset.x, sky.offset.y, rz + sky.offset.z);
+  sun.target.position.set(rx, 0, rz);
+  sun.target.updateMatrixWorld();
+  // Dusk: warmer and dimmer, with the ambient falling faster so the dark closes in.
+  sun.color.copy(DAY_COLOR).lerp(DUSK_COLOR, sky.dusk);
+  sun.intensity = sky.intensity;
+  ambient.color.copy(AMBIENT_DAY).lerp(AMBIENT_DUSK, sky.dusk);
+  ambient.intensity = sky.ambientIntensity;
+  // The painted crater/rille shading is lit from the same bearing. Repaint only
+  // when it has moved enough to see (the canvas upload is the expensive part).
+  if (Math.abs(sky.bearing - paintedSunBearing) > 0.12) {
+    paintedSunBearing = sky.bearing;
+    terrainFeatures = { ...terrainFeatures, sun: sky.bearing };
+    repaintCanvas(road.edgesForPaint());
+  }
+}
+
+function sunDayFraction(): number {
+  const win = Math.max(1, state.solarWindowSeconds);
+  return 1 - Math.max(0, Math.min(1, state.solarSeconds / win));
+}
 
 // --- Starfield backdrop ------------------------------------------------------
 const starGeo = new THREE.BufferGeometry();
@@ -193,6 +251,19 @@ const ground = new THREE.Mesh(
 );
 ground.rotation.x = -Math.PI / 2; // lie flat on XZ
 scene.add(ground);
+
+// Shadow catcher: the ground is deliberately UNLIT (so the painted road keeps
+// its true neon), and an unlit material can't receive a shadow. This invisible
+// plane sits just above it and draws nothing but the shadows that fall on it,
+// so the rover's shadow lies on the road without washing the colours out.
+const shadowCatcher = new THREE.Mesh(
+  new THREE.PlaneGeometry(W, H),
+  new THREE.ShadowMaterial({ opacity: 0.5 })
+);
+shadowCatcher.rotation.x = -Math.PI / 2;
+shadowCatcher.position.y = 0.6;
+shadowCatcher.receiveShadow = true;
+scene.add(shadowCatcher);
 
 // --- Moon vista: sell scale WITHOUT a bigger playfield ------------------------
 // The playfield is a finite textured plane; without this you SEE it end into
@@ -590,6 +661,9 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
     roadCanvas.height = ch;
   }
   fitVista(); // resize the horizon skirt + fog fade to this world
+  shadowCatcher.geometry.dispose();
+  shadowCatcher.geometry = new THREE.PlaneGeometry(W, H);
+  paintedSunBearing = START_BEARING; // a new day starts at first light
   // 3D app: the day length is the Sun-window knob, not the arena's fixed 36s
   // (so the panel knob bites and the default is learnable).
   state.solarWindowSeconds = state.tuning.startingSolarSeconds;
@@ -611,6 +685,7 @@ const body = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ color: 0xd2a044, roughness: 0.7 })
 );
 body.position.y = 12;
+body.castShadow = true;
 rover.add(body);
 const nose = new THREE.Mesh(
   new THREE.BoxGeometry(20, 12, 14),
@@ -618,6 +693,7 @@ const nose = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ color: 0x8fdcf5, emissive: 0x2fb6d6, emissiveIntensity: 1.1, roughness: 0.5 })
 );
 nose.position.set(0, 18, 22); // toward +Z (forward)
+nose.castShadow = true;
 rover.add(nose);
 scene.add(rover);
 
@@ -1089,6 +1165,7 @@ function frame(now: number): void {
 
   updateHud();
 
+  updateSun(sunDayFraction());
   updateCamera(dt);
   stars.rotation.y += dt * 0.005; // a barely-there drift so the dark feels alive
   composer.render();
