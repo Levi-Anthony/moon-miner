@@ -952,7 +952,7 @@ function frame(now: number): void {
   emergencyActive = emergency;
   let input: ContinuousInput = reversing
     ? base
-    : { ...base, assistSteer: road.carrySteer(state), roadRunway: road.boost, onRoad: road.isOnLaidRoad(state) };
+    : { ...base, assistSteer: road.carrySteer(state, dt), roadRunway: road.boost, onRoad: road.isOnLaidRoad(state) };
   if (emergencyStuck) {
     input = { ...input, throttle: 0, driveIntent: false }; // out of rail to eat -> stall
     if (!flash || performance.now() > flash.until) flash = { text: 'Out of rail — mine or reclaim to move', until: performance.now() + 1200 };

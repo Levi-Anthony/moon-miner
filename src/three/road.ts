@@ -298,21 +298,73 @@ export class RoadModel {
     return res;
   }
 
-  // Pure-pursuit carry toward the nearest laid ribbon (the lock). 0 when off the
-  // road or crossing it transversally.
-  carrySteer(state: ContinuousWorldState): number {
+  // The lock: steer along the laid ribbon. 0 when off the road or crossing it
+  // transversally. Returns a turn rate (rad/s).
+  //
+  // Two things made the rover shake left/right while sliding, and both are
+  // handled here:
+  //  1. The ribbon is ~6-unit segments, each carrying a little wobble from the
+  //     drive that laid it. Following the single NEAREST segment's tangent
+  //     meant a new target heading at every joint -- dozens per second at rail
+  //     speed. The direction is now a proximity-weighted average over the
+  //     aligned segments around you, so the joints blur into one smooth line.
+  //  2. The gain (full lock at ~10 degrees of error) was high enough that one
+  //     frame's correction overshot the line, worse on slow frames. The
+  //     correction is now proportional and capped at half the error per frame
+  //     (dt), so it converges instead of ringing, at any frame rate.
+  carrySteer(state: ContinuousWorldState, dt = 1 / 60): number {
     const rover = state.rover;
     const ne = this.nearestCuredSeg(rover, state.elapsedSeconds);
     if (!ne || ne.dist >= this.halfWidth()) return 0;
-    if (Math.abs(ne.tx * Math.cos(rover.heading) + ne.ty * Math.sin(rover.heading)) < ROAD_ALIGN_MIN) return 0;
-    let tangent = Math.atan2(ne.ty, ne.tx);
-    if (Math.cos(tangent) * Math.cos(rover.heading) + Math.sin(tangent) * Math.sin(rover.heading) < 0) tangent += Math.PI;
+    const hx = Math.cos(rover.heading);
+    const hy = Math.sin(rover.heading);
+    if (Math.abs(ne.tx * hx + ne.ty * hy) < ROAD_ALIGN_MIN) return 0;
+    // Nearest tangent, flipped to point the way you're facing.
+    const flip = ne.tx * hx + ne.ty * hy < 0 ? -1 : 1;
+    const nx = ne.tx * flip;
+    const ny = ne.ty * flip;
     const lookahead = this.halfWidth() * ROAD_FOLLOW_LOOKAHEAD_MULT;
-    const desired = Math.atan2(
-      ne.py + Math.sin(tangent) * lookahead - rover.y,
-      ne.px + Math.cos(tangent) * lookahead - rover.x
-    );
-    return Math.max(-1, Math.min(1, angleDifference(desired, rover.heading) / 0.18)) * this.config.followStrength;
+    // Smoothed local direction: sum of aligned segment tangents near you, on
+    // THIS line (lateral offset from it within the road half-width), weighted
+    // by closeness. Parallel lanes and crossings are excluded by those tests.
+    let sx = 0;
+    let sy = 0;
+    let cx = 0; // weighted centroid of those segments: a smoothed point on the line
+    let cy = 0;
+    let wsum = 0;
+    const hw = this.halfWidth();
+    for (const sg of this.segs) {
+      if (state.elapsedSeconds - sg.t < ROAD_CURE_SECONDS) continue;
+      const mx = (sg.ax + sg.bx) / 2 - ne.px;
+      const my = (sg.ay + sg.by) / 2 - ne.py;
+      const d = Math.hypot(mx, my);
+      if (d > lookahead) continue;
+      if (Math.abs(mx * -ny + my * nx) > hw) continue; // off this line
+      const len = Math.hypot(sg.bx - sg.ax, sg.by - sg.ay) || 1;
+      let tx = (sg.bx - sg.ax) / len;
+      let ty = (sg.by - sg.ay) / len;
+      const dot = tx * nx + ty * ny;
+      if (Math.abs(dot) < 0.5) continue; // a crossing (~90 degrees), not this line
+      if (dot < 0) { tx = -tx; ty = -ty; }
+      const w = (1 - d / lookahead) * len;
+      sx += tx * w;
+      sy += ty * w;
+      cx += (sg.ax + sg.bx) / 2 * w;
+      cy += (sg.ay + sg.by) / 2 * w;
+      wsum += w;
+    }
+    const tangent = sx * sx + sy * sy > 1e-9 ? Math.atan2(sy, sx) : Math.atan2(ny, nx);
+    // Cross-track: signed offset of the rover from the SMOOTHED line (left of
+    // travel +). Measured from the weighted centroid, not the nearest point,
+    // which hops sideways at every wobbly joint.
+    const lx = wsum > 0 ? cx / wsum : ne.px;
+    const ly = wsum > 0 ? cy / wsum : ne.py;
+    const cross = (rover.x - lx) * -Math.sin(tangent) + (rover.y - ly) * Math.cos(tangent);
+    const desired = tangent - Math.atan2(cross, lookahead);
+    // Same full-lock feel as before (followStrength over ~0.18 rad) but never
+    // more than half the error per frame.
+    const gain = Math.min(this.config.followStrength / 0.18, 0.5 / Math.max(1e-3, dt));
+    return angleDifference(desired, rover.heading) * gain;
   }
 
   isOnLaidRoad(state: ContinuousWorldState): boolean {
