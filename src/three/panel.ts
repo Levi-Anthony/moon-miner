@@ -182,6 +182,12 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Start stock', min: 0, max: 600, step: 1, fmt: int, hint: 'Nanobots you begin each day with. Applies next day.', get: tget('startingNanobots'), set: tset('startingNanobots') });
   addRow({ label: 'Sun window', min: 5, max: 3000, step: 5, fmt: int, hint: 'Seconds of daylight per day. Applies next day.', get: tget('startingSolarSeconds'), set: tset('startingSolarSeconds') });
 
+  section('Rail growth (independent of ore)');
+  addRow({ label: 'Mining trickle /s', min: 0, max: 10, step: 0.05, fmt: p2, hint: 'Flat nanobots per second while actively mining. Never scaled by how much ore you pull. 0 = off.', get: tget('railTricklePerSecond'), set: tset('railTricklePerSecond') });
+  addRow({ label: 'Slurp refuel', min: 0, max: 60, step: 0.5, fmt: p2, hint: 'Flat nanobots added per rail slurp. 0 = off.', get: tget('railTricklePerSlurp'), set: tset('railTricklePerSlurp') });
+  addRow({ label: 'Capacity climb /min', min: 0, max: 120, step: 0.5, fmt: p2, hint: 'How fast max stock grows per minute of play. Carries across days and shifts (reset on New Game) — the quiet escalation that lets you push further later. 0 = off.', get: tget('railCapacityGrowthPerMinute'), set: tset('railCapacityGrowthPerMinute') });
+  addRow({ label: 'Capacity cap', min: 0, max: 2000, step: 1, fmt: (v) => (v <= 0 ? 'none' : v.toFixed(0)), hint: 'Max stock the climb stops at. 0 = no cap.', get: tget('railCapacityMax'), set: tset('railCapacityMax') });
+
   // The drone lifts a run off ONE END of the ribbon, so the network never
   // splits -- "protect the loop" is automatic and no longer a toggle. Tether =
   // how far out it reaches; Aim bias = your facing at launch picks which end.

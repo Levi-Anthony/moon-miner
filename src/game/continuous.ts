@@ -323,6 +323,14 @@ export interface ContinuousTuning {
   // arms cannibalise your own laid rail to build ahead, never a silent bare-ground
   // roll. Default false preserves classic behaviour for self-play/tests.
   trackSpine: boolean;
+
+  // --- Rail-stock growth (WS3, background, independent of ore) ---
+  // Two flows that let reach quietly grow over a run. Neither reads ore amount:
+  // growth is never a % of what you mined. All zero = off (classic behaviour).
+  railTricklePerSecond: number; // flat stock refuel while actively mining (not scaled by yield)
+  railTricklePerSlurp: number; // flat stock refuel per rail slurp (applied by the 3D app)
+  railCapacityGrowthPerMinute: number; // max-stock ceiling climb per minute of play
+  railCapacityMax: number; // the ceiling the climb stops at (0 = no cap)
 }
 
 export type DynamicsPresetId = 'stable-first-run' | 'current-classic' | 'drone-playground' | 'strict-logistics';
@@ -346,6 +354,9 @@ export interface ContinuousWorldState {
   fertileZones: FertileZone[];
   nanobots: number;
   maxNanobots: number;
+  // Stock capacity grown this run on top of tuning.maxNanobots (WS3 ceiling
+  // climb). Carried across days by the campaign; 0 unless growth is on.
+  railCapacityGrown: number;
   targetOre: number;
   solarSeconds: number;
   solarWindowSeconds: number;
@@ -554,7 +565,11 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   oreCount: 1,
   oreAmount: 1,
   orePoolSize: 1,
-  trackSpine: false
+  trackSpine: false,
+  railTricklePerSecond: 0,
+  railTricklePerSlurp: 0,
+  railCapacityGrowthPerMinute: 0,
+  railCapacityMax: 0
 };
 
 export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -760,6 +775,7 @@ export function createContinuousWorld(
     ),
     nanobots: resolvedTuning.startingNanobots,
     maxNanobots: resolvedTuning.maxNanobots,
+    railCapacityGrown: 0,
     targetOre: resolvedTuning.targetOre,
     solarSeconds: solarWindowSeconds,
     solarWindowSeconds,
@@ -1105,6 +1121,45 @@ function advanceNanobotStock(state: ContinuousWorldState, deltaSeconds: number):
   // Fabricating: no refill (stock is only depleted by fabrication in runFieldSystem)
 }
 
+// The max-stock ceiling: base capacity + what's grown this run, capped by
+// railCapacityMax when set (never below the base).
+export function railCapacityCeiling(state: ContinuousWorldState): number {
+  const base = state.tuning.maxNanobots;
+  const grown = base + Math.max(0, state.railCapacityGrown ?? 0);
+  const cap = state.tuning.railCapacityMax;
+  return cap > 0 ? Math.max(base, Math.min(cap, grown)) : grown;
+}
+
+// Re-derive maxNanobots from tuning + growth (after a tuning change or when a
+// carried growth is installed on a fresh day).
+export function applyRailCapacity(state: ContinuousWorldState): void {
+  state.maxNanobots = railCapacityCeiling(state);
+  state.nanobots = Math.min(state.nanobots, state.maxNanobots);
+}
+
+// Flat stock refuel, capped at the ceiling. Used for the mining trickle here and
+// by the 3D app per slurp -- never scaled by how much ore moved.
+export function addRailStock(state: ContinuousWorldState, amount: number): void {
+  if (amount <= 0) return;
+  state.nanobots = Math.min(state.maxNanobots, state.nanobots + amount);
+}
+
+// WS3 background growth: the ceiling climbs with play time, and active mining
+// trickles stock in. Both off (0) by default.
+function advanceRailGrowth(state: ContinuousWorldState, deltaSeconds: number): void {
+  const t = state.tuning;
+  if (t.railCapacityGrowthPerMinute > 0) {
+    let grown = (state.railCapacityGrown ?? 0) + (t.railCapacityGrowthPerMinute * deltaSeconds) / 60;
+    // Stop accruing at the cap, so the ceiling doesn't hide a hoard to release later.
+    if (t.railCapacityMax > 0) grown = Math.min(grown, Math.max(0, t.railCapacityMax - t.maxNanobots));
+    state.railCapacityGrown = grown;
+    state.maxNanobots = railCapacityCeiling(state);
+  }
+  if (t.railTricklePerSecond > 0 && state.lastYieldRate > 0) {
+    addRailStock(state, t.railTricklePerSecond * deltaSeconds);
+  }
+}
+
 function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInput, deltaSeconds: number): void {
   if (state.phase !== 'playing') return;
 
@@ -1129,6 +1184,7 @@ function advanceContinuousStep(state: ContinuousWorldState, input: ContinuousInp
   const fertileZone = findFertileZoneAt(state, state.rover);
   state.arms = allocateArms(state.speedState, Boolean(fertileZone), driveIntent, state.drone.status);
   runMiningSystem(state, fertileZone, driveIntent, deltaSeconds);
+  advanceRailGrowth(state, deltaSeconds);
   advanceDrone(state, deltaSeconds);
   applyContinuousWinLoss(state);
 }

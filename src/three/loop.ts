@@ -7,6 +7,7 @@ import {
   createContinuousWorld,
   carryFieldsOvernight,
   carryDepletionOvernight,
+  applyRailCapacity,
   type ContinuousTuning,
   type ContinuousWorldState,
   type FieldPatch
@@ -45,6 +46,8 @@ interface Save {
   depletion: Record<string, number>;
   banked: number;
   road: RoadEdgeQuad[];
+  railGrowth?: number;
+  bonus?: number;
 }
 
 export class Campaign {
@@ -56,6 +59,12 @@ export class Campaign {
   carriedFields: FieldPatch[] = [];
   carriedDepletion: Record<string, number> = {};
   carriedRoad: RoadEdgeQuad[] = [];
+  // WS3: rail capacity grown so far this game (the quiet "snake" escalation).
+  // Carried across days AND shifts; only a new game resets it.
+  carriedRailGrowth = 0;
+  // Bonus score banked this game (surplus ore + clean rail slides). Mastery
+  // acknowledgement only -- the win stays "bank the quota, get home".
+  bankedBonus = 0;
   // Live sim-tuning overrides from the control panel, applied to every world we
   // build so panel tweaks persist across days.
   tuningOverrides: Partial<ContinuousTuning> = {};
@@ -103,6 +112,12 @@ export class Campaign {
         extraction: { ...state.arena.extraction, oreRequired: this.config.quota }
       };
     }
+    if (this.carriedRailGrowth > 0) {
+      state.railCapacityGrown = this.carriedRailGrowth;
+      applyRailCapacity(state);
+      // Start the day with the grown stock too, so the growth is felt at once.
+      state.nanobots = Math.min(state.maxNanobots, state.nanobots + this.carriedRailGrowth);
+    }
     return { state, road: this.carriedRoad.map((q) => [...q] as RoadEdgeQuad) };
   }
 
@@ -111,10 +126,12 @@ export class Campaign {
   // next day (road persists within a shift, wiped at a shift boundary; a hard
   // fail can shed a tunable fraction), and persist. Does NOT advance the day --
   // the banner shows this day's result; advance() moves on.
-  endRun(state: ContinuousWorldState, road: RoadEdgeQuad[]): void {
+  endRun(state: ContinuousWorldState, road: RoadEdgeQuad[], bonus = 0): void {
     const won = state.phase === 'won';
     const fee = state.returnedUnderQuota ? 1 - this.config.underQuotaFeePct : 1;
     this.bankedOre += won ? state.rover.ore * fee : 0;
+    this.bankedBonus += won ? bonus : 0;
+    this.carriedRailGrowth = Math.max(0, state.railCapacityGrown ?? 0);
     if (this.gameComplete()) {
       this.persist(this.dayNumber, [], {}, []); // last day: nothing carries; new game next
       return;
@@ -149,6 +166,8 @@ export class Campaign {
     this.carriedFields = [];
     this.carriedDepletion = {};
     this.carriedRoad = [];
+    this.carriedRailGrowth = 0;
+    this.bankedBonus = 0;
     try {
       window.localStorage.setItem(SEED_KEY, this.gameSeed);
       window.localStorage.removeItem(SAVE_KEY);
@@ -181,12 +200,16 @@ export class Campaign {
       this.carriedDepletion = p?.depletion && typeof p.depletion === 'object' ? p.depletion : {};
       this.bankedOre = typeof p?.banked === 'number' ? p.banked : 0;
       this.carriedRoad = Array.isArray(p?.road) ? (p!.road as RoadEdgeQuad[]) : [];
+      this.carriedRailGrowth = typeof p?.railGrowth === 'number' ? p.railGrowth : 0;
+      this.bankedBonus = typeof p?.bonus === 'number' ? p.bonus : 0;
     } catch {
       this.dayNumber = 1;
       this.carriedFields = [];
       this.carriedDepletion = {};
       this.bankedOre = 0;
       this.carriedRoad = [];
+      this.carriedRailGrowth = 0;
+      this.bankedBonus = 0;
     }
   }
   private persist(day: number, fields: FieldPatch[], depletion: Record<string, number>, road: RoadEdgeQuad[]): void {
@@ -195,7 +218,7 @@ export class Campaign {
     this.carriedDepletion = depletion;
     this.carriedRoad = road;
     try {
-      window.localStorage.setItem(SAVE_KEY, JSON.stringify({ day, fields, depletion, banked: this.bankedOre, road } satisfies Save));
+      window.localStorage.setItem(SAVE_KEY, JSON.stringify({ day, fields, depletion, banked: this.bankedOre, road, railGrowth: this.carriedRailGrowth, bonus: this.bankedBonus } satisfies Save));
     } catch {
       /* storage may be unavailable */
     }
