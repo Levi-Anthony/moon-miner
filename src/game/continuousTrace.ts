@@ -72,7 +72,15 @@ const LOOP_MILESTONES: Array<{
 
 const OVEREXTENSION_SPEND_THRESHOLD = 2.5;
 const CRAWL_SECONDS_THRESHOLD = 0.2;
-const RECOVERY_REBOUND_THRESHOLD = 3;
+// What counts as a rescue.
+//
+// This used to be "stock rebounded 3 above the low-water mark", a number
+// calibrated to a reclaim that MINTED nanobots. Under conservation a drone trip
+// returns only what the road it lifted was actually worth -- about 0.7 a trip
+// on the starter route -- so the old bar could never be cleared however well the
+// drone worked, and the milestone read as a permanent failure while the drone
+// was plainly doing its job. The rescue is the observable thing instead: a
+// delivery landed after the crawl and the machine got moving again.
 
 export function createContinuousLoopTrace(state: ContinuousWorldState): ContinuousLoopTrace {
   return {
@@ -209,13 +217,14 @@ function maybeHitEmergencyCrawl(trace: ContinuousLoopTrace, state: ContinuousWor
 function maybeHitDroneRecovery(trace: ContinuousLoopTrace, state: ContinuousWorldState): void {
   if (!trace.milestones.emergencyCrawl.hit || trace.milestones.droneRecovery.hit) return;
   if (trace.deliveredNanobotsAfterCrawl <= 0) return;
-  if (state.nanobots < trace.lowestNanobots + RECOVERY_REBOUND_THRESHOLD) return;
+  if (state.speedState === 'crawl') return; // still dragging: the rescue hasn't landed yet
+  if (state.nanobots <= trace.lowestNanobots) return; // and it is genuinely better off
 
   hitMilestone(
     trace,
     state,
     'droneRecovery',
-    `rebounded to ${state.nanobots.toFixed(1)} after +${trace.deliveredNanobotsAfterCrawl.toFixed(1)} delivery`
+    `out of crawl at ${state.nanobots.toFixed(1)} after +${trace.deliveredNanobotsAfterCrawl.toFixed(1)} delivered`
   );
 }
 

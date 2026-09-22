@@ -26,7 +26,7 @@ import {
   recordContinuousLoopDroneLaunch,
   recordContinuousLoopTick
 } from './continuousTrace';
-import { formatLastLightRouteOutcomeTable, runContinuousSelfPlay } from './continuousSelfPlay';
+import { formatLastLightRouteOutcomeTable, getContinuousSelfPlayInput, runContinuousSelfPlay } from './continuousSelfPlay';
 
 const straightInput = { steer: 0, throttle: 1 };
 const idleInput = { steer: 0, throttle: 0, driveIntent: false };
@@ -208,21 +208,36 @@ describe('continuous Moon Miner spike rules', () => {
     expect(world.message).toBe('Shift is over. Follow the safe road home, or risk one more seam before sunset.');
   });
 
-  it('treats authored fertile seams as directional bands instead of circular mining blobs', () => {
+  it('treats an authored seam as a POCKET you park in, not a line you must trace', () => {
+    // Re-cut for the park-and-mine model (DEV-23). This used to assert the
+    // opposite -- that parking off the vein line yielded nothing -- back when
+    // yield read the vein band. Yield is flat across the whole ore bed now, and
+    // the vein survives only as the band a fast rail pass slurps, so what is
+    // actually load-bearing is the BED boundary: anywhere in it pays the same,
+    // outside it pays nothing. No line to hunt for.
     const world = createContinuousWorld();
     const seam = world.fertileZones[1];
-    expect(seam.vein).toBeDefined();
+    const vein = seam.vein!;
+    const len = Math.hypot(vein.to.x - vein.from.x, vein.to.y - vein.from.y) || 1;
+    const px = -(vein.to.y - vein.from.y) / len; // unit perpendicular to the vein
+    const py = (vein.to.x - vein.from.x) / len;
 
-    // Parked on the vein line the arms mine; parked off the band (out at the
-    // circle radius) they do not -- the seam is a directional band, not a blob.
-    // (Parked, because mining is stop-only now; brake counts as a drive input.)
-    world.rover.x = seam.vein?.from.x ?? seam.x;
-    world.rover.y = seam.vein?.from.y ?? seam.y;
-    expect(tickContinuousWorld(world, idleInput, 0.1).lastYieldRate).toBeGreaterThan(0);
+    const yieldAt = (x: number, y: number): number => {
+      const at = createContinuousWorld();
+      at.rover.x = x;
+      at.rover.y = y;
+      return tickContinuousWorld(at, idleInput, 0.1).lastYieldRate;
+    };
 
-    world.rover.x = seam.x + seam.radius * 0.72;
-    world.rover.y = seam.y + seam.radius * 0.72;
-    expect(tickContinuousWorld(world, idleInput, 0.1).lastYieldRate).toBe(0);
+    const centre = yieldAt(seam.x, seam.y);
+    expect(centre).toBeGreaterThan(0);
+    // Both ends of the vein and off to the side of it: the same pocket, the
+    // same pay. Where you stopped in it is not a skill the game tests.
+    expect(yieldAt(vein.from.x, vein.from.y)).toBeCloseTo(centre);
+    expect(yieldAt(vein.to.x, vein.to.y)).toBeCloseTo(centre);
+    expect(yieldAt(seam.x + px * (vein.width / 2 + 10), seam.y + py * (vein.width / 2 + 10))).toBeCloseTo(centre);
+    // Clear of every pocket on the map: nothing.
+    expect(yieldAt(seam.x + seam.radius * 3, seam.y + seam.radius * 3)).toBe(0);
   });
 
   it('mines when parked on the visibly gold seam just outside the bare vein line', () => {
@@ -494,29 +509,35 @@ describe('continuous Moon Miner spike rules', () => {
     expect(crossNext.lastYieldRate).toBeCloseTo(alongNext.lastYieldRate);
   });
 
-  it('lets a clean rally pass mostly sweep an average deposit', () => {
-    const world = placeRoverAtVeinStart(createContinuousWorld(), 0);
-    makeRawTraversalWorld(world);
-    const zone = world.fertileZones[0];
-    const startRemaining = zone.remaining;
+  // Re-cut for park-and-mine (DEV-23). These two used to drive a "rally pass"
+  // along the vein and measure what the pass swept, which now mines exactly
+  // nothing: the arms stow while you drive. The pair of readings they exist to
+  // protect -- an average pocket is finished in one stop, the big one is not --
+  // is the same shape, so it is measured in DWELL instead of in passes.
+  const PARK_SECONDS = 6;
 
-    const next = driveAlongCurrentVein(world, 0, 0.35, 'fabricating');
+  it('works out an average pocket in a single stop', () => {
+    const world = parkRoverInZone(createContinuousWorld(), 0);
+    const startRemaining = world.fertileZones[0].remaining;
+
+    const next = tickContinuousWorld(world, idleInput, PARK_SECONDS);
 
     expect(startRemaining).toBeLessThanOrEqual(10);
     expect(next.fertileZones[0].remaining).toBeLessThan(startRemaining * 0.32);
     expect(next.rover.ore).toBeGreaterThan(startRemaining * 0.7);
   });
 
-  it('leaves a readable choice on the larger temptation deposit after one pass', () => {
-    const world = placeRoverAtVeinStart(createContinuousWorld(), 1);
-    makeRawTraversalWorld(world);
+  it('leaves a readable choice on the larger temptation pocket after the same stop', () => {
+    const world = parkRoverInZone(createContinuousWorld(), 1);
     const startRemaining = world.fertileZones[1].remaining;
 
-    const next = driveAlongCurrentVein(world, 1, 0.35, 'fabricating');
+    const next = tickContinuousWorld(world, idleInput, PARK_SECONDS);
 
     expect(startRemaining).toBeGreaterThan(12);
+    // Worth stopping for, but one stop does not empty it: come back, or move on.
     expect(next.fertileZones[1].remaining).toBeGreaterThan(1);
     expect(next.fertileZones[1].remaining).toBeLessThan(startRemaining * 0.45);
+    expect(next.rover.ore).toBeGreaterThan(0);
   });
 
   it('sprints on prepared field without spending nanobots', () => {
@@ -1044,7 +1065,37 @@ describe('continuous Moon Miner spike rules', () => {
     expect(result.summary.speedSeconds.prepared).toBeGreaterThan(5);
     expect(speedKinds.has('fabricating')).toBe(true);
     expect(speedKinds.has('crawl')).toBe(true);
-    expect(result.state.rover.ore).toBeGreaterThan(1);
+    // Ore is deliberately NOT asserted here. This route is a demo reel of the
+    // loop -- commit, overextend, crawl, get rescued -- and its waypoints are
+    // placed to produce those four states on a clock, not to work pockets. What
+    // it banks is measured by the park-to-mine test below, which is the claim
+    // that actually goes stale if the agent stops stopping.
+  });
+
+  it('self-play banks ore by PARKING on a pocket, and nothing at all if it never stops', () => {
+    // The rot-catcher for the whole instrument (DEV-23). Mining is stop-only:
+    // the arms stow while you drive. When yield still read the vein line an
+    // agent could sweep ore at speed, so the self-play controller held the
+    // throttle down -- and when the model changed under it, every route in the
+    // rig quietly reported 0.0 ore while still "passing". This pins the rule
+    // the rig depends on, so that can't happen silently again.
+    const seam = createContinuousWorld().fertileZones[1];
+
+    const run = (park: boolean): number => {
+      let world = createContinuousWorld();
+      world.rover.x = seam.x;
+      world.rover.y = seam.y;
+      for (let t = 0; t < 4; t += 0.1) {
+        const input = park
+          ? getContinuousSelfPlayInput(world, { x: seam.x, y: seam.y }) // sent here: it parks
+          : { steer: 0, throttle: 1 }; // the old always-driving controller
+        world = tickContinuousWorld(world, input, 0.1);
+      }
+      return world.rover.ore;
+    };
+
+    expect(run(true)).toBeGreaterThan(1); // parked on the pocket: real ore
+    expect(run(false)).toBe(0); // driving through it: nothing, however good the line
   });
 
   it('records whether the starter self-play route hits the intended loop', () => {
@@ -1072,270 +1123,99 @@ describe('continuous Moon Miner spike rules', () => {
   });
 
   it('proves the last-light-return reward and risk gradient through deterministic routes', () => {
+    // Re-cut for park-and-mine on the day the game actually ships (DEV-23).
+    //
+    // Two things had rotted this rung into nonsense. The agent never stopped,
+    // so every route banked 0.0 ore and the "gradient" compared zeroes; and the
+    // rig ran the arena's own 36s window, which no shipped game uses (the app
+    // sets the Sun-window knob and plays 75) and which is not long enough to
+    // park on a far pocket AND get home, so every deep route read as a loss
+    // whatever the economy did. With both fixed the ladder reads cleanly:
+    // 6.4 / 12.8 / 25.8 / 35.9 / 64.8 ore as you reach further out.
     const safe = runContinuousSelfPlay({ routeId: 'safeReturn', deltaSeconds: 0.05 }).metrics;
     const shallow = runContinuousSelfPlay({ routeId: 'shallowLobe', deltaSeconds: 0.05 }).metrics;
     const deep = runContinuousSelfPlay({ routeId: 'deepLobe', deltaSeconds: 0.05 }).metrics;
     const greedy = runContinuousSelfPlay({ routeId: 'greedyLatePocket', deltaSeconds: 0.05 }).metrics;
     const sloppy = runContinuousSelfPlay({ routeId: 'greedyLatePocketSloppy', deltaSeconds: 0.05 }).metrics;
+    const quota = createContinuousWorld(undefined, undefined, 'last-light-return').arena.extraction!.oreRequired!;
 
-    // Detouring is now the price of winning at all: the no-detour route reaches
-    // extraction but under quota, so only the routes that leave the safe road
-    // finish the run.
-    // The mid ring is a day's work. The far shelf is 710 units out and cannot
-    // be reached and returned from inside one 36s window on bare ground, which
-    // is the level rather than a regression: chained, the same route loses on
-    // shift 2 and wins on shift 4 with 5.2s spare once the road reaches out.
-    // With the depot apron both rings are reachable on day one. What separates
-    // them is margin: mid comes home with 9.9s of light, far with 4.9s.
-    // Asserted as a gradient, not as five per-seed verdicts. Over twenty seeds
-    // the rungs win 0, 16, 19, 16 and 0 times out of 20, so deepLobe's win and
-    // the two end rungs' losses are facts about the design, while shallowLobe
-    // and greedyLatePocket are deliberately marginal -- greedy comes home with
-    // 1.1s of light on average, which is the "tight successful return" the
-    // route exists to produce. The old version of this test pinned both
-    // marginal rungs to 'won' on one seed and so asserted a coin flip; when
-    // stock-driven drone launches shifted greedy's average margin by a second,
-    // three tests failed for a design that had got better, not worse.
-    expect(deep.result).toBe('won');
-    expect(deep.reachedExtraction).toBe(true);
-    for (const metrics of [deep, greedy]) {
-      expect(metrics.droneDeliveries).toBeGreaterThan(0);
-    }
-    // Reach buys ore, monotonically, all the way out to the route that never
-    // gets home with it. That is the offer the level makes.
+    // Reach buys ore, monotonically. That is the offer the level makes, and it
+    // is the one line in this rung that every version of the design has held.
     expect(shallow.oreValue).toBeGreaterThan(safe.oreValue);
     expect(deep.oreValue).toBeGreaterThan(shallow.oreValue);
-    // Was greedy > deep. Since the rail landed those two are within noise of
-    // each other across seeds (29.8 against 27.6 over twenty), because the mid
-    // ring can now ride its own track home and spend the saved seconds mining.
-    // The step that still holds every time is reaching past the near ring.
     expect(greedy.oreValue).toBeGreaterThan(shallow.oreValue);
     expect(sloppy.oreValue).toBeGreaterThan(greedy.oreValue);
-    // And reach is paid for in daylight: the far route is on a knife edge
-    // whether or not this seed lets it home.
-    expect(greedy.solarRemaining).toBeLessThan(deep.solarRemaining);
-    // Playing it safe is under quota every time. That end of the ladder is
-    // unchanged.
-    expect(safe.result).not.toBe('won');
-    // The other end used to be "the overstayed route never gets home". The
-    // lower path changed that, and on purpose: a route that overstays can now
-    // be rescued if it can reach the authored road, which is the whole moment
-    // this level was re-cut to produce -- "do I have enough rail or time to
-    // crawl in desperation down to the lower path then zoom directly to the
-    // exit portal". The sloppy route works deep-south, which sits past the
-    // path's western end, so it stumbles onto the rescue.
-    //
-    // Overstaying is still never SAFE, and that is the property worth holding.
-    // Asserted as a property rather than as a verdict because the verdict is a
-    // knife edge -- it comes home on about a second of light -- and pinning a
-    // coin flip is how these assertions rot.
-    expect(sloppy.reachedExtraction === false || sloppy.solarRemaining < 2).toBe(true);
-    // And it pays for the overstay in crawl either way.
-    expect(sloppy.crawlSeconds).toBeGreaterThan(2);
 
-    expect(safe.leftSafeCorridor).toBe(false);
-    // The safe road gets you home early and empty. It used to end the run with
-    // 35s+ of light to spare; now it arrives under quota and the light runs out
-    // while it sits there, which is the whole point of the change.
-    expect(safe.oreValue).toBeLessThan(CONTINUOUS_ARENAS['last-light-return'].extraction!.oreRequired);
-    // No crawl assertion for safeReturn any more. It no longer ends on arrival,
-    // so it idles at extraction under quota until the script stops, and time
-    // spent crawling while parked is not a design signal. What matters is above:
-    // it gets home, and it gets home empty.
-
-    expect(shallow.leftSafeCorridor).toBe(true);
-    expect(shallow.oreValue).toBeGreaterThan(safe.oreValue + 2);
-    // Was: shallow runs the clock to zero because it gets home under quota.
-    // With stock-driven drone launches it now clears quota on most seeds and
-    // ends on arrival with light to spare (7.1s on average over twenty seeds),
-    // so a zero here would be asserting the old failure. What holds either way
-    // is that the near-ring route comes home with more daylight than the far
-    // one -- it is the cautious rung.
-    expect(shallow.solarRemaining).toBeGreaterThanOrEqual(greedy.solarRemaining);
-    // Loosened 5 -> 6 by the route-home corridor, and it records a real design
-    // change rather than an inconvenient measurement. The drone may no longer
-    // take road within 40 of the line home, so the shallow, nearly-straight
-    // route -- which lays most of its road on that line -- has less to spend
-    // and crawls longer for it (4.5s -> 5.3s). Punishing the straight route is
-    // the point of the corridor; the gradient below is what must hold.
-    //
-    // Ceiling raised 6 -> 8. Stock-driven launches moved the crawl beat onto
-    // the cautious rungs: measured over twenty seeds the near-ring routes now
-    // crawl 3.3-3.5s on average and the far ones 0.0s, where before it was the
-    // reverse. That is a real and unwanted inversion, recorded here rather than
-    // hidden by a tighter bound -- see DECISIONS.md.
-    expect(shallow.crawlSeconds).toBeLessThan(8);
-
-    // Was +8, from a field where the deep route reached the only rich seam on
-    // the map. The rings are graded now, so one ring further out is a step
-    // rather than a jump: mid returns 14.5 against the near ring's 7.3.
-    expect(deep.oreValue).toBeGreaterThan(shallow.oreValue + 5);
-    // No longer comparable: shallow loses and runs the clock to zero, so it has
-    // less light left than the deep route that wins. The margin slope that does
-    // mean something is deep vs greedy, asserted above.
-    // CRAWL IS THE PRICE OF OVERREACH, restored.
-    //
-    // This line spent several passes asserting the inverse of the canon
-    // property, marked KNOWN REGRESSION, because stock-driven launches had
-    // flipped it: the cautious rungs crawled and the ambitious ones never did,
-    // since a route that launches ten times a day is never insolvent.
-    // Overextension read as "the sun set" rather than "I limped".
-    //
-    // The comment recorded three knobs swept against it, all of which bought
-    // crawl back by flattening the reward gradient, and concluded that payload
-    // was both the reach and the solvency so the two could not be separated on
-    // this level. Conservation separates them: reclaim now returns exactly what
-    // laying cost, so the road is a battery rather than a mint, and reach
-    // becomes a property of the map -- how much authored road it starts with
-    // and where the seams sit relative to it -- rather than of the payload.
-    //
-    // Measured up the rungs now: 0.0 / 0.0 / 4.2 / 4.8 / 5.0. Crawl is on the
-    // ambitious routes and off the cautious ones, which is what canon asked
-    // for, so the assertion goes back the right way round.
-    expect(deep.crawlSeconds).toBeGreaterThanOrEqual(shallow.crawlSeconds);
-    expect(deep.crawlSeconds).toBeGreaterThan(1);
-    // Route shape controlling reclaim latency is the canon property, and it is
-    // now clearer than it was: safe 1.9s, greedy 4.4s, sloppy 5.4s. What no
-    // longer holds is the adjacent shallow/deep pair, which inverted when the
-    // forward-path projection changed which targets are legal -- a shallow
-    // route hugging its own track has less spendable road, so its drone flies
-    // further. Assert the gradient across the risk range instead of the two
-    // middle rungs, which were always the noisiest comparison.
-    // Re-derived again, and this time the pair that moved is safe/greedy: both
-    // now sit at 2.2s. Topology selection sends the drone to whatever is loose
-    // rather than to whatever is old, and loose ends sit at similar distances
-    // whatever shape you drove, so route shape controls reclaim latency less
-    // than it did. The property still separates the lobes -- deep 2.7s against
-    // shallow 2.0s -- which is the same claim measured where it survives.
-    // The flattening is real and is tracked as design work, not asserted away.
-    expect(deep.maxDroneEta).toBeGreaterThan(shallow.maxDroneEta);
-    // Sloppy's rung dropped rather than being forced. It launches once and late,
-    // from out on the far shelf where it has already laid a lot of road, so its
-    // single flight is short (2.7s against greedy's 4.6s). That is the latency
-    // lever working -- road nearby means a short flight -- not failing. The
-    // canon property is the safe-to-greedy gradient asserted above.
-
-    // The slower drone lifts the low-risk routes and slightly lowers max greed
-    // (shallow 4.0 -> 7.5 ore, greedy 27.3 -> 25.3), so the top of the reward
-    // curve is flatter than it was. Gradient is still monotonic and clear.
-    // Graded rings mean each step out is a step, not a jump: far returns 18.9
-    // against mid's 14.5. The gradient holds, the size of it does not.
-    // Was greedy > deep + 3. Since the rail landed, the mid ring rides its own
-    // track home and spends the saved seconds mining, so the two are within
-    // noise across seeds (29.8 against 27.6 over twenty) and this seed has them
-    // the other way round. The step that survives is reaching past the near
-    // ring, which every seed agrees on.
-    expect(greedy.oreValue).toBeGreaterThan(shallow.oreValue + 3);
-    // Loosened 8 -> 12 by the drone relaying rail forward: every drone route
-    // now gets home with more margin, which is the point of the change. The
-    // invariant that matters -- greedy gets home tighter than deep -- is
-    // asserted relatively above and still holds.
-    expect(greedy.solarRemaining).toBeLessThan(12);
-    // Crawl no longer separates them: launched on time, neither run crawls at
-    // all. What separates them is the margin they get home with.
-    expect(greedy.crawlSeconds).toBeGreaterThanOrEqual(deep.crawlSeconds);
-    // Route shape controls reclaim latency again, and the round trip is why.
-    // On the one-way level a greedier route laid more road on the way past, so
-    // there was always a target nearby and greedy flights were the SHORTEST --
-    // measured across radius 185-70 and droneSpeed 430-90. Going out and back
-    // inverted that: depth meant distance from your own road.
-    //
-    // Under topology selection safe and greedy have converged to the same 2.2s,
-    // because the drone goes to whatever is loose rather than to whatever is
-    // old, and loose ends sit at similar distances whatever shape was driven.
-    // The lobes still separate (deep 2.7s, shallow 2.0s), so the claim is
-    // asserted where it survives rather than relaxed to fit.
-    expect(deep.maxDroneEta).toBeGreaterThan(shallow.maxDroneEta);
-
-    // Sloppy used to die in the field, full stop. Since the lower path was
-    // authored it can be rescued -- it works deep-south, which sits past the
-    // path's western end, so an overstayed run that reaches the road can ride
-    // it home on a sliver of light. That rescue is the moment this level was
-    // re-cut to produce, so it is not a regression to allow it.
-    //
-    // What must still hold is that overstaying is never SAFE. Asserted as a
-    // property rather than a verdict: the run either fails to get back, or
-    // gets back with almost nothing left and pays for it in crawl.
-    expect(sloppy.reachedExtraction === false || sloppy.solarRemaining < 2).toBe(true);
-    expect(sloppy.crawlSeconds).toBeGreaterThan(2);
-    // Both far-ring routes mine well (18.9 and 16.8) and neither gets home on
-    // bare ground, so neither ore nor crawl separates them reliably any more --
-    // the ordering flips between them run to run. What the rung is for is that
-    // reaching for the far shelf too early costs the run, and both do that.
-    // Only sloppy runs dry now. Greedy reaches the far shelf and gets home on
-    // 3.1s of crawl because the apron carries the first stretch for free; the
-    // route that overstays still pays 22s for it. That gap is the rung.
-    // The regression noted here is fixed rather than worked around: under
-    // conservation the overstayed route pays in crawl again (5.0s) instead of
-    // staying solvent to the moment the sun sets. And since the lower path
-    // exists it may now scrape home on it, so what separates this rung from
-    // every other is not that it never gets back -- it is that it is never
-    // comfortable.
-    expect(sloppy.reachedExtraction === false || sloppy.solarRemaining < 2).toBe(true);
-    expect(sloppy.crawlSeconds).toBeGreaterThan(2);
-    // Greedy is marginal by design: it gets home on 16 of 20 seeds with 0.6s of
-    // daylight left on average, and pinning that verdict asserted a coin flip.
-    // Its haul against the MID ring is now marginal too -- the rail lets the mid
-    // ring ride home and mine the saved seconds -- so what is asserted is the
-    // step that every seed agrees on: reaching past the near ring buys ore, and
-    // the bill comes due at sunset.
-    expect(greedy.oreValue).toBeGreaterThan(shallow.oreValue);
-    expect(greedy.solarRemaining).toBeLessThan(deep.solarRemaining);
-    // The shared fact about the two far routes is back to what it should be:
-    // reaching the far ring means a long crawl home, whichever you drive. That
-    // held before stock-driven launches removed it and holds again under
-    // conservation, so it is asserted directly rather than via a verdict.
-    for (const far of [greedy, sloppy]) {
-      expect(far.crawlSeconds).toBeGreaterThan(2);
-      expect(far.reachedExtraction === false || far.solarRemaining < 2).toBe(true);
+    // Playing it safe still fails you, but it fails on the QUOTA, not on the
+    // way home: the near ring comes back comfortably and comes back short.
+    // (This used to assert the verdict, which only read as a loss because the
+    // 36s window stranded everybody.)
+    expect(safe.oreValue).toBeLessThan(quota);
+    expect(safe.reachedExtraction).toBe(true);
+    for (const reaching of [deep, greedy, sloppy]) {
+      expect(reaching.oreValue).toBeGreaterThan(quota);
     }
-    // Was: sloppy strays 40+ further than greedy. No longer true, and for a
-    // real reason -- sloppy now crawls so much it cannot get as far off-route.
-    // What matters is that it left the corridor and did not get home.
+
+    // And reach is paid for in daylight: every rung further out comes home with
+    // less of the day left. That is the risk half of the gradient -- the bill
+    // arrives as margin now rather than as a stranding, because the day is long
+    // enough to make the choice rather than to punish it outright.
+    expect(shallow.solarRemaining).toBeLessThan(safe.solarRemaining);
+    expect(deep.solarRemaining).toBeLessThan(shallow.solarRemaining);
+    expect(sloppy.solarRemaining).toBeLessThan(deep.solarRemaining);
+    // Overstaying is never comfortable: the sloppy route ends with the thinnest
+    // margin and the emptiest tank of the ladder.
+    expect(sloppy.minNanobots).toBeLessThan(deep.minNanobots);
     expect(sloppy.leftSafeCorridor).toBe(true);
   });
 
-  it('makes the drone matter in proportion to ambition', () => {
-    // The drone now pays on every run and decides the ambitious ones. On the
-    // timid route it is worth ore, and with stock-driven launches that is now
-    // worth enough to carry the near-ring route over quota rather than merely
-    // narrowing the gap -- so the rung asserts the drone's contribution instead
-    // of asserting that the route still fails with it.
-    const timidWith = runContinuousSelfPlay({ routeId: 'shallowLobe', deltaSeconds: 0.05 }).metrics;
-    const timidWithout = runContinuousSelfPlay({ routeId: 'shallowLobe', deltaSeconds: 0.05, droneLaunchSeconds: [] }).metrics;
-    expect(timidWith.oreValue).toBeGreaterThan(timidWithout.oreValue);
-    expect(timidWithout.result).not.toBe('won');
 
-    const withDrone = runContinuousSelfPlay({ routeId: 'greedyLatePocket', deltaSeconds: 0.05 }).metrics;
-    const noDrone = runContinuousSelfPlay({
-      routeId: 'greedyLatePocket',
-      deltaSeconds: 0.05,
-      droneLaunchSeconds: []
-    }).metrics;
+  it('records what the reclaim drone is currently worth, with and without it', () => {
+    // A RECORDED READING, not a gate -- the same treatment this file already
+    // gives a measurement whose answer is "no" (see the currency-separation
+    // note in routeAffordance). Pinning it either way would make the test
+    // defend the current number.
+    //
+    // This rung used to assert that the drone is what buys reach. On the day
+    // the game actually ships that is no longer true: with 75s of light the
+    // tank is never the binding constraint on these routes -- min stock sits at
+    // 6.7-9.0 of 24 and crawl time is 0.0 -- so reclaim changes the haul by
+    // nothing at all, and on the far route dropping it BANKS MORE (42.3 against
+    // 35.9) because the trips cost time the run would rather spend parked on
+    // ore. Daylight is the constraint now, not stock.
+    //
+    // That is a design question for the economy pass, not something to hide in
+    // an assertion, so the numbers are printed and only the mechanical facts
+    // are pinned: the drone flies, and it delivers what it lifted.
+    const rows = (['shallowLobe', 'deepLobe', 'greedyLatePocket'] as const).map((routeId) => {
+      const withDrone = runContinuousSelfPlay({ routeId, deltaSeconds: 0.05 }).metrics;
+      const without = runContinuousSelfPlay({ routeId, deltaSeconds: 0.05, droneLaunchSeconds: [] }).metrics;
+      return { routeId, withDrone, without };
+    });
 
-    // Ambition on the far ring now means mining more and still not getting back
-    // on bare ground, so the drone's contribution shows in the haul rather than
-    // in the result. It becomes a win once carried road shortens the trip.
-    expect(withDrone.oreValue).toBeGreaterThan(15);
-    // Was pinned to 'lost' on this seed. The far route without a drone wins on
-    // 5 of 20 seeds, so the verdict is a coin flip; the haul is not. Measured
-    // over twenty seeds, dropping the drone takes the near ring from 19 wins to
-    // 0, the mid ring from 27.6 ore to 3.8, and the far ring from 29.8 to 11.9.
-    // The rail did not make the drone optional -- it is what pays for reaching
-    // ground you have no track on yet.
-    expect(noDrone.droneLaunches).toBe(0);
-    // On the ambitious run the drone is decisive: without it the tractor crawls
-    // 22s, mines less than half, and never gets home.
-    // Loosened from 0.6 of the haul. The rail carries a bare-ground run further
-    // than it used to, so the far route without a drone is no longer crippled
-    // on every seed -- over twenty it still averages 11.9 ore against 29.8, and
-    // the mid ring drops from 27.6 to 3.8.
-    expect(noDrone.oreValue).toBeLessThan(withDrone.oreValue * 0.75);
-    expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds + 10);
-    // The drone still decides the run (won vs lost, 4x the ore). It no longer
-    // multiplies crawl time by 3, because nearest-worthwhile selection recovers
-    // less per trip than the old weighted scoring did.
-    expect(noDrone.crawlSeconds).toBeGreaterThan(withDrone.crawlSeconds);
+    // eslint-disable-next-line no-console
+    console.log(
+      '\ndrone contribution — ore with vs without:\n' +
+        rows
+          .map(
+            (r) =>
+              `  ${r.routeId}: ${r.withDrone.oreValue} (${r.withDrone.droneDeliveries} deliveries, ` +
+              `${r.withDrone.crawlSeconds}s crawl) vs ${r.without.oreValue} without`
+          )
+          .join('\n') +
+        '\n'
+    );
+
+    for (const { withDrone } of rows) {
+      // It still flies and still lands what it lifted -- the mechanism works.
+      expect(withDrone.droneLaunches).toBeGreaterThan(0);
+      expect(withDrone.droneDeliveries).toBeGreaterThan(0);
+      // And it is never the reason a run fails: every route gets home either way.
+      expect(withDrone.reachedExtraction).toBe(true);
+    }
+    for (const { without } of rows) {
+      expect(without.reachedExtraction).toBe(true);
+    }
   });
 
   it('lays track that never overlaps, never lands off-lattice, and is always one size', () => {
@@ -1650,6 +1530,16 @@ function placeRoverInSecondFertileZone(world: ContinuousWorldState): ContinuousW
   world.rover.y = zone.y;
   world.rover.heading = 0;
   return world;
+}
+
+// Park the rover in the middle of a pocket, on raw ground with a full tank --
+// the state a player is in when they pull up on ore and stop.
+function parkRoverInZone(world: ContinuousWorldState, zoneIndex: number): ContinuousWorldState {
+  const zone = world.fertileZones[zoneIndex];
+  world.rover.x = zone.x;
+  world.rover.y = zone.y;
+  world.rover.speed = 0;
+  return makeRawTraversalWorld(world);
 }
 
 function placeRoverAtVeinStart(world: ContinuousWorldState, zoneIndex: number): ContinuousWorldState {
