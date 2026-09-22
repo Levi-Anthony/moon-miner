@@ -147,6 +147,16 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Crater size', min: 0.2, max: 4, step: 0.1, fmt: p2, hint: 'Scales how big each crater is. 1 = current; higher = broader craters.', get: () => tc.craterSize, set: (v) => { tc.craterSize = v; ctx.applyTerrain(); } });
   addRow({ label: 'Crater spread', min: 0.2, max: 1.6, step: 0.05, fmt: p2, hint: 'How far craters scatter from the map centre. 1 = spread evenly; lower clusters them mid-map; higher pushes them to the edges.', get: () => tc.craterSpread, set: (v) => { tc.craterSpread = v; ctx.applyTerrain(); } });
 
+  // Ore-pool generation. These reshape the day's map, so they rebuild it on
+  // release (New Game for a fully fresh seed). All identity at 1 / Auto.
+  const oreLayouts = ['Auto', 'Scatter', 'Ridge', 'Clusters', 'Belt'];
+  section('Ore pools');
+  addRow({ label: 'Layout', min: 0, max: 4, step: 1, fmt: (v) => oreLayouts[Math.round(v)] ?? 'Auto', hint: 'Shape of the ore layout. Auto = a seeded shape per map; or force Scatter / Ridge / Clusters / Belt.', get: tget('oreLayout'), set: tset('oreLayout'), commit: () => ctx.rebuildDay() });
+  addRow({ label: 'Ore spread', min: 0.3, max: 2.5, step: 0.05, fmt: p2, hint: 'How widely the pools scatter from the map centre, on top of Level size. 1 = current; lower packs them in, higher flings them out.', get: tget('oreSpread'), set: tset('oreSpread'), commit: () => ctx.rebuildDay() });
+  addRow({ label: 'Ore count', min: 0.3, max: 4, step: 0.1, fmt: p2, hint: 'How many pools, as a multiple of the authored set. Extra pools reuse the authored richness profiles. 1 = current.', get: tget('oreCount'), set: tset('oreCount'), commit: () => ctx.rebuildDay() });
+  addRow({ label: 'Ore amount', min: 0.2, max: 4, step: 0.1, fmt: p2, hint: 'Scales how much ore each pool holds (richness + remaining). 1 = current. A real economy lever.', get: tget('oreAmount'), set: tset('oreAmount'), commit: () => ctx.rebuildDay() });
+  addRow({ label: 'Pool size', min: 0.3, max: 3, step: 0.1, fmt: p2, hint: 'Scales each pool’s footprint (radius + vein). 1 = current.', get: tget('orePoolSize'), set: tset('orePoolSize'), commit: () => ctx.rebuildDay() });
+
   section('Road & Slurp');
   addRow({ label: 'Road width (cars)', min: 1, max: 6, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Width of the laid road, in car-widths. Applies live.', get: () => rc.roadWidthCars, set: (v) => (rc.roadWidthCars = v) });
   addRow({ label: 'No-restack margin', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'How close a new lane may come to existing road before it stops laying (double-stack guard), beyond the road width. Higher = new lanes keep more clearance; you still lay freely everywhere else. Applies live.', get: () => rc.laneGapCars, set: (v) => (rc.laneGapCars = v) });

@@ -584,7 +584,24 @@ export function createArenaStarterFields(
 export type ArenaLayoutArchetype = 'scatter' | 'ridge' | 'clusters' | 'belt';
 export const ARENA_LAYOUT_ARCHETYPES: ArenaLayoutArchetype[] = ['scatter', 'ridge', 'clusters', 'belt'];
 
-export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: string, layoutScale = 1): FertileZone[] {
+// Panel-driven controls over ore-pool generation. Every field is identity at
+// these defaults, so createArenaFertileZones(arena, seed) is byte-for-byte the
+// old output and self-play / tests are unaffected.
+export interface OreGenConfig {
+  spread: number; // scatter multiplier around the map centre (1 = current)
+  layout: number; // 0 = auto (seeded) | 1 scatter | 2 ridge | 3 clusters | 4 belt
+  count: number; // multiplier on the number of pools (1 = the authored count)
+  amount: number; // scale on richness + remaining (1 = current)
+  poolSize: number; // scale on radius + vein footprint (1 = current)
+}
+export const DEFAULT_ORE_GEN: OreGenConfig = { spread: 1, layout: 0, count: 1, amount: 1, poolSize: 1 };
+
+export function createArenaFertileZones(
+  arena: ContinuousArenaDefinition,
+  seed: string,
+  layoutScale = 1,
+  ore: OreGenConfig = DEFAULT_ORE_GEN
+): FertileZone[] {
   const random = seededRandom(`${seed}:${arena.id}:layout-v3`);
   // Bigger level = the seams scatter across a wider area (reachability rules
   // below still hold, so they stay reachable -- just farther). Scale the base
@@ -617,8 +634,11 @@ export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: 
   const bcy = (bounds.minY + bounds.maxY) / 2;
   const shortSpan = Math.min(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
 
-  // Pick this seed's layout archetype and sample its anchors once.
-  const archetype = ARENA_LAYOUT_ARCHETYPES[Math.floor(random() * ARENA_LAYOUT_ARCHETYPES.length)];
+  // Pick this seed's layout archetype and sample its anchors once. Always DRAW
+  // the seeded archetype (keeps the RNG stream stable), then honour a forced
+  // layout from the panel when one is set.
+  const drawnArchetype = ARENA_LAYOUT_ARCHETYPES[Math.floor(random() * ARENA_LAYOUT_ARCHETYPES.length)];
+  const archetype = ore.layout >= 1 && ore.layout <= 4 ? ARENA_LAYOUT_ARCHETYPES[Math.round(ore.layout) - 1] : drawnArchetype;
   const theta = random() * Math.PI * 2; // ridge direction
   const ridgeHalf = shortSpan * 0.55;
   const ridgeA = { x: bcx - Math.cos(theta) * ridgeHalf, y: bcy - Math.sin(theta) * ridgeHalf };
@@ -655,9 +675,17 @@ export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: 
   }
 
   // 1. Sample one spread-out, reachable position per seam from the archetype.
-  //    Positions are seam slots; which SEAM lands in which slot is step 2.
+  //    Positions are seam slots; which SEAM lands in which slot is step 2. The
+  //    pool COUNT scales the authored seam set: extra pools reuse the authored
+  //    templates (with fresh ids) so their richness/size profiles stay defined.
+  const authored = arena.fertileZones;
+  const poolCount = Math.max(1, Math.round(authored.length * ore.count));
+  const templates: FertileZone[] = Array.from({ length: poolCount }, (_, i) => {
+    const base = authored[i % authored.length];
+    return i < authored.length ? base : { ...base, id: `${base.id}~x${i}` };
+  });
   const positions: Vec2[] = [];
-  for (const zone of arena.fertileZones) {
+  for (const zone of templates) {
     let px = zone.x;
     let py = zone.y;
     // Best reachable candidate so far, ranked by how far it sits from its
@@ -684,6 +712,15 @@ export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: 
       }
     }
     positions.push({ x: px, y: py });
+  }
+
+  // Ore spread: widen/tighten the whole scatter around the map centre before
+  // relaxation (identity at 1). Relaxation + enforce() still keep spacing/bounds.
+  if (ore.spread !== 1) {
+    for (const p of positions) {
+      p.x = clampX(bcx + (p.x - bcx) * ore.spread);
+      p.y = clampY(bcy + (p.y - bcy) * ore.spread);
+    }
   }
 
   // 1b. Relaxation. The archetype gives the readable SHAPE; a few
@@ -739,19 +776,20 @@ export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: 
   //    the far end of a ridge, the far cluster, the outer belt all read as "the
   //    rich haul is the long haul."
   const slotOrder = positions.map((_, index) => index);
-  const zoneOrder = arena.fertileZones.map((_, index) => index);
+  const zoneOrder = templates.map((_, index) => index);
   if (extraction) {
     slotOrder.sort((a, b) => dist(positions[a].x, positions[a].y, extraction.x, extraction.y) - dist(positions[b].x, positions[b].y, extraction.x, extraction.y));
-    zoneOrder.sort((a, b) => arena.fertileZones[a].richness - arena.fertileZones[b].richness);
+    zoneOrder.sort((a, b) => templates[a].richness - templates[b].richness);
   }
 
-  const result: FertileZone[] = arena.fertileZones.map((zone) => ({ ...zone }));
+  const result: FertileZone[] = templates.map((zone) => ({ ...zone }));
   slotOrder.forEach((slotIndex, rank) => {
-    const zone = arena.fertileZones[zoneOrder[rank]];
+    const zone = templates[zoneOrder[rank]];
     const at = positions[slotIndex];
     let vein = zone.vein;
     if (zone.vein) {
-      const length = Math.hypot(zone.vein.to.x - zone.vein.from.x, zone.vein.to.y - zone.vein.from.y);
+      // Pool size scales the vein footprint too, so a bigger pool is a bigger lode.
+      const length = Math.hypot(zone.vein.to.x - zone.vein.from.x, zone.vein.to.y - zone.vein.from.y) * ore.poolSize;
       // On a ridge, align veins ALONG the ridge so the seams read as one lode;
       // otherwise give each a fresh random angle.
       const angle = archetype === 'ridge' ? theta + (random() - 0.5) * 0.5 : random() * Math.PI * 2;
@@ -760,12 +798,21 @@ export function createArenaFertileZones(arena: ContinuousArenaDefinition, seed: 
       vein = {
         from: { x: at.x - hx, y: at.y - hy },
         to: { x: at.x + hx, y: at.y + hy },
-        width: zone.vein.width
+        width: zone.vein.width * ore.poolSize
       };
     }
     // Keep the seam's identity/order in the array so the ids/count stay stable;
-    // only its position and vein orientation are shuffled.
-    result[zoneOrder[rank]] = { ...zone, x: at.x, y: at.y, vein };
+    // only its position, footprint and amount are shaped. Amount/pool-size are
+    // identity at 1, so the default map is byte-for-byte unchanged.
+    result[zoneOrder[rank]] = {
+      ...zone,
+      x: at.x,
+      y: at.y,
+      radius: zone.radius * ore.poolSize,
+      richness: zone.richness * ore.amount,
+      remaining: zone.remaining * ore.amount,
+      vein
+    };
   });
 
   return result;
