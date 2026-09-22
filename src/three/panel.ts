@@ -9,15 +9,18 @@ export interface CameraConfig {
   dist: number; // how far behind the rover (chase)
   height: number; // camera height
   fov: number; // field of view
+  horizon: number; // 0 = look down at the ground (chase), 1 = tilt up toward the horizon
   overhead: boolean; // top-down (north-up) vs chase
 }
-export const DEFAULT_CAMERA_CONFIG: CameraConfig = { dist: 210, height: 190, fov: 55, overhead: false };
+export const DEFAULT_CAMERA_CONFIG: CameraConfig = { dist: 210, height: 190, fov: 55, horizon: 0, overhead: false };
 
 export interface TerrainConfig {
   relief: number; // 0 = flat painted-only, 1 = full displacement height
   craterDensity: number; // scales how many craters/features the ground carries
+  craterSize: number; // scales each crater's radius (1 = current)
+  craterSpread: number; // how far craters scatter from map centre (1 = uniform, <1 clustered, >1 pushed to edges)
 }
-export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 0.6 };
+export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 0.6, craterSize: 1, craterSpread: 1 };
 
 export interface PanelCtx {
   campaign: Campaign;
@@ -134,12 +137,15 @@ export function createPanel(ctx: PanelCtx): void {
   section('Camera');
   addRow({ label: 'Distance', min: 80, max: 520, step: 10, fmt: int, hint: 'Also: mouse wheel / pinch to zoom.', get: () => cam.dist, set: (v) => (cam.dist = v) });
   addRow({ label: 'Height', min: 60, max: 520, step: 10, fmt: int, get: () => cam.height, set: (v) => (cam.height = v) });
-  addRow({ label: 'Field of view', min: 30, max: 90, step: 1, fmt: int, get: () => cam.fov, set: (v) => (cam.fov = v) });
+  addRow({ label: 'Field of view', min: 30, max: 90, step: 1, fmt: int, hint: 'Lens angle. Wide = more in frame + faster/vaster feel; narrow = telephoto, flatter. (Distance moves the camera; FOV changes the lens.)', get: () => cam.fov, set: (v) => (cam.fov = v) });
+  addRow({ label: 'Look angle', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Tilt the chase camera up toward the horizon. 0 = look down at the ground; higher lifts the view to reveal the horizon and Earth.', get: () => cam.horizon, set: (v) => (cam.horizon = v) });
 
   const tc = ctx.terrain;
   section('Terrain');
   addRow({ label: 'Relief', min: 0, max: 1.6, step: 0.05, fmt: p2, hint: 'Height of craters/rolling ground. 0 = flat painted only.', get: () => tc.relief, set: (v) => { tc.relief = v; ctx.applyTerrain(); } });
   addRow({ label: 'Crater density', min: 0, max: 2, step: 0.1, fmt: p2, hint: 'How many craters/rilles the ground carries.', get: () => tc.craterDensity, set: (v) => { tc.craterDensity = v; ctx.applyTerrain(); } });
+  addRow({ label: 'Crater size', min: 0.2, max: 4, step: 0.1, fmt: p2, hint: 'Scales how big each crater is. 1 = current; higher = broader craters.', get: () => tc.craterSize, set: (v) => { tc.craterSize = v; ctx.applyTerrain(); } });
+  addRow({ label: 'Crater spread', min: 0.2, max: 1.6, step: 0.05, fmt: p2, hint: 'How far craters scatter from the map centre. 1 = spread evenly; lower clusters them mid-map; higher pushes them to the edges.', get: () => tc.craterSpread, set: (v) => { tc.craterSpread = v; ctx.applyTerrain(); } });
 
   section('Road & Slurp');
   addRow({ label: 'Road width (cars)', min: 1, max: 6, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Width of the laid road, in car-widths. Applies live.', get: () => rc.roadWidthCars, set: (v) => (rc.roadWidthCars = v) });

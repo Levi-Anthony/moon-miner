@@ -240,10 +240,16 @@ function mulberry32(seed: number): () => number {
 function generateTerrain(seed: string): TerrainFeatures {
   const rnd = mulberry32(hashSeed(`${seed}:terrain-v1`));
   const density = Math.max(0, terrainCfg.craterDensity);
+  const craterSize = Math.max(0, terrainCfg.craterSize ?? 1);
+  const craterSpread = Math.max(0, terrainCfg.craterSpread ?? 1);
   const craters: Crater[] = [];
   const nC = Math.round((10 + rnd() * 10) * density);
   for (let i = 0; i < nC; i += 1) {
-    craters.push({ x: rnd() * W, y: rnd() * H, r: 14 + rnd() * rnd() * 84 }); // rnd^2 => many small, few big
+    // Spread scatters craters out from the map centre: at 1 this is exactly the
+    // old uniform [0,W]x[0,H]; <1 clusters mid-map, >1 pushes to the edges (clamped).
+    const cx = Math.max(0, Math.min(W, W / 2 + (rnd() - 0.5) * W * craterSpread));
+    const cy = Math.max(0, Math.min(H, H / 2 + (rnd() - 0.5) * H * craterSpread));
+    craters.push({ x: cx, y: cy, r: (14 + rnd() * rnd() * 84) * craterSize }); // rnd^2 => many small, few big
   }
   const blotches: Blotch[] = [];
   const nB = 4 + Math.floor(rnd() * 4);
@@ -704,7 +710,13 @@ function updateCamera(dt: number): void {
     const fx = Math.cos(state.rover.heading);
     const fz = Math.sin(state.rover.heading);
     target = new THREE.Vector3(rx - fx * camCfg.dist, camCfg.height, rz - fz * camCfg.dist);
-    look = new THREE.Vector3(rx + fx * 120, 8, rz + fz * 120);
+    // Look angle tilts the aim up toward the horizon: at 0 it looks down at the
+    // ground just ahead (today's chase feel); higher lifts and pushes the aim
+    // out so the horizon skirt + Earth come into frame.
+    const h = camCfg.horizon ?? 0;
+    const ahead = 120 + h * 360;
+    const aimY = 8 + h * camCfg.height * 0.95;
+    look = new THREE.Vector3(rx + fx * ahead, aimY, rz + fz * ahead);
   }
   camPos.lerp(target, k);
   camera.position.copy(camPos);
