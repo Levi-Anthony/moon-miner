@@ -16,6 +16,8 @@ import {
   launchReclaimDrone,
   findFertileZoneAt,
   resolveContinuousTuning,
+  addRailStock,
+  applyRailCapacity,
   type ContinuousInput,
   type ContinuousTuning,
   type ContinuousWorldState,
@@ -92,6 +94,13 @@ campaign.tuningOverrides = {
   reclaimAimBias: 3, // your facing aims the drone
   ribbonEconomy: true, // build cost + rail key off the ribbon you see, not hidden fields
   trackSpine: true, // no off-road: out of stock => emergency (cannibalise your own rail)
+  // WS3 background rail growth, independent of ore: a flat trickle while mining
+  // + per slurp, and a slow ceiling climb that carries across days (the quiet
+  // escalation -- reach grows while you're busy plotting the next route).
+  railTricklePerSecond: 0.3,
+  railTricklePerSlurp: 2,
+  railCapacityGrowthPerMinute: 3,
+  railCapacityMax: 72,
   // Pace so the loop is completable/legible: move at a real clip on bare ground
   // and give a learnable day length (the arena's fixed 36s "last light" is
   // brutal). Both are panel knobs; these are just gentler defaults.
@@ -101,6 +110,19 @@ campaign.tuningOverrides = {
 };
 let state!: ContinuousWorldState;
 let runEnded = false; // guards the once-per-run bank/persist
+// Bonus (mastery acknowledgement, never the win): distance ridden on cured rail
+// at speed with no steering input -- the zero-steer slide -- plus surplus ore
+// over quota, scored at extraction.
+let slideDistance = 0;
+const SLIDE_PER_POINT = 50; // rail units per bonus point
+const SURPLUS_ORE_POINTS = 5; // bonus points per ore over quota
+function surplusOre(): number {
+  const quota = state.arena.extraction?.oreRequired ?? state.targetOre;
+  return Math.max(0, state.rover.ore - quota);
+}
+function bonusScore(): number {
+  return slideDistance / SLIDE_PER_POINT + surplusOre() * SURPLUS_ORE_POINTS;
+}
 
 // --- Renderer / scene / camera ----------------------------------------------
 const mount = document.getElementById('app3d') as HTMLDivElement;
@@ -533,6 +555,7 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
   repaintCanvas(road.edgesForPaint());
   rebuildWorldMeshes();
   runEnded = false;
+  slideDistance = 0;
 }
 
 // --- Rover --------------------------------------------------------------------
@@ -778,14 +801,14 @@ const hud = {
   nano: el('hud-nano'), nanoBar: el('hud-nano-bar'),
   ore: el('hud-ore'), oreBar: el('hud-ore-bar'),
   sun: el('hud-sun'), sunBar: el('hud-sun-bar'),
-  day: el('hud-day'), mode: el('hud-mode'), line: el('line'),
+  day: el('hud-day'), bonus: el('hud-bonus'), mode: el('hud-mode'), line: el('line'),
   banner: el('banner'), bannerTitle: el('banner-title'), bannerBody: el('banner-body')
 };
 const MODE_LABEL: Record<string, string> = { fabricating: 'Building', prepared: 'Prepared', crawl: 'Crawl' };
 
 function updateHud(): void {
   const quota = state.arena.extraction?.oreRequired ?? state.targetOre;
-  hud.nano.textContent = `${state.nanobots.toFixed(1)}/${state.maxNanobots}`;
+  hud.nano.textContent = `${state.nanobots.toFixed(1)}/${Math.floor(state.maxNanobots)}`;
   hud.nanoBar.style.width = `${Math.min(100, (state.nanobots / state.maxNanobots) * 100)}%`;
   hud.nanoBar.style.background = state.nanobots / state.maxNanobots < 0.18 ? '#ff765f' : '#78f7df';
   hud.ore.textContent = `${state.rover.ore.toFixed(1)}/${quota}`;
@@ -794,6 +817,7 @@ function updateHud(): void {
   hud.sunBar.style.width = `${Math.min(100, (state.solarSeconds / Math.max(1, state.solarWindowSeconds)) * 100)}%`;
   hud.sunBar.style.background = state.solarSeconds / state.solarWindowSeconds < 0.25 ? '#ffb066' : '#8fb2ff';
   hud.day.textContent = `D${campaign.dayInShiftOf()}/${campaign.config.daysPerShift} · S${campaign.shiftOfDay()}/${campaign.config.shiftsPerGame}`;
+  hud.bonus.textContent = `+${Math.floor(bonusScore())}`;
   const onRoad = road.isOnLaidRoad(state);
   hud.mode.textContent = state.arms.mining > 0
     ? 'Mining'
@@ -816,7 +840,10 @@ function showBanner(): void {
   hud.banner.className = won ? 'win' : 'lose';
   hud.banner.style.display = 'flex';
   hud.bannerTitle.textContent = finale ? 'GAME OVER' : won ? 'EXTRACTION REACHED' : 'RUN OVER';
-  hud.bannerBody.textContent = `${state.message}  ·  ${campaign.bankedOre.toFixed(0)} ore banked`;
+  const bonusLine = won
+    ? `  ·  bonus +${Math.floor(bonusScore())} (${surplusOre().toFixed(1)} surplus ore, ${Math.round(slideDistance)} hands-off rail) · ${Math.floor(campaign.bankedBonus)} total`
+    : '';
+  hud.bannerBody.textContent = `${state.message}  ·  ${campaign.bankedOre.toFixed(0)} ore banked${bonusLine}`;
   cta.textContent = finale ? 'Tap for a new game' : 'Tap for the next day';
 }
 
@@ -931,7 +958,13 @@ function frame(now: number): void {
     if (!flash || performance.now() > flash.until) flash = { text: 'Out of rail — mine or reclaim to move', until: performance.now() + 1200 };
   }
 
+  const prevX = state.rover.x;
+  const prevY = state.rover.y;
   state = tickContinuousWorld(state, input, dt);
+  // Zero-steer slide: riding cured rail at speed without touching the wheel.
+  if (base.steer === 0 && !reversing && road.isOnLaidRoad(state) && road.boost > 0.5) {
+    slideDistance += Math.hypot(state.rover.x - prevX, state.rover.y - prevY);
+  }
 
   // Lay the road. Normal drive paints the new stroke; in emergency the arms lay a
   // stub AND eat older rail (net shrink), so we repaint the whole ribbon to show
@@ -958,6 +991,7 @@ function frame(now: number): void {
   road.updateCharge(dt, onRoadNow && state.rover.speed >= state.tuning.railSpeed * 0.9);
   const slurped = road.slurp(state);
   if (slurped) {
+    addRailStock(state, state.tuning.railTricklePerSlurp); // WS3: flat refuel, not ore-scaled
     paintSlurp(slurped);
     spawnBurst(slurped.x, slurped.y, 0xffe66a, 20, 6, 700); // gold rail-slurp burst
   }
@@ -1002,7 +1036,7 @@ function frame(now: number): void {
   // Run just ended: bank + compute carry once, then show the result banner.
   if (state.phase !== 'playing' && !runEnded) {
     runEnded = true;
-    campaign.endRun(state, road.serialize());
+    campaign.endRun(state, road.serialize(), bonusScore());
     showBanner();
   }
 
@@ -1019,8 +1053,7 @@ function frame(now: number): void {
 function applyTuning(patch: Partial<ContinuousTuning>): void {
   campaign.tuningOverrides = { ...campaign.tuningOverrides, ...patch };
   state.tuning = resolveContinuousTuning({ ...state.tuning, ...patch });
-  state.maxNanobots = state.tuning.maxNanobots;
-  state.nanobots = Math.min(state.nanobots, state.maxNanobots);
+  applyRailCapacity(state); // base capacity + grown ceiling (WS3)
   state.solarWindowSeconds = state.tuning.startingSolarSeconds;
   state.solarSeconds = Math.min(state.solarSeconds, state.solarWindowSeconds);
 }
