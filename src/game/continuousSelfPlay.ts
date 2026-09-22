@@ -1,4 +1,5 @@
 import {
+  findFertileZoneAt,
   createContinuousWorld,
   isRoverAtExtraction,
   launchReclaimDrone,
@@ -30,6 +31,12 @@ export interface ContinuousSelfPlayRoute {
   label: string;
   arenaId?: ContinuousArenaId;
   durationSeconds: number;
+  // The day length to measure on. `last-light-return` pins its own window at
+  // 36s, which no shipped game uses -- the app sets the Sun-window knob and
+  // plays 75 -- and 36 is not long enough to park on a far pocket AND get home,
+  // so every deep route read as a loss whatever the economy did. Measuring the
+  // day players actually get is the point of the rig.
+  solarWindowSeconds?: number;
   droneLaunchSeconds: number[];
   safeCorridorLeaveThreshold?: number;
   waypoints: ContinuousSelfPlayWaypoint[];
@@ -110,7 +117,8 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
     launchBelowStock: 0.7,
     label: 'Last Light Near Ring Only',
     arenaId: 'last-light-return',
-    durationSeconds: 36,
+    durationSeconds: 80,
+    solarWindowSeconds: 75,
     droneLaunchSeconds: [6, 15],
     safeCorridorLeaveThreshold: 120,
     waypoints: [
@@ -126,7 +134,8 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
     launchBelowStock: 0.65,
     label: 'Last Light Near Ring Doubled',
     arenaId: 'last-light-return',
-    durationSeconds: 36,
+    durationSeconds: 80,
+    solarWindowSeconds: 75,
     droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
@@ -143,7 +152,8 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
     launchBelowStock: 0.6,
     label: 'Last Light Mid Ring',
     arenaId: 'last-light-return',
-    durationSeconds: 36,
+    durationSeconds: 80,
+    solarWindowSeconds: 75,
     droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
@@ -160,7 +170,8 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
     launchBelowStock: 0.5,
     label: 'Last Light Far Shelf',
     arenaId: 'last-light-return',
-    durationSeconds: 36,
+    durationSeconds: 80,
+    solarWindowSeconds: 75,
     droneLaunchSeconds: [6, 15, 24],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
@@ -178,7 +189,8 @@ export const CONTINUOUS_SELF_PLAY_ROUTES = {
     launchBelowStock: 0.35,
     label: 'Last Light Far Shelf Overstayed',
     arenaId: 'last-light-return',
-    durationSeconds: 36,
+    durationSeconds: 80,
+    solarWindowSeconds: 75,
     droneLaunchSeconds: [20],
     safeCorridorLeaveThreshold: 88,
     waypoints: [
@@ -305,20 +317,40 @@ export function getContinuousSelfPlayPolicyTarget(route: ContinuousSelfPlayRoute
   for (const seamId of route.seams ?? []) {
     const seam = world.fertileZones.find((zone) => zone.id === seamId);
     if (!seam || seam.remaining <= SEAM_WORKED_OUT_ORE) continue;
-    // Aim along the vein rather than at the blob, so the pass sweeps it.
-    if (!seam.vein) return seam;
-    const toFrom = Math.hypot(seam.vein.from.x - world.rover.x, seam.vein.from.y - world.rover.y);
-    const toTo = Math.hypot(seam.vein.to.x - world.rover.x, seam.vein.to.y - world.rover.y);
-    const entry = toFrom <= toTo ? seam.vein.from : seam.vein.to;
-    const exit = toFrom <= toTo ? seam.vein.to : seam.vein.from;
-    // Once inside the band, drive for the far end of it.
-    return Math.hypot(entry.x - world.rover.x, entry.y - world.rover.y) <= seam.radius ? exit : entry;
+    // Drive at the seam itself. This used to aim along the vein so a pass would
+    // sweep the band, but yield no longer reads speed or the vein line -- you
+    // park anywhere in the pocket and the arms work it -- so aiming at an
+    // endpoint just parked the agent on the rim of the ore it came for.
+    return { x: seam.x, y: seam.y };
   }
 
   return home;
 }
 
 export function getContinuousSelfPlayInput(world: ContinuousWorldState, target: Vec2): ContinuousInput {
+  // Park to mine.
+  //
+  // The arms only work a seam while the machine is STOPPED in it (driving
+  // stows them to lay or to cruise), so an agent that holds the throttle down
+  // banks nothing however perfectly it drives -- which is exactly what the
+  // instrument was doing, and why every route in it read 0.0 ore. A player
+  // pulls up on the pocket and waits, so the agent does too: standing in the
+  // seam it was sent to, with ore still in it, it lets go of the throttle.
+  // Standing in an ore bed is asked with the SAME test the mining system uses,
+  // not a radius check: the drawn circle is wider than the bed, so a circle
+  // test parks the agent on ground that pays nothing and it waits there for the
+  // rest of the day, having stopped for ore it is not actually standing on.
+  const seam = findFertileZoneAt(world, world.rover);
+  if (seam && seam.remaining > SEAM_WORKED_OUT_ORE) {
+    // Either you have arrived where you were sent, or where you were sent is
+    // this pocket -- both mean "work here". Passing THROUGH a pocket on the way
+    // somewhere else does not stop you.
+    const arrived = Math.hypot(target.x - world.rover.x, target.y - world.rover.y) <= WAYPOINT_ARRIVAL_RADIUS;
+    if (arrived || Math.hypot(seam.x - target.x, seam.y - target.y) <= seam.radius) {
+      return { steer: 0, throttle: 0, driveIntent: false };
+    }
+  }
+
   const targetAngle = Math.atan2(target.y - world.rover.y, target.x - world.rover.x);
   const steer = clamp(angleDifference(targetAngle, world.rover.heading) / 0.85, -1, 1);
 
@@ -355,6 +387,7 @@ export function runContinuousSelfPlay(options: {
   droneLaunchSeconds?: number[];
   carriedFields?: FieldPatch[];
   carriedDepletion?: Record<string, number>;
+  solarWindowSeconds?: number;
 } = {}): ContinuousSelfPlayResult {
   const routeId = options.routeId ?? getDefaultContinuousSelfPlayRouteId(options.arenaId);
   const route = getContinuousSelfPlayRoute(routeId);
@@ -368,6 +401,11 @@ export function runContinuousSelfPlay(options: {
   const policyRoute = { ...route, launchBelowStock };
   const deltaSeconds = options.deltaSeconds ?? 0.1;
   let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId, options.carriedFields, options.carriedDepletion);
+  const solarWindow = options.solarWindowSeconds ?? route.solarWindowSeconds;
+  if (solarWindow !== undefined) {
+    world.solarWindowSeconds = solarWindow;
+    world.solarSeconds = solarWindow;
+  }
   const trace = createContinuousLoopTrace(world);
   const launchedAtSeconds = new Set<number>();
   let maxDroneEta = world.drone.etaSeconds;

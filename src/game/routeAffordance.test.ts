@@ -119,10 +119,26 @@ describe('route affordance', () => {
     expect(separation.sunSpread).toBeGreaterThan(0);
   });
 
-  it('reports whether the map affords a choice of route home', () => {
-    // Three moments in one shift: early with a full tank, mid-run, and late
-    // with the light going. If the map affords the decision, the best way home
-    // is not the same one at all three.
+  it('reports which way home the map favours, now that rail-as-range answers it', () => {
+    // Re-cut for the no-off-road model (DEV-23).
+    //
+    // This rung used to gate on the OPPOSITE reading: a map where one route
+    // always wins "offers paths, not a decision", so affordsDecision had to be
+    // true. That was written when cutting across raw ground was ordinary
+    // driving and the three ways home were genuinely interchangeable. The
+    // design deliberately removed that: you are always on your own track, and
+    // the network you leave behind is the fast way back. Your own track winning
+    // from every state is now the INTENDED reading, not a flat map -- and the
+    // decision the level asks has moved from "which way home" to "how far out
+    // do I dare lay", which the reward/risk gradient in continuous.test.ts is
+    // what measures.
+    //
+    // So the gate is inverted to match the design, and what it pins is the
+    // thing that must never stop being true: PREPARED GROUND WINS. Which
+    // prepared route wins is allowed to move -- it depends on how much track
+    // the outbound trip happened to lay before it stopped to mine -- but
+    // north-arc, the one that is raw the whole way, must never be the answer.
+    // The day raw ground wins a trip home, rail-as-range has quietly broken.
     const samples = [8, 12, 16].map((seconds) => ({
       label: `t=${seconds}s outbound to west cut`,
       world: driveOutboundTo(WEST_CUT, seconds)
@@ -135,13 +151,14 @@ describe('route affordance', () => {
     expect(verdict.samples).toHaveLength(3);
     for (const sample of verdict.samples) {
       expect(ROUTES_HOME.some((route) => route.id === sample.winner)).toBe(true);
+      // Raw ground never wins a trip home, from a full tank or a dying one.
+      expect(sample.winner).not.toBe('north-arc');
+      // And it is a real win, not a tie the tie-break happened to hand over.
+      expect(sample.marginSeconds).toBeGreaterThan(0);
     }
 
-    // And this is the gate the whole file exists for: the best way home is not
-    // the same one from every state. A map where one route always wins offers
-    // paths, not a decision. This is also the acceptance test a procedural
-    // generator has to pass before it can be trusted to author these.
-    expect(verdict.affordsDecision).toBe(true);
-    expect(verdict.dominantRoute).toBeUndefined();
+    // One route dominates, which is the design's answer rather than a flat map.
+    expect(verdict.affordsDecision).toBe(false);
+    expect(['own-track', 'lower-path']).toContain(verdict.dominantRoute);
   });
 });
