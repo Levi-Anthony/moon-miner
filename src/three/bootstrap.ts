@@ -152,7 +152,8 @@ sun.position.set(-300, 500, -260);
 // The sun casts; its shadow box follows the rover so the map size doesn't cost
 // shadow resolution (a world-sized box would be a smear at Level size 4).
 sun.castShadow = true;
-sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.normalBias = 0.6; // the ground is displaced relief; keeps it from shadowing itself in stripes
 sun.shadow.camera.near = 1;
 sun.shadow.camera.far = 3000;
 const SHADOW_HALF = 520; // world units either side of the rover
@@ -176,10 +177,15 @@ const DAY_COLOR = new THREE.Color(0xbfd0ff); // cold high-sun white
 const DUSK_COLOR = new THREE.Color(0xff9a54); // low-sun amber
 const AMBIENT_DAY = new THREE.Color(0x2a3550);
 const AMBIENT_DUSK = new THREE.Color(0x1a1526);
-// Ground/sky tint: at midday this is pure white, so the painted road shows its
-// true neon undimmed. It dims and warms toward dusk in step with the sun and
-// ambient lights above -- this is what actually makes the sun's motion visible
-// on screen, since the ground itself can't be lit (see the comment on `ground`).
+// The sun is the ground's main light now, so it has to be strong enough to
+// read against the emissive fill below: lit ground visibly brighter, shadowed
+// ground visibly darker. sunState() gives a 0..1-ish curve; this scales it.
+const SUN_GAIN = 3;
+// Emissive fill on the ground: the painted texture glowing at this fraction on
+// its own, so the neon road/seams stay readable in shadow and after sunset.
+// The rest of the ground's brightness comes from the sun. It dims and warms
+// toward dusk in step with the sun and ambient lights.
+const GROUND_FILL = 0.85;
 const GROUND_DAY_TINT = new THREE.Color(0xffffff);
 const GROUND_DUSK_TINT = new THREE.Color(0x8a5a42);
 const SKY_DAY = new THREE.Color(0x03040a);
@@ -198,13 +204,12 @@ function updateSun(t: number): void {
   sun.target.updateMatrixWorld();
   // Dusk: warmer and dimmer, with the ambient falling faster so the dark closes in.
   sun.color.copy(DAY_COLOR).lerp(DUSK_COLOR, sky.dusk);
-  sun.intensity = sky.intensity;
+  sun.intensity = sky.intensity * SUN_GAIN;
   ambient.color.copy(AMBIENT_DAY).lerp(AMBIENT_DUSK, sky.dusk);
   ambient.intensity = sky.ambientIntensity;
-  // Ground can't be lit (see comment on `ground`), so this tint is what
-  // actually shows the sun moving on the biggest thing on screen: full white
-  // at midday (untouched road colours), dimming and warming toward dusk.
-  (ground.material as THREE.MeshBasicMaterial).color.copy(GROUND_DAY_TINT).lerp(GROUND_DUSK_TINT, sky.dusk);
+  // The ground's emissive fill dims and warms toward dusk too, so the whole
+  // field darkens as the sun drops, not just the sunlit part.
+  groundMat.emissive.copy(GROUND_DAY_TINT).lerp(GROUND_DUSK_TINT, sky.dusk);
   if (scene.background instanceof THREE.Color) scene.background.copy(SKY_DAY).lerp(SKY_DUSK, sky.dusk);
   if (scene.fog instanceof THREE.Fog) scene.fog.color.copy(SKY_DAY).lerp(SKY_DUSK, sky.dusk);
   // The painted crater/rille shading is lit from the same bearing. Repaint only
@@ -257,32 +262,26 @@ rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
 const roadTexture = new THREE.CanvasTexture(roadCanvas);
 roadTexture.colorSpace = THREE.SRGBColorSpace;
 
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(W, H),
-  // Unlit -- the painted canvas keeps its true colours (teal road, gold seams)
-  // rather than being physically shaded, which on a flat plane with no normal
-  // detail would just look wrong. The sun still visibly reaches the ground:
-  // updateSun() drives material.color as a day/dusk TINT (full white at
-  // midday = untouched colours; dims and warms toward sunset), matching the
-  // same sky.dusk the sun/ambient lights and shadow already use. The rover/
-  // drone are separately lit meshes and shade normally on top of this.
-  new THREE.MeshBasicMaterial({ map: roadTexture })
-);
+// The ground is LIT by the sun and receives its shadows directly. It used to be
+// unlit with a ShadowMaterial catcher on top, but the painted ground is near-
+// black (#0e1520), so nothing got brighter in sunlight and a 50% shadow on it
+// was invisible. Now it's two layers:
+//   - diffuse: grey regolith (REGOLITH) that the sun actually lights. Sunlit
+//     ground is grey, shadowed ground is black, and the displaced relief shades
+//     itself -- all moving with the sun.
+//   - emissive: the painted canvas (road, seams, crater rims) glowing on its
+//     own at GROUND_FILL, so the neon stays readable in shadow and after sunset.
+const REGOLITH = 0x6b6f78;
+const groundMat = new THREE.MeshLambertMaterial({
+  color: REGOLITH,
+  emissiveMap: roadTexture,
+  emissive: 0xffffff,
+  emissiveIntensity: GROUND_FILL
+});
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(W, H), groundMat);
 ground.rotation.x = -Math.PI / 2; // lie flat on XZ
+ground.receiveShadow = true;
 scene.add(ground);
-
-// Shadow catcher: the ground is deliberately UNLIT (so the painted road keeps
-// its true neon), and an unlit material can't receive a shadow. This invisible
-// plane sits just above it and draws nothing but the shadows that fall on it,
-// so the rover's shadow lies on the road without washing the colours out.
-const shadowCatcher = new THREE.Mesh(
-  new THREE.PlaneGeometry(W, H),
-  new THREE.ShadowMaterial({ opacity: 0.5 })
-);
-shadowCatcher.rotation.x = -Math.PI / 2;
-shadowCatcher.position.y = 0.6;
-shadowCatcher.receiveShadow = true;
-scene.add(shadowCatcher);
 
 // --- Moon vista: sell scale WITHOUT a bigger playfield ------------------------
 // The playfield is a finite textured plane; without this you SEE it end into
@@ -643,6 +642,7 @@ function rebuildWorldMeshes(): void {
       new THREE.MeshStandardMaterial({ color: 0xc06cff, emissive: 0xa83bff, emissiveIntensity: 1.4, roughness: 0.5 })
     );
     beacon.position.set(px, 75, pz);
+    beacon.castShadow = true; // a 150-tall pole: its shadow is a sundial across the field
     extractionGroup.add(beacon);
   }
 }
@@ -680,8 +680,6 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
     roadCanvas.height = ch;
   }
   fitVista(); // resize the horizon skirt + fog fade to this world
-  shadowCatcher.geometry.dispose();
-  shadowCatcher.geometry = new THREE.PlaneGeometry(W, H);
   paintedSunBearing = START_BEARING; // a new day starts at first light
   // 3D app: the day length is the Sun-window knob, not the arena's fixed 36s
   // (so the panel knob bites and the default is learnable).
@@ -722,6 +720,7 @@ const drone = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ color: 0x78f7df, emissive: 0x1c6f5c, roughness: 0.4 })
 );
 drone.visible = false;
+drone.castShadow = true;
 scene.add(drone);
 
 // The drone's line home: a faint tether from the depot to the drone while it's

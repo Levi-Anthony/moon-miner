@@ -5,7 +5,9 @@
 // the lights and the painted ground shading.
 
 export const SUN_DIST = 900;
-const START_ELEV = 1.05; // radians above the horizon at first light
+// Radians above the horizon at first light. ~46deg, not higher: a near-overhead
+// sun tucks the rover's shadow underneath it, so there's nothing to see.
+const START_ELEV = 0.8;
 const END_ELEV = 0.1; // just above the horizon at last light
 export const START_BEARING = -2.3; // matches the painted crater shading at day start
 const SWEEP = 1.1; // radians of bearing travelled over a full day
