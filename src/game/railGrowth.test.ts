@@ -60,4 +60,29 @@ describe('WS3 rail-stock growth (independent of ore)', () => {
     applyRailCapacity(w);
     expect(w.maxNanobots).toBe(w.tuning.maxNanobots + 10);
   });
+
+  it('lowering the Capacity cap slider clamps the ceiling without erasing banked growth', () => {
+    // Regression: dragging the cap below the current ceiling used to reset
+    // railCapacityGrown to fit the new cap on the very next tick, so exploring
+    // the range downward (which the panel explicitly invites -- sliders may
+    // overshoot usable in both directions) permanently threw away progress
+    // that dragging the cap back up should have restored.
+    let w = createContinuousWorld('grow', { railCapacityGrowthPerMinute: 60, railCapacityMax: 0 }, 'last-light-return');
+    const base = w.tuning.maxNanobots;
+    w = run(w, 5); // bank real growth with no cap in the way
+    const grownBefore = w.railCapacityGrown;
+    expect(grownBefore).toBeGreaterThan(3);
+
+    // Drag the cap down to just above base -- well below the current ceiling.
+    w.tuning = { ...w.tuning, railCapacityMax: base + 1 };
+    w = tickContinuousWorld(w, idle, 0.05);
+    expect(w.maxNanobots).toBe(base + 1); // the visible ceiling respects the new cap...
+    expect(w.railCapacityGrown).toBeCloseTo(grownBefore, 1); // ...but nothing was thrown away
+
+    // Drag it back up (or off): the earlier growth is there again, not
+    // restarted from wherever the cap happened to clamp it.
+    w.tuning = { ...w.tuning, railCapacityMax: 0 };
+    w = tickContinuousWorld(w, idle, 0.05);
+    expect(w.maxNanobots).toBeCloseTo(base + grownBefore, 0);
+  });
 });

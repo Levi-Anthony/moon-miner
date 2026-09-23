@@ -1149,10 +1149,17 @@ export function addRailStock(state: ContinuousWorldState, amount: number): void 
 function advanceRailGrowth(state: ContinuousWorldState, deltaSeconds: number): void {
   const t = state.tuning;
   if (t.railCapacityGrowthPerMinute > 0) {
-    let grown = (state.railCapacityGrown ?? 0) + (t.railCapacityGrowthPerMinute * deltaSeconds) / 60;
-    // Stop accruing at the cap, so the ceiling doesn't hide a hoard to release later.
-    if (t.railCapacityMax > 0) grown = Math.min(grown, Math.max(0, t.railCapacityMax - t.maxNanobots));
-    state.railCapacityGrown = grown;
+    // Only accrue while there is headroom under the cap -- this is what stops
+    // the ceiling hiding a hoard past it, same as before. But it must gate
+    // FURTHER growth only, never truncate what's already banked: a panel drag
+    // that drops the cap below the current ceiling (exploring the range, which
+    // the "push sliders past usable" design explicitly invites) used to wipe
+    // railCapacityGrown down to fit the new cap on the very next tick, so
+    // dragging the knob back up never brought the growth back. Now the
+    // ceiling function alone clamps the VISIBLE max; the accumulator is only
+    // ever added to, so raising the cap again restores exactly what was there.
+    const headroom = t.railCapacityMax <= 0 || railCapacityCeiling(state) < t.railCapacityMax;
+    if (headroom) state.railCapacityGrown = (state.railCapacityGrown ?? 0) + (t.railCapacityGrowthPerMinute * deltaSeconds) / 60;
     state.maxNanobots = railCapacityCeiling(state);
   }
   if (t.railTricklePerSecond > 0 && state.lastYieldRate > 0) {
