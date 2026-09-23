@@ -176,6 +176,14 @@ const DAY_COLOR = new THREE.Color(0xbfd0ff); // cold high-sun white
 const DUSK_COLOR = new THREE.Color(0xff9a54); // low-sun amber
 const AMBIENT_DAY = new THREE.Color(0x2a3550);
 const AMBIENT_DUSK = new THREE.Color(0x1a1526);
+// Ground/sky tint: at midday this is pure white, so the painted road shows its
+// true neon undimmed. It dims and warms toward dusk in step with the sun and
+// ambient lights above -- this is what actually makes the sun's motion visible
+// on screen, since the ground itself can't be lit (see the comment on `ground`).
+const GROUND_DAY_TINT = new THREE.Color(0xffffff);
+const GROUND_DUSK_TINT = new THREE.Color(0x8a5a42);
+const SKY_DAY = new THREE.Color(0x03040a);
+const SKY_DUSK = new THREE.Color(0x1c0f0a);
 let paintedSunBearing = START_BEARING; // bearing the ground canvas was painted at
 
 // t = 0 at first light, 1 at sunset.
@@ -193,6 +201,12 @@ function updateSun(t: number): void {
   sun.intensity = sky.intensity;
   ambient.color.copy(AMBIENT_DAY).lerp(AMBIENT_DUSK, sky.dusk);
   ambient.intensity = sky.ambientIntensity;
+  // Ground can't be lit (see comment on `ground`), so this tint is what
+  // actually shows the sun moving on the biggest thing on screen: full white
+  // at midday (untouched road colours), dimming and warming toward dusk.
+  (ground.material as THREE.MeshBasicMaterial).color.copy(GROUND_DAY_TINT).lerp(GROUND_DUSK_TINT, sky.dusk);
+  if (scene.background instanceof THREE.Color) scene.background.copy(SKY_DAY).lerp(SKY_DUSK, sky.dusk);
+  if (scene.fog instanceof THREE.Fog) scene.fog.color.copy(SKY_DAY).lerp(SKY_DUSK, sky.dusk);
   // The painted crater/rille shading is lit from the same bearing. Repaint only
   // when it has moved enough to see (the canvas upload is the expensive part).
   if (Math.abs(sky.bearing - paintedSunBearing) > 0.12) {
@@ -245,8 +259,13 @@ roadTexture.colorSpace = THREE.SRGBColorSpace;
 
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(W, H),
-  // Unlit, so the painted canvas shows its true colours (teal road, gold seams)
-  // instead of being tinted olive by the warm sun. The rover/drone stay lit.
+  // Unlit -- the painted canvas keeps its true colours (teal road, gold seams)
+  // rather than being physically shaded, which on a flat plane with no normal
+  // detail would just look wrong. The sun still visibly reaches the ground:
+  // updateSun() drives material.color as a day/dusk TINT (full white at
+  // midday = untouched colours; dims and warms toward sunset), matching the
+  // same sky.dusk the sun/ambient lights and shadow already use. The rover/
+  // drone are separately lit meshes and shade normally on top of this.
   new THREE.MeshBasicMaterial({ map: roadTexture })
 );
 ground.rotation.x = -Math.PI / 2; // lie flat on XZ
