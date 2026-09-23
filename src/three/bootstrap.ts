@@ -751,6 +751,7 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
   state.solarSeconds = state.tuning.startingSolarSeconds;
   road.seed(built.road);
   road.boost = 0;
+  road.locked = false;
   terrainFeatures = generateTerrain(state.seed, keepOutsFor(state)); // this world's own terrain
   applyRelief(terrainFeatures);
   repaintCanvas(road.edgesForPaint());
@@ -1022,7 +1023,7 @@ function updateHud(): void {
   hud.sunBar.style.background = state.solarSeconds / state.solarWindowSeconds < 0.25 ? '#ffb066' : '#8fb2ff';
   hud.day.textContent = `D${campaign.dayInShiftOf()}/${campaign.config.daysPerShift} · S${campaign.shiftOfDay()}/${campaign.config.shiftsPerGame}`;
   hud.bonus.textContent = `+${Math.floor(bonusScore())}`;
-  const onRoad = road.isOnLaidRoad(state);
+  const onRoad = road.locked;
   hud.mode.textContent = state.arms.mining > 0
     ? 'Mining'
     : emergencyActive
@@ -1150,13 +1151,13 @@ function frame(now: number): void {
       !reversing &&
       base.driveIntent &&
       state.speedState === 'crawl' &&
-      !road.isOnLaidRoad(state)
+      !road.locked
   );
   const emergencyStuck = emergency && !road.canCannibalise();
   emergencyActive = emergency;
   let input: ContinuousInput = reversing
     ? base
-    : { ...base, assistSteer: road.carrySteer(state, dt), roadRunway: road.boost, onRoad: road.isOnLaidRoad(state) };
+    : { ...base, assistSteer: road.locked ? road.carrySteer(state, dt, true) : 0, roadRunway: road.boost, onRoad: road.locked };
   if (emergencyStuck) {
     input = { ...input, throttle: 0, driveIntent: false }; // out of rail to eat -> stall
     if (!flash || performance.now() > flash.until) flash = { text: 'Out of rail — mine or reclaim to move', until: performance.now() + 1200 };
@@ -1167,7 +1168,7 @@ function frame(now: number): void {
   state = tickContinuousWorld(state, input, dt);
   resolveCraterCollision(); // blocking craters are walls (before laying, so rail hugs the rim)
   // Zero-steer slide: riding cured rail at speed without touching the wheel.
-  if (base.steer === 0 && !reversing && road.isOnLaidRoad(state) && road.boost > 0.5) {
+  if (base.steer === 0 && !reversing && road.locked && road.boost > 0.5) {
     slideDistance += Math.hypot(state.rover.x - prevX, state.rover.y - prevY);
   }
 
@@ -1189,8 +1190,10 @@ function frame(now: number): void {
     roadDirty = false;
     lastRoadFlush = now;
   }
-  const onRoadNow = road.isOnLaidRoad(state);
-  road.updateBoost(dt, onRoadNow);
+  // The rail: lock on/off (hard steer is the one way off) and its speed (winds
+  // up on the lock, brakes for bends ahead). Feeds next frame's input.
+  road.update(state, base.steer, dt, !reversing);
+  const onRoadNow = road.locked;
   // Slurp charge: only builds while genuinely at rail top speed on road, so the
   // slurp is earned by a sustained run and can't grab the pool you're sitting on.
   road.updateCharge(dt, onRoadNow && state.rover.speed >= state.tuning.railSpeed * 0.9);

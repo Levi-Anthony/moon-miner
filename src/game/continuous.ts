@@ -291,15 +291,13 @@ export interface ContinuousTuning {
   // steering. Below 1 the wheel always wins, so grip is a magnet you can leave,
   // never a rail that holds you on.
   gripActiveSteerFactor: number;
-  // The cured-road carry ("slide") may out-turn a manual lock by this much, as
-  // a multiple of TURN_RATE, so it holds a squiggly line at full boosted speed
-  // -- speed the driver could never corner by hand. This is a hard ceiling: no
-  // amount of grip (followStrength) can turn tighter than this, so a corner
-  // that needs more than TURN_RATE * carryTurnMult to hold at your speed is
-  // un-holdable regardless of the grip slider. Was a fixed constant (5); now a
-  // tuning knob so a harder level can widen the ceiling instead of just eating
-  // the same wall everyone else does.
-  carryTurnMult: number;
+  // The rail's grip: the most sideways acceleration (units/s^2) the cured-road
+  // carry can hold. It is the ONE limit on cornering on the rail: at speed v the
+  // carry can turn at most railGrip / v (rad/s), and the presentation's rail
+  // brakes for bends ahead to sqrt(railGrip / curvature). Higher grip = tighter
+  // corners at higher speed. (Replaces a fixed turn-rate cap that ignored speed,
+  // which is what flung you off tight corners at speed.)
+  railGrip: number;
   lowStockWarningRatio: number;
   droneUrgencyRatio: number;
   // Refill rate (stock per second) while moving on prepared track when drone is
@@ -442,7 +440,7 @@ const STEER_RAMP_PER_SECOND = 4.6;
 // stick is fully subsumed (a resting or half-committed wheel does nothing). The
 // only way off at speed is to take the stick ALL THE WAY over -- a near-90-degree
 // deflection -- which passes your wheel straight through and drops the carry.
-const ROAD_CARRY_BREAK_STEER = 0.9;
+export const ROAD_CARRY_BREAK_STEER = 0.9;
 const HELPER_ARM_MINE_ASSIST_RATIO = 0.12;
 
 export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
@@ -558,7 +556,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   railRunwayForFullSpeed: 210,
   gripFloor: 0.2,
   gripActiveSteerFactor: 0.5,
-  carryTurnMult: 5,
+  railGrip: 1500,
   lowStockWarningRatio: 0.18,
   droneUrgencyRatio: 0.32,
   // Refill while on prepared ground. Zero means no passive refill on track —
@@ -651,7 +649,7 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   railRunwayForFullSpeed: 210,
   gripFloor: 0.2,
   gripActiveSteerFactor: 0.5,
-  carryTurnMult: 5,
+  railGrip: 1500,
   // Crawl is the overextension penalty, but at 0.1/s toward a 2.6 ceiling with a
   // 2.0 exit it took ~20s of near-stopped limping to claw back out -- and with no
   // loose end for the drone and no prepared road within reach, that read as a
@@ -1313,7 +1311,7 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   const fieldTurn = clamp(grip.correction * state.tuning.railHeadingSnap, -TURN_RATE, TURN_RATE) * grip.strength * authority;
 
   // On cured road, forward LOCKS you onto the ribbon -- the carry is the whole
-  // wheel, not an assist you fight. It out-turns a manual lock (carryTurnMult)
+  // wheel, not an assist you fight. It can out-turn a manual lock, up to the grip limit (railGrip / speed)
   // so it faithfully follows any squiggle the road makes, at a boosted speed you
   // could never corner by hand; a partial stick is fully subsumed (steerScale 0),
   // so a resting or half-committed wheel does nothing to the line. Only taking the
@@ -1331,7 +1329,9 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     // magnet unchanged.
     if (input.onRoad) {
       const breakingOff = Math.abs(input.steer) >= ROAD_CARRY_BREAK_STEER;
-      const carryCap = TURN_RATE * state.tuning.carryTurnMult;
+      // Grip limit: the carry can turn at most railGrip / speed. Floored so it
+      // stays sane at a crawl, capped so it stays sane on a stand-still.
+      const carryCap = Math.min(TURN_RATE * 12, Math.max(0, state.tuning.railGrip) / Math.max(40, state.rover.speed));
       gripTurn = breakingOff ? 0 : clamp(input.assistSteer, -carryCap, carryCap);
       steerScale = breakingOff ? 1 : 0;
     } else {

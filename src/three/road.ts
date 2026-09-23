@@ -9,16 +9,27 @@
 // driving lay a smooth ribbon; only coming back ALONGSIDE existing ribbon (which
 // is what a blob is made of) is refused. Everything else -- the pure-pursuit
 // lock, rail boost, on-road test, slurp -- reads this ribbon and the sim state.
-import type { ContinuousWorldState, Vec2 } from '../game/continuous';
+import { ROAD_CARRY_BREAK_STEER, type ContinuousWorldState, type Vec2 } from '../game/continuous';
 
 export const CAR_WIDTH = 54;
 const ROAD_TRAIL_SPACING = 6; // min world units between laid points
 const ROAD_CURE_SECONDS = 1.2; // the fresh tail you're laying isn't lockable yet
-const ROAD_ALIGN_MIN = 0.6;
+const ROAD_ALIGN_MIN = 0.6; // to get ON the lock you must be driving along the road, not across it
 const ROAD_FOLLOW_LOOKAHEAD_MULT = 2.4;
 const ROAD_BOOST_DECAY_SECONDS = 0.45;
 const ROAD_SLIDE_MAX = 1.0;
 const MAX_POINTS = 8000;
+// The rail (see RoadModel.update / carrySteer):
+const LOCK_HOLD_WIDTH = 1.25; // once locked you stay on until you're this many half-widths off the line
+const LOCK_RELEASE_SECONDS = 0.5; // after a hard steer off, the lock won't re-grab you for this long
+const TRACK_RATE = 9; // how quickly the lock closes leftover heading error (fixed; grip is the real limit)
+const CORNER_PROBE_INTERVAL = 0.1; // re-read the road ahead ~10x/s (it's a speed limit, not a steer)
+const CORNER_PROBE_MAX = 900; // never look further ahead than this
+const RAIL_BRAKE_MULT = 3; // the rail brakes this many times harder than it accelerates
+const RAIL_BRAKE_PLAN = 0.75; // plan braking at this share of the real decel, so it's early rather than just-in-time
+const CORNER_GRIP_RESERVE = 0.85; // the rail plans bends at this share of grip, keeping the rest for the lock's corrections
+const CORNER_PROBE_WINDOW = 1.2; // x half-width: tighter smoothing than the steer, so a tight bend isn't averaged away
+const CORNER_PROBE_STEP = 0.75; // x half-width between look-ahead samples
 
 export interface RoadConfig {
   roadWidthCars: number; // road width in car-widths
@@ -26,8 +37,8 @@ export interface RoadConfig {
   slurpMinBoost: number; // rail boost needed for a slurp
   slurpChargeSeconds: number; // sustained-top-speed time needed before a slurp arms
   laneGapCars: number; // how close a NEW ribbon may come to existing ribbon before it's refused as double-stacking, beyond the road width
-  followStrength: number; // how hard laid road pulls the rover onto its line
-  spinUpSeconds: number; // seconds on laid road to wind from off-road speed up to road top speed
+  railAccel: number; // how fast the rail winds you up toward top speed on laid road (units/s^2); braking is RAIL_BRAKE_MULT x this
+  cornerBraking: number; // 0..1: how much the rail slows for bends ahead (1 = never exceed grip; 0 = none, you can overcook a corner)
   reclaimBite: number; // world units of ribbon one drone flight lifts (the reclaim chunk size)
 }
 
@@ -40,8 +51,9 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
   // edge-to-edge -- kept small so the "no-lay" band around your road is thin and
   // ordinary driving keeps laying rather than hitting dead zones.
   laneGapCars: 0.3,
-  followStrength: 9,
-  spinUpSeconds: 1.1,
+  // ~ the old 1.1 s spin-up from laying speed to road top speed at defaults.
+  railAccel: 100,
+  cornerBraking: 1,
   reclaimBite: 150 // a modest chunk per flight, not the whole run
 };
 
@@ -72,6 +84,10 @@ export class RoadModel {
   private segs: Seg[] = []; // ribbon segments (for painting, the lock, crossings, persistence)
   private last: Vec2 | null = null;
   boost = 0; // 0..1 rail momentum, fed to the sim as roadRunway
+  locked = false; // riding the rail (the lock holds you and the rail sets your speed)
+  private releaseTimer = 0;
+  private cornerTimer = 0;
+  private cornerLimit = Infinity;
   charge = 0; // seconds held at rail top speed; the slurp arms once it passes slurpChargeSeconds
   config: RoadConfig;
 
@@ -102,6 +118,10 @@ export class RoadModel {
     this.last = null;
     this.boost = 0;
     this.charge = 0;
+    this.locked = false;
+    this.releaseTimer = 0;
+    this.cornerTimer = 0;
+    this.cornerLimit = Infinity;
   }
   edgeCount(): number {
     return this.segs.length;
@@ -298,94 +318,183 @@ export class RoadModel {
     return res;
   }
 
-  // The lock: steer along the laid ribbon. 0 when off the road or crossing it
-  // transversally. Returns a turn rate (rad/s).
-  //
-  // Two things made the rover shake left/right while sliding, and both are
-  // handled here:
-  //  1. The ribbon is ~6-unit segments, each carrying a little wobble from the
-  //     drive that laid it. Following the single NEAREST segment's tangent
-  //     meant a new target heading at every joint -- dozens per second at rail
-  //     speed. The direction is now a proximity-weighted average over the
-  //     aligned segments around you, so the joints blur into one smooth line.
-  //  2. The gain (full lock at ~10 degrees of error) was high enough that one
-  //     frame's correction overshot the line, worse on slow frames. The
-  //     correction is now proportional and capped at half the error per frame
-  //     (dt), so it converges instead of ringing, at any frame rate.
-  carrySteer(state: ContinuousWorldState, dt = 1 / 60): number {
-    const rover = state.rover;
-    const ne = this.nearestCuredSeg(rover, state.elapsedSeconds);
-    if (!ne || ne.dist >= this.halfWidth()) return 0;
-    const hx = Math.cos(rover.heading);
-    const hy = Math.sin(rover.heading);
-    if (Math.abs(ne.tx * hx + ne.ty * hy) < ROAD_ALIGN_MIN) return 0;
-    // Nearest tangent, flipped to point the way you're facing.
-    const flip = ne.tx * hx + ne.ty * hy < 0 ? -1 : 1;
-    const nx = ne.tx * flip;
-    const ny = ne.ty * flip;
-    const lookahead = this.halfWidth() * ROAD_FOLLOW_LOOKAHEAD_MULT;
-    // Smoothed local direction: sum of aligned segment tangents near you, on
-    // THIS line (lateral offset from it within the road half-width), weighted
-    // by closeness. Parallel lanes and crossings are excluded by those tests.
+  // The line around a point: the smoothed local direction and a smoothed point
+  // on it. Sums the aligned segment tangents near (px,py) on THIS line (lateral
+  // offset within the road half-width of the reference direction), weighted by
+  // closeness, so the ~6-unit wobbly joints blur into one smooth line. Parallel
+  // lanes (off laterally) and crossings (~90 degrees) are excluded. The tangent
+  // is oriented along (rx,ry). Null when there's no cured road here.
+  private lineAt(px: number, py: number, rx: number, ry: number, elapsed: number, window = this.halfWidth() * ROAD_FOLLOW_LOOKAHEAD_MULT): { tangent: number; lx: number; ly: number } | null {
+    const lookahead = window;
+    const hw = this.halfWidth();
     let sx = 0;
     let sy = 0;
-    let cx = 0; // weighted centroid of those segments: a smoothed point on the line
+    let cx = 0;
     let cy = 0;
     let wsum = 0;
-    const hw = this.halfWidth();
     for (const sg of this.segs) {
-      if (state.elapsedSeconds - sg.t < ROAD_CURE_SECONDS) continue;
-      const mx = (sg.ax + sg.bx) / 2 - ne.px;
-      const my = (sg.ay + sg.by) / 2 - ne.py;
+      if (elapsed - sg.t < ROAD_CURE_SECONDS) continue;
+      const mx = (sg.ax + sg.bx) / 2 - px;
+      const my = (sg.ay + sg.by) / 2 - py;
+      if (Math.abs(mx) > lookahead || Math.abs(my) > lookahead) continue; // cheap reject
       const d = Math.hypot(mx, my);
       if (d > lookahead) continue;
-      if (Math.abs(mx * -ny + my * nx) > hw) continue; // off this line
+      if (Math.abs(mx * -ry + my * rx) > hw) continue; // off this line
       const len = Math.hypot(sg.bx - sg.ax, sg.by - sg.ay) || 1;
       let tx = (sg.bx - sg.ax) / len;
       let ty = (sg.by - sg.ay) / len;
-      const dot = tx * nx + ty * ny;
-      if (Math.abs(dot) < 0.5) continue; // a crossing (~90 degrees), not this line
+      const dot = tx * rx + ty * ry;
+      if (Math.abs(dot) < 0.5) continue; // a crossing, not this line
       if (dot < 0) { tx = -tx; ty = -ty; }
       const w = (1 - d / lookahead) * len;
       sx += tx * w;
       sy += ty * w;
-      cx += (sg.ax + sg.bx) / 2 * w;
-      cy += (sg.ay + sg.by) / 2 * w;
+      cx += ((sg.ax + sg.bx) / 2) * w;
+      cy += ((sg.ay + sg.by) / 2) * w;
       wsum += w;
     }
-    const tangent = sx * sx + sy * sy > 1e-9 ? Math.atan2(sy, sx) : Math.atan2(ny, nx);
-    // Cross-track: signed offset of the rover from the SMOOTHED line (left of
-    // travel +). Measured from the weighted centroid, not the nearest point,
-    // which hops sideways at every wobbly joint.
-    const lx = wsum > 0 ? cx / wsum : ne.px;
-    const ly = wsum > 0 ? cy / wsum : ne.py;
-    const cross = (rover.x - lx) * -Math.sin(tangent) + (rover.y - ly) * Math.cos(tangent);
-    const desired = tangent - Math.atan2(cross, lookahead);
-    // Exponential convergence: closes a followStrength-scaled FRACTION of the
-    // heading error each frame, asymptotic to (never reaching or overshooting)
-    // a full same-frame correction. That makes it self-limiting at any frame
-    // rate or any followStrength -- it can never ring -- so unlike the old
-    // linear gain hard-capped at 0.5/dt, there is no followStrength value
-    // above which turning the knob further does nothing. (The old cap saturated
-    // at ~5-6 with the default at 9, so the panel's whole 0-150 "Road lock
-    // strength" range above that was dead: 100 felt identical to 9.) Tuned so
-    // the default still closes ~half the error per frame, matching the old
-    // feel, and keeps getting measurably tighter all the way up the slider --
-    // headroom for a harder level to demand more grip than today's default.
-    const closeFrac = 1 - Math.exp((-this.config.followStrength * dt) / 0.18);
-    return (angleDifference(desired, rover.heading) * closeFrac) / Math.max(1e-3, dt);
+    if (wsum <= 0 || sx * sx + sy * sy <= 1e-9) return null;
+    return { tangent: Math.atan2(sy, sx), lx: cx / wsum, ly: cy / wsum };
   }
 
+  // The lock: the turn rate (rad/s) that carries the rover along the laid
+  // ribbon. 0 when off the road -- and, unless you're already locked on
+  // (`held`), when you're crossing it rather than driving along it.
+  //
+  // Two parts:
+  //  - FEED-FORWARD: the road's own curvature at your speed (v * kappa). A bend
+  //    is followed as it arrives instead of being chased after you've already
+  //    drifted wide, so the rover hugs corners rather than lagging through them.
+  //  - CORRECTION: close the remaining heading/cross-track error at a fixed,
+  //    self-limiting rate (it can never overshoot, at any frame rate).
+  // The SIM caps the result at what the rail's grip allows at this speed
+  // (tuning.railGrip / speed), which is the single limit on cornering; this
+  // method never clamps on its own.
+  carrySteer(state: ContinuousWorldState, dt = 1 / 60, held = false): number {
+    const rover = state.rover;
+    const ne = this.nearestCuredSeg(rover, state.elapsedSeconds);
+    const hw = this.halfWidth();
+    if (!ne || ne.dist >= hw * (held ? LOCK_HOLD_WIDTH : 1)) return 0;
+    const hx = Math.cos(rover.heading);
+    const hy = Math.sin(rover.heading);
+    const align = ne.tx * hx + ne.ty * hy;
+    if (!held && Math.abs(align) < ROAD_ALIGN_MIN) return 0;
+    const flip = align < 0 ? -1 : 1; // the line's direction, the way you're facing
+    const here = this.lineAt(ne.px, ne.py, ne.tx * flip, ne.ty * flip, state.elapsedSeconds);
+    const lookahead = hw * ROAD_FOLLOW_LOOKAHEAD_MULT;
+    const tangent = here ? here.tangent : Math.atan2(ne.ty * flip, ne.tx * flip);
+    const lx = here ? here.lx : ne.px;
+    const ly = here ? here.ly : ne.py;
+    // Curvature of the line under you: tangent here vs one lookahead further on.
+    let feedForward = 0;
+    const ahead = this.lineAt(lx + Math.cos(tangent) * lookahead, ly + Math.sin(tangent) * lookahead, Math.cos(tangent), Math.sin(tangent), state.elapsedSeconds);
+    if (ahead) feedForward = (angleDifference(ahead.tangent, tangent) / lookahead) * Math.max(0, rover.speed);
+    // Cross-track error from the SMOOTHED line (left of travel +).
+    const cross = (rover.x - lx) * -Math.sin(tangent) + (rover.y - ly) * Math.cos(tangent);
+    const desired = tangent - Math.atan2(cross, lookahead);
+    const closeFrac = 1 - Math.exp((-TRACK_RATE * dt) / 0.18);
+    return feedForward + (angleDifference(desired, rover.heading) * closeFrac) / Math.max(1e-3, dt);
+  }
+
+  // Capture test: on cured road AND driving along it (not crossing). Getting ON
+  // the lock needs both; staying on it doesn't need the alignment (see update).
   isOnLaidRoad(state: ContinuousWorldState): boolean {
     const ne = this.nearestCuredSeg(state.rover, state.elapsedSeconds);
     if (!ne || ne.dist >= this.halfWidth()) return false;
     return Math.abs(ne.tx * Math.cos(state.rover.heading) + ne.ty * Math.sin(state.rover.heading)) >= ROAD_ALIGN_MIN;
   }
 
-  updateBoost(deltaSeconds: number, onRoad: boolean): void {
-    const rampSeconds = Math.max(0.05, this.config.spinUpSeconds);
-    const rate = onRoad ? deltaSeconds / rampSeconds : -deltaSeconds / ROAD_BOOST_DECAY_SECONDS;
-    this.boost = Math.max(0, Math.min(ROAD_SLIDE_MAX, this.boost + rate));
+  // One step of the rail, per frame, after the sim has moved the rover.
+  //
+  // LOCK. You get on by driving along cured road. You come off only by steering
+  // hard (|steer| >= ROAD_CARRY_BREAK_STEER -- the same break the sim uses), by
+  // leaving the road's width, or at the end of the road. Nothing else lets go:
+  // there is no hidden alignment release, so a corner never drops you just
+  // because your heading lagged.
+  //
+  // SPEED (boost = fraction of the way from laying speed to top speed). On the
+  // lock you wind up at `railAccel` toward top speed, but never faster than the
+  // road ahead allows: for each bend the rail brakes in time to take it at
+  // sqrt(railGrip / curvature), and it brings you back down to laying speed by
+  // the time the road runs out. `cornerBraking` blends that from 0 (no
+  // braking: overcook a bend and you're flung off) to 1 (the rail never lets
+  // you exceed grip). Off the lock, you fall back to laying speed quickly.
+  update(state: ContinuousWorldState, steer: number, dt: number, active = true): void {
+    const lay = state.tuning.fabricatingSpeed;
+    const top = Math.max(lay, state.tuning.railSpeed);
+    const span = Math.max(1, top - lay);
+    // --- lock ---
+    if (this.releaseTimer > 0) this.releaseTimer -= dt;
+    if (!active || Math.abs(steer) >= ROAD_CARRY_BREAK_STEER) {
+      if (this.locked) this.releaseTimer = LOCK_RELEASE_SECONDS;
+      this.locked = false;
+    } else if (this.locked) {
+      const ne = this.nearestCuredSeg(state.rover, state.elapsedSeconds);
+      if (!ne || ne.dist >= this.halfWidth() * LOCK_HOLD_WIDTH) this.locked = false;
+    } else if (this.releaseTimer <= 0 && this.isOnLaidRoad(state)) {
+      this.locked = true;
+      this.cornerTimer = 0; // read the road ahead immediately
+    }
+    // --- speed ---
+    let v = lay + span * this.boost;
+    if (this.locked) {
+      this.cornerTimer -= dt;
+      if (this.cornerTimer <= 0) {
+        this.cornerLimit = this.cornerSpeedLimit(state, lay, top);
+        this.cornerTimer = CORNER_PROBE_INTERVAL;
+      }
+      const braking = Math.max(0, Math.min(1, this.config.cornerBraking));
+      const target = top + (Math.min(top, this.cornerLimit) - top) * braking;
+      const accel = Math.max(1, this.config.railAccel);
+      v = v < target ? Math.min(target, v + accel * dt) : Math.max(target, v - accel * RAIL_BRAKE_MULT * dt);
+    } else {
+      v = Math.max(lay, v - (span * dt) / ROAD_BOOST_DECAY_SECONDS);
+    }
+    this.boost = Math.max(0, Math.min(ROAD_SLIDE_MAX, (v - lay) / span));
+  }
+
+  // The fastest speed the road ahead allows right now. Walks forward along the
+  // smoothed line from the rover; at each bend, the speed you can take it at is
+  // sqrt(grip / curvature), and from here you can still brake down to it if
+  // you're under sqrt(v_bend^2 + 2 * decel * distance). The end of the road
+  // counts as a "bend" you must reach at laying speed.
+  private cornerSpeedLimit(state: ContinuousWorldState, lay: number, top: number): number {
+    const grip = Math.max(1, state.tuning.railGrip) * CORNER_GRIP_RESERVE;
+    const decel = Math.max(1, this.config.railAccel) * RAIL_BRAKE_MULT * RAIL_BRAKE_PLAN;
+    const step = this.halfWidth() * CORNER_PROBE_STEP;
+    const window = this.halfWidth() * CORNER_PROBE_WINDOW;
+    const maxDist = Math.min(CORNER_PROBE_MAX, (top * top - lay * lay) / (2 * decel) + step * 2);
+    let px = state.rover.x;
+    let py = state.rover.y;
+    let rx = Math.cos(state.rover.heading);
+    let ry = Math.sin(state.rover.heading);
+    let prev: number | null = null;
+    let limit = Infinity;
+    for (let s = 0; s <= maxDist; s += step) {
+      const f = this.lineAt(px, py, rx, ry, state.elapsedSeconds, window);
+      if (!f) {
+        limit = Math.min(limit, Math.sqrt(lay * lay + 2 * decel * Math.max(0, s - step)));
+        break;
+      }
+      if (prev !== null) {
+        const kappa = Math.abs(angleDifference(f.tangent, prev)) / step;
+        if (kappa > 1e-5) {
+          const vBend = Math.sqrt(grip / kappa);
+          limit = Math.min(limit, Math.sqrt(vBend * vBend + 2 * decel * Math.max(0, s - step)));
+        }
+      }
+      prev = f.tangent;
+      rx = Math.cos(f.tangent);
+      ry = Math.sin(f.tangent);
+      // Snap SIDEWAYS onto the line's smoothed centre (so the walk stays on the
+      // line through bends), but always advance a full step along it -- the
+      // centre lags behind near the road's end, and stepping from it would stall
+      // the walk short of the end instead of finding it.
+      const lat = (f.lx - px) * -ry + (f.ly - py) * rx;
+      px += rx * step - ry * lat;
+      py += ry * step + rx * lat;
+    }
+    return limit;
   }
   updateCharge(deltaSeconds: number, atTopSpeed: boolean): void {
     this.charge = atTopSpeed ? Math.min(this.config.slurpChargeSeconds + 1, this.charge + deltaSeconds) : 0;
