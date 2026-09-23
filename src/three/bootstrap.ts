@@ -177,19 +177,20 @@ const DAY_COLOR = new THREE.Color(0xbfd0ff); // cold high-sun white
 const DUSK_COLOR = new THREE.Color(0xff9a54); // low-sun amber
 const AMBIENT_DAY = new THREE.Color(0x2a3550);
 const AMBIENT_DUSK = new THREE.Color(0x1a1526);
-// The sun is the ground's main light now, so it has to be strong enough to
-// read against the emissive fill below: lit ground visibly brighter, shadowed
-// ground visibly darker. sunState() gives a 0..1-ish curve; this scales it.
+// sunState() gives a 0..1-ish intensity curve; this scales it so sunlight reads
+// on the dark painted ground (see the ground material below).
 const SUN_GAIN = 3;
-// Emissive fill on the ground: the painted texture glowing at this fraction on
-// its own, so the neon road/seams stay readable in shadow and after sunset.
-// The rest of the ground's brightness comes from the sun. It dims and warms
-// toward dusk in step with the sun and ambient lights.
-const GROUND_FILL = 0.85;
-const GROUND_DAY_TINT = new THREE.Color(0xffffff);
-const GROUND_DUSK_TINT = new THREE.Color(0x8a5a42);
-const SKY_DAY = new THREE.Color(0x03040a);
-const SKY_DUSK = new THREE.Color(0x1c0f0a);
+// How the moon surface answers light -- shared by the playfield AND the vista
+// skirt, so they always match and the arena's edge never shows (a tint or
+// material on one but not the other is exactly what draws that seam):
+//   - SURFACE_FILL: the painted surface glows at this fraction on its own. It's
+//     the floor -- what's left in shadow and after sunset -- and keeps the neon
+//     road/seams readable in the dark.
+//   - SURFACE_SUN: how strongly the SAME painted surface takes sunlight on top.
+// Sunlit ground is the original look lifted; shadowed ground dips below it.
+// The dark moon, painted craters and mare stay; the sun rides on top.
+const SURFACE_FILL = 0.75;
+const SURFACE_SUN = 2;
 let paintedSunBearing = START_BEARING; // bearing the ground canvas was painted at
 
 // t = 0 at first light, 1 at sunset.
@@ -207,11 +208,8 @@ function updateSun(t: number): void {
   sun.intensity = sky.intensity * SUN_GAIN;
   ambient.color.copy(AMBIENT_DAY).lerp(AMBIENT_DUSK, sky.dusk);
   ambient.intensity = sky.ambientIntensity;
-  // The ground's emissive fill dims and warms toward dusk too, so the whole
-  // field darkens as the sun drops, not just the sunlit part.
-  groundMat.emissive.copy(GROUND_DAY_TINT).lerp(GROUND_DUSK_TINT, sky.dusk);
-  if (scene.background instanceof THREE.Color) scene.background.copy(SKY_DAY).lerp(SKY_DUSK, sky.dusk);
-  if (scene.fog instanceof THREE.Fog) scene.fog.color.copy(SKY_DAY).lerp(SKY_DUSK, sky.dusk);
+  // No sky tint: the moon has no atmosphere, so the sky stays black all day.
+  // The day/dusk read comes from the sun itself on the ground and skirt alike.
   // The painted crater/rille shading is lit from the same bearing. Repaint only
   // when it has moved enough to see (the canvas upload is the expensive part).
   if (Math.abs(sky.bearing - paintedSunBearing) > 0.12) {
@@ -262,21 +260,16 @@ rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
 const roadTexture = new THREE.CanvasTexture(roadCanvas);
 roadTexture.colorSpace = THREE.SRGBColorSpace;
 
-// The ground is LIT by the sun and receives its shadows directly. It used to be
-// unlit with a ShadowMaterial catcher on top, but the painted ground is near-
-// black (#0e1520), so nothing got brighter in sunlight and a 50% shadow on it
-// was invisible. Now it's two layers:
-//   - diffuse: grey regolith (REGOLITH) that the sun actually lights. Sunlit
-//     ground is grey, shadowed ground is black, and the displaced relief shades
-//     itself -- all moving with the sun.
-//   - emissive: the painted canvas (road, seams, crater rims) glowing on its
-//     own at GROUND_FILL, so the neon stays readable in shadow and after sunset.
-const REGOLITH = 0x6b6f78;
+// The ground is the painted canvas, lit by the sun, receiving its shadows
+// directly (see SURFACE_FILL / SURFACE_SUN). The same painted texture is both
+// the emissive floor and the diffuse the sun lights, so the craters, mare and
+// road keep their look -- the sun only lifts what it hits and the shadows dip.
 const groundMat = new THREE.MeshLambertMaterial({
-  color: REGOLITH,
+  map: roadTexture,
+  color: new THREE.Color().setScalar(SURFACE_SUN),
   emissiveMap: roadTexture,
   emissive: 0xffffff,
-  emissiveIntensity: GROUND_FILL
+  emissiveIntensity: SURFACE_FILL
 });
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(W, H), groundMat);
 ground.rotation.x = -Math.PI / 2; // lie flat on XZ
@@ -292,10 +285,16 @@ scene.add(ground);
 // so the playfield stays clear while its edge melts into the horizon.
 const skirt = new THREE.Mesh(
   new THREE.RingGeometry(500, 12000, 96),
-  // The SAME tone as the playfield ground, so it reads as one continuous surface
-  // stretching to the horizon -- not a separate island. The road/craters make the
-  // playfield visually distinct; the skirt just keeps the ground from ending.
-  new THREE.MeshBasicMaterial({ color: 0x0e1520, side: THREE.DoubleSide })
+  // The SAME surface as the playfield ground -- same base tone AND the same
+  // response to the sun (SURFACE_FILL / SURFACE_SUN on GROUND_BASE) -- so it
+  // reads as one continuous surface to the horizon at every time of day, not a
+  // separate island. If the ground's lighting changes, this must change with it.
+  new THREE.MeshLambertMaterial({
+    color: new THREE.Color(GROUND_BASE).multiplyScalar(SURFACE_SUN),
+    emissive: new THREE.Color(GROUND_BASE),
+    emissiveIntensity: SURFACE_FILL,
+    side: THREE.DoubleSide
+  })
 );
 skirt.rotation.x = -Math.PI / 2;
 skirt.position.y = -0.3; // just under the play ground; its inner edge underlaps so there's no seam
