@@ -165,7 +165,9 @@ sun.shadow.bias = -0.002;
 scene.add(sun);
 scene.add(sun.target);
 const rim = new THREE.DirectionalLight(0x7fe9ff, 0.9);
-rim.position.set(220, 240, 420);
+// Low, from behind: it edges the rover and drone, but stays near-grazing on the
+// ground so its constant light doesn't wash out the day/night change there.
+rim.position.set(220, 60, 420);
 scene.add(rim);
 
 // --- Sun / time of day -------------------------------------------------------
@@ -183,15 +185,40 @@ const SUN_GAIN = 3;
 // How the moon surface answers light -- shared by the playfield AND the vista
 // skirt, so they always match and the arena's edge never shows (a tint or
 // material on one but not the other is exactly what draws that seam):
-//   - SURFACE_FILL: the painted surface glows at this fraction on its own. It's
-//     the floor -- what's left in shadow and after sunset -- and keeps the neon
-//     road/seams readable in the dark.
-//   - SURFACE_SUN: how strongly the SAME painted surface takes sunlight on top.
-// Sunlit ground is the original look lifted; shadowed ground dips below it.
-// The dark moon, painted craters and mare stay; the sun rides on top.
-const SURFACE_FILL = 0.75;
-const SURFACE_SUN = 2;
+//   - SURFACE_FILL: the painted surface glows at this fraction on its own. At 1
+//     that's exactly the original dark-moon look: what you see in shadow and
+//     after sunset, and the road's steady glow.
+//   - terrainCfg.daylight ("Daylight strength"): how strongly the sun lights the
+//     terrain on top of that. Bright at first light, fading to the dark moon by
+//     sunset -- the ground itself tells the time.
+const SURFACE_FILL = 1;
 let paintedSunBearing = START_BEARING; // bearing the ground canvas was painted at
+
+// The sun itself, in the sky: a glowing disk that sits along the light's real
+// direction and sinks toward the horizon as the day drains, warming as it goes.
+// Kept at a fixed far distance from the camera so it behaves like it's at
+// infinity (no parallax as you drive). Visible whenever the horizon is in view.
+const SUN_DISK_DIST = 3200;
+const sunDisk = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g2 = c.getContext('2d') as CanvasRenderingContext2D;
+  const grad = g2.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.18, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.3, 'rgba(255,255,255,0.35)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g2.fillStyle = grad;
+  g2.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({ map: tex, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, transparent: true });
+  const s = new THREE.Sprite(mat);
+  s.scale.setScalar(420);
+  return s;
+})();
+scene.add(sunDisk);
+const sunDir = new THREE.Vector3();
 
 // t = 0 at first light, 1 at sunset.
 function updateSun(t: number): void {
@@ -206,6 +233,11 @@ function updateSun(t: number): void {
   // Dusk: warmer and dimmer, with the ambient falling faster so the dark closes in.
   sun.color.copy(DAY_COLOR).lerp(DUSK_COLOR, sky.dusk);
   sun.intensity = sky.intensity * SUN_GAIN;
+  // The visible sun: along the light's direction, far from the camera, warming
+  // and dimming with the day.
+  sunDir.set(sky.offset.x, sky.offset.y, sky.offset.z).normalize();
+  sunDisk.position.copy(camera.position).addScaledVector(sunDir, SUN_DISK_DIST);
+  sunDisk.material.color.copy(DAY_COLOR).lerp(DUSK_COLOR, sky.dusk).multiplyScalar(0.6 + 0.8 * sky.intensity);
   ambient.color.copy(AMBIENT_DAY).lerp(AMBIENT_DUSK, sky.dusk);
   ambient.intensity = sky.ambientIntensity;
   // No sky tint: the moon has no atmosphere, so the sky stays black all day.
@@ -259,14 +291,30 @@ rctx.fillStyle = GROUND_BASE;
 rctx.fillRect(0, 0, roadCanvas.width, roadCanvas.height);
 const roadTexture = new THREE.CanvasTexture(roadCanvas);
 roadTexture.colorSpace = THREE.SRGBColorSpace;
+// Terrain-only canvas: the same base + craters/mare/rilles, but NO road. This
+// is what the sun lights, so daylight can be strong enough to read without ever
+// touching the road's glow. Half the road canvas's density -- it's broad terrain
+// shading, and it's only repainted with the terrain (world build, sun bearing).
+const TERRAIN_PX_SCALE = 0.5;
+const terrainCanvas = document.createElement('canvas');
+terrainCanvas.width = Math.max(1, Math.round(W * paintPX * TERRAIN_PX_SCALE));
+terrainCanvas.height = Math.max(1, Math.round(H * paintPX * TERRAIN_PX_SCALE));
+const tctx = terrainCanvas.getContext('2d') as CanvasRenderingContext2D;
+tctx.fillStyle = GROUND_BASE;
+tctx.fillRect(0, 0, terrainCanvas.width, terrainCanvas.height);
+const terrainTexture = new THREE.CanvasTexture(terrainCanvas);
+terrainTexture.colorSpace = THREE.SRGBColorSpace;
 
-// The ground is the painted canvas, lit by the sun, receiving its shadows
-// directly (see SURFACE_FILL / SURFACE_SUN). The same painted texture is both
-// the emissive floor and the diffuse the sun lights, so the craters, mare and
-// road keep their look -- the sun only lifts what it hits and the shadows dip.
+// The ground is two layers of the same painted world (see SURFACE_FILL):
+//   - emissive: the full road canvas (terrain + road) glowing at SURFACE_FILL.
+//     This is the original moon look, and the road's steady glow.
+//   - diffuse: the terrain-only canvas, lit by the sun at the Daylight strength.
+//     Sunlight brightens the craters/mare and their shadows fall on them, but it
+//     never reaches the road, so the road can't blow out at midday.
+// Receives shadows directly.
 const groundMat = new THREE.MeshLambertMaterial({
-  map: roadTexture,
-  color: new THREE.Color().setScalar(SURFACE_SUN),
+  map: terrainTexture,
+  color: new THREE.Color().setScalar(terrainCfg.daylight),
   emissiveMap: roadTexture,
   emissive: 0xffffff,
   emissiveIntensity: SURFACE_FILL
@@ -286,16 +334,17 @@ scene.add(ground);
 const skirt = new THREE.Mesh(
   new THREE.RingGeometry(500, 12000, 96),
   // The SAME surface as the playfield ground -- same base tone AND the same
-  // response to the sun (SURFACE_FILL / SURFACE_SUN on GROUND_BASE) -- so it
+  // response to the sun (SURFACE_FILL + Daylight strength on GROUND_BASE) -- so it
   // reads as one continuous surface to the horizon at every time of day, not a
   // separate island. If the ground's lighting changes, this must change with it.
   new THREE.MeshLambertMaterial({
-    color: new THREE.Color(GROUND_BASE).multiplyScalar(SURFACE_SUN),
+    color: new THREE.Color(GROUND_BASE).multiplyScalar(terrainCfg.daylight),
     emissive: new THREE.Color(GROUND_BASE),
     emissiveIntensity: SURFACE_FILL,
     side: THREE.DoubleSide
   })
 );
+const skirtMat = skirt.material as THREE.MeshLambertMaterial;
 skirt.rotation.x = -Math.PI / 2;
 skirt.position.y = -0.3; // just under the play ground; its inner edge underlaps so there's no seam
 scene.add(skirt);
@@ -426,70 +475,70 @@ function resolveCraterCollision(): boolean {
   return pushOutOfCraters(state.rover, terrainFeatures.craters);
 }
 
-// Paint the terrain into the ground canvas (called by repaintCanvas before the
-// road, so the road always sits on top).
-function paintTerrain(feat: TerrainFeatures): void {
+// Paint the terrain features into a canvas: the road canvas (under the road, as
+// the emissive layer) and the terrain-only canvas (what the sun lights).
+function paintTerrain(feat: TerrainFeatures, c2d: CanvasRenderingContext2D = rctx, px: number = paintPX): void {
   // Broad mare (dark) / highland (light) value patches to break up the flat fill.
   for (const b of feat.blotches) {
-    const g = rctx.createRadialGradient(b.x * paintPX, b.y * paintPX, 0, b.x * paintPX, b.y * paintPX, b.r * paintPX);
+    const g = c2d.createRadialGradient(b.x * px, b.y * px, 0, b.x * px, b.y * px, b.r * px);
     const rgb = b.light > 0 ? '38,50,72' : '5,8,15';
     g.addColorStop(0, `rgba(${rgb},${0.06 + Math.abs(b.light) * 0.16})`);
     g.addColorStop(1, `rgba(${rgb},0)`);
-    rctx.fillStyle = g;
-    rctx.beginPath();
-    rctx.arc(b.x * paintPX, b.y * paintPX, b.r * paintPX, 0, Math.PI * 2);
-    rctx.fill();
+    c2d.fillStyle = g;
+    c2d.beginPath();
+    c2d.arc(b.x * px, b.y * px, b.r * px, 0, Math.PI * 2);
+    c2d.fill();
   }
   // Rilles: thin dark meandering cracks.
-  rctx.lineCap = 'round';
-  rctx.lineJoin = 'round';
+  c2d.lineCap = 'round';
+  c2d.lineJoin = 'round';
   for (const pts of feat.rilles) {
-    rctx.strokeStyle = 'rgba(3,5,10,0.75)';
-    rctx.lineWidth = 2.4 * paintPX;
-    rctx.beginPath();
-    rctx.moveTo(pts[0].x * paintPX, pts[0].y * paintPX);
-    for (let i = 1; i < pts.length; i += 1) rctx.lineTo(pts[i].x * paintPX, pts[i].y * paintPX);
-    rctx.stroke();
+    c2d.strokeStyle = 'rgba(3,5,10,0.75)';
+    c2d.lineWidth = 2.4 * px;
+    c2d.beginPath();
+    c2d.moveTo(pts[0].x * px, pts[0].y * px);
+    for (let i = 1; i < pts.length; i += 1) c2d.lineTo(pts[i].x * px, pts[i].y * px);
+    c2d.stroke();
   }
   // Craters: a darker bowl, a shadow crescent on the far side, a faint lit rim
   // on the sun side -- enough shading to read as a depression on flat ground.
   for (const c of feat.craters) {
-    const cx = c.x * paintPX;
-    const cy = c.y * paintPX;
-    const rp = c.r * paintPX;
-    const bowl = rctx.createRadialGradient(cx, cy, rp * 0.1, cx, cy, rp);
+    const cx = c.x * px;
+    const cy = c.y * px;
+    const rp = c.r * px;
+    const bowl = c2d.createRadialGradient(cx, cy, rp * 0.1, cx, cy, rp);
     bowl.addColorStop(0, 'rgba(4,7,13,0.62)');
     bowl.addColorStop(0.7, 'rgba(7,11,19,0.34)');
     bowl.addColorStop(1, 'rgba(20,28,42,0)');
-    rctx.fillStyle = bowl;
-    rctx.beginPath();
-    rctx.arc(cx, cy, rp, 0, Math.PI * 2);
-    rctx.fill();
+    c2d.fillStyle = bowl;
+    c2d.beginPath();
+    c2d.arc(cx, cy, rp, 0, Math.PI * 2);
+    c2d.fill();
     // shadow crescent (far side, away from sun)
-    rctx.lineWidth = rp * 0.2;
-    rctx.strokeStyle = 'rgba(2,4,8,0.7)';
-    rctx.beginPath();
-    rctx.arc(cx, cy, rp * 0.86, feat.sun + 0.5, feat.sun + Math.PI * 2 - 0.5);
-    rctx.stroke();
+    c2d.lineWidth = rp * 0.2;
+    c2d.strokeStyle = 'rgba(2,4,8,0.7)';
+    c2d.beginPath();
+    c2d.arc(cx, cy, rp * 0.86, feat.sun + 0.5, feat.sun + Math.PI * 2 - 0.5);
+    c2d.stroke();
     // lit rim (sun side) -- faint, so a crater reads as a shallow dent in the
     // ground and never as a ring-shaped marker like HOME.
-    rctx.lineWidth = rp * 0.1;
-    rctx.strokeStyle = 'rgba(90,105,130,0.22)';
-    rctx.beginPath();
-    rctx.arc(cx, cy, rp * 0.95, feat.sun - 0.9, feat.sun + 0.9);
-    rctx.stroke();
+    c2d.lineWidth = rp * 0.1;
+    c2d.strokeStyle = 'rgba(90,105,130,0.22)';
+    c2d.beginPath();
+    c2d.arc(cx, cy, rp * 0.95, feat.sun - 0.9, feat.sun + 0.9);
+    c2d.stroke();
     if (c.block) {
       // A blocking crater reads as a WALL: a full raised rim all the way round
       // (brighter on the sun side), so you can see where you can't drive.
-      rctx.lineWidth = Math.max(3 * paintPX, rp * 0.09);
-      rctx.strokeStyle = 'rgba(130,145,172,0.55)';
-      rctx.beginPath();
-      rctx.arc(cx, cy, rp * 0.9, 0, Math.PI * 2);
-      rctx.stroke();
-      rctx.strokeStyle = 'rgba(190,205,230,0.75)';
-      rctx.beginPath();
-      rctx.arc(cx, cy, rp * 0.9, feat.sun - 1.3, feat.sun + 1.3);
-      rctx.stroke();
+      c2d.lineWidth = Math.max(3 * px, rp * 0.09);
+      c2d.strokeStyle = 'rgba(130,145,172,0.55)';
+      c2d.beginPath();
+      c2d.arc(cx, cy, rp * 0.9, 0, Math.PI * 2);
+      c2d.stroke();
+      c2d.strokeStyle = 'rgba(190,205,230,0.75)';
+      c2d.beginPath();
+      c2d.arc(cx, cy, rp * 0.9, feat.sun - 1.3, feat.sun + 1.3);
+      c2d.stroke();
     }
   }
 }
@@ -535,9 +584,14 @@ function applyRelief(feat: TerrainFeatures): void {
 // smooth ribbon with no beading; the raster composite means overlaps (loops,
 // re-drives) never flash. One teal pass on the lunar ground; the lane-gap rule
 // keeps separate lanes apart, so the dark ground between them is the channel.
-const ROAD_TEAL = '#37f2d8'; // neon teal so bloom picks it up
+const ROAD_TEAL: [number, number, number] = [0x37, 0xf2, 0xd8]; // neon teal so bloom picks it up
+// The road's paint colour at the current Road brightness (0..1 of full neon).
+function roadPaint(): string {
+  const k = Math.max(0, Math.min(1, terrainCfg.roadBrightness));
+  return `rgb(${ROAD_TEAL.map((c) => Math.round(c * k)).join(',')})`;
+}
 function strokeRoadSeg(ax: number, ay: number, bx: number, by: number): void {
-  rctx.strokeStyle = ROAD_TEAL;
+  rctx.strokeStyle = roadPaint();
   rctx.lineWidth = road.halfWidth() * 2 * paintPX;
   rctx.lineCap = 'round';
   rctx.lineJoin = 'round';
@@ -655,6 +709,11 @@ function repaintCanvas(edges: RoadEdge[]): void {
   for (const e of edges) paintEdge(e);
   roadTexture.needsUpdate = true; // a full repaint is rare (world build / emergency) -> upload now
   roadDirty = false;
+  // The terrain-only layer the sun lights: same base + features, no road.
+  tctx.fillStyle = GROUND_BASE;
+  tctx.fillRect(0, 0, terrainCanvas.width, terrainCanvas.height);
+  paintTerrain(terrainFeatures, tctx, paintPX * TERRAIN_PX_SCALE);
+  terrainTexture.needsUpdate = true;
 }
 
 // Install a freshly built world (start of day, next day, or new game): adopt the
@@ -677,6 +736,12 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
   if (roadCanvas.width !== cw || roadCanvas.height !== ch) {
     roadCanvas.width = cw;
     roadCanvas.height = ch;
+  }
+  const tw = Math.max(1, Math.round(cw * TERRAIN_PX_SCALE));
+  const th = Math.max(1, Math.round(ch * TERRAIN_PX_SCALE));
+  if (terrainCanvas.width !== tw || terrainCanvas.height !== th) {
+    terrainCanvas.width = tw;
+    terrainCanvas.height = th;
   }
   fitVista(); // resize the horizon skirt + fog fade to this world
   paintedSunBearing = START_BEARING; // a new day starts at first light
@@ -1208,6 +1273,14 @@ function applyTerrain(): void {
   applyRelief(terrainFeatures);
   repaintCanvas(road.edgesForPaint());
 }
+// Light-knob change: road brightness needs the road re-stroked; daylight just
+// retunes how strongly the terrain (and the matching skirt) take the sun.
+function applyLook(): void {
+  const d = Math.max(0, terrainCfg.daylight);
+  groundMat.color.setScalar(d);
+  skirtMat.color.set(GROUND_BASE).multiplyScalar(d);
+  repaintCanvas(road.edgesForPaint());
+}
 createPanel({
   campaign,
   road,
@@ -1218,6 +1291,7 @@ createPanel({
   rebuildDay: () => applyWorld(campaign.buildWorld()),
   newGame: () => { campaign.newGame(); applyWorld(campaign.buildWorld()); },
   applyTerrain,
+  applyLook,
   save: saveConfig
 });
 requestAnimationFrame(frame);

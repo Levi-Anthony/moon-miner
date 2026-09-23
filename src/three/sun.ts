@@ -15,7 +15,7 @@ const SWEEP = 1.1; // radians of bearing travelled over a full day
 export interface SunState {
   elev: number;
   bearing: number;
-  dusk: number; // 0 at first light, 1 at sunset (eased, so dusk arrives late and fast)
+  dusk: number; // 0 at first light, 1 at sunset (eased: warmth starts before halfway, deepens into sunset)
   intensity: number;
   ambientIntensity: number;
   /** Unit direction from the ground toward the sun, scaled to SUN_DIST. */
@@ -27,13 +27,16 @@ export function sunState(t: number): SunState {
   const k = Math.max(0, Math.min(1, t));
   const elev = START_ELEV + (END_ELEV - START_ELEV) * k;
   const bearing = START_BEARING + SWEEP * k;
-  const dusk = Math.pow(k, 1.6);
+  // Warmth comes on a little ahead of halfway and deepens into sunset.
+  const dusk = Math.pow(k, 1.3);
   return {
     elev,
     bearing,
     dusk,
-    intensity: 0.7 - 0.32 * dusk,
-    ambientIntensity: 0.5 - 0.22 * dusk,
+    // Light falls STEADILY across the whole day (not held flat until the end),
+    // so the time reads at any moment you glance at the ground, not just at dusk.
+    intensity: 0.85 - 0.7 * k,
+    ambientIntensity: 0.5 - 0.3 * k,
     offset: {
       x: Math.cos(bearing) * Math.cos(elev) * SUN_DIST,
       y: Math.sin(elev) * SUN_DIST,
