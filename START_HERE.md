@@ -1,5 +1,7 @@
 # Start Here
 
+> **Status note (2026-09-23):** The game now runs on Three.js; Phaser was retired in PR #10. The URL flags below (`?mobile=1`, `?debug=1`, `?view=chase`) have no effect in the current build, and the test count has changed (134 as of 2026-09-23). The folder path `/Users/prodadmin/...` is one machine's path; use wherever you cloned the repo (Linear DEV-8). For current status, read `PROGRESS.md` "Last Verified" and `RECONCILIATION.md`.
+
 This file is the day-one operating manual for Moon Miner. It assumes you are intelligent, but it does not assume you already know command-line, Git, localhost, ports, dev servers, or testing rituals.
 
 Use this when you want to open the project, run the game, test it, or ask an agent for help without guessing.
