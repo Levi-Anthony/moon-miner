@@ -2,6 +2,8 @@
 
 Last updated: 2026-09-16 (SUBSTRATE FLIP: presentation rebuilt in Three.js; Phaser retired)
 
+> **Note (2026-09-23):** PRs #11–#27 (2026-09-17 to 2026-09-22) landed after this file was last updated. They cover world scale, the moon vista, crater walls, no off-road with rail cannibalisation, rail-stock growth, network-persistence modes, the panel redesign, sun and shadows, and the DEV-23 self-play re-cut. §0 still holds but does not cover them. See `RECONCILIATION.md` (Linear DEV-49) for the audit and the list of open items.
+
 This file is the cold-start for a fresh agent: what the game is now, **how we
 work on it and why**, and what we've tried, rejected, and accepted. The blow-by-blow
 decision trail (with the reasons and the rejected options) lives in

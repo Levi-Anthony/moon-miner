@@ -2,16 +2,34 @@
 
 ## Current Reality
 
-- Dev server: `npm run dev` verified on 2026-07-01. Vite printed `http://localhost:5173/`, and `curl -I http://localhost:5173/` returned `HTTP/1.1 200 OK`.
-- Desktop URL pattern: `http://localhost:<printed-port>/`
-- Mobile simulation URL pattern: `http://localhost:<printed-port>/?mobile=1`
-- Debug URL pattern: `http://localhost:<printed-port>/?debug=1`
-- Unit tests: green as of 2026-09-08, 62 tests.
-- Build: green as of 2026-09-08.
-- Audit: green as of 2026-09-08, 0 vulnerabilities, after the lockfile fix in this change.
-- Smoke: green as of 2026-09-08 on `main`; red on the open PR #1 branch, see Known Red.
+The presentation runs on Three.js (`index.html` → `src/three/bootstrap.ts`); Phaser was retired in PR #10 (2026-09-17). See `HANDOFF.md` §0 for the current substrate, and `RECONCILIATION.md` for the 2026-09-23 state-surface audit (Linear DEV-49).
+
+- Desktop URL: `http://localhost:<printed-port>/`. The 3D build reads no URL parameters, so the older `?mobile=1`, `?debug=1` and `?view=` flags have no effect.
+- Unit tests: green as of 2026-09-23 on `main` at `f870f0c`, 134 tests in 13 files.
+- Build: green as of 2026-09-23.
+- Smoke: green as of 2026-09-23. The 3D smoke checks boot, HUD, and one drive through `window.__mm3d`.
+- Audit: **red** as of 2026-09-23. See Known Red.
 
 ## Last Verified
+
+Date: 2026-09-23 04:39 UTC
+
+Branch: `claude/checkpoint-in-progress-work-3ucz16`, identical to `main` at `f870f0c` (Merge PR #27).
+
+Environment: Linux container, Node v22.22.2. Smoke needed `CHROME_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, because Playwright 1.61 expects browser build 1228 and the container ships 1194.
+
+Commands run:
+
+- `npm ci`: exit 0.
+- `npm test`: passed, 134 tests, 13 files.
+- `npm run build`: passed, one 634.74 kB chunk, no size warning.
+- `npm run smoke:continuous`: passed, "SMOKE OK — booted clean, HUD up, rover drove 72 units."
+- `npm run report:last-light`: passed, 5/5 routes won, Crawl Seconds 0.0 on every route.
+- `npm audit`: exit 1, 2 moderate (`@vitest/mocker` / `vitest` <= 4.1.10, GHSA-82fw-gwwq-j7x9).
+
+### Superseded: the 2026-09-08 record
+
+Measured on the Phaser build before the 3D substrate flip.
 
 Date: 2026-09-08
 
@@ -46,11 +64,12 @@ Kept deliberately, because it was wrong in both directions for two months. That 
 
 ## Known Red
 
-Nothing on `main` as of 2026-09-08.
+As of 2026-09-23 on `main` at `f870f0c`:
 
-On other branches:
+- `npm audit` exits 1 on 2 moderate advisories in the dev-only test runner (`vitest` / `@vitest/mocker` <= 4.1.10). `npm audit fix` is available. The audit runs weekly in `audit.yml` and does not gate CI.
+- The last-light report table labels `greedyLatePocketSloppy` "collapses into heavy crawl" while Crawl Seconds reads 0.0; the notes are fixed strings (`getLastLightRouteNote`). The report misleads, although the command exits 0.
 
-- Open PR #1 (`claude/start-over-interview-gyq1z4`) fails `npm run smoke:continuous` with `Expected tactical view mode, got chase.` That branch moved the default camera preset to `chase` while the smoke check still asserts `tactical`. Reproduced twice. Unrelated to the 2026-07-01 timeout.
+Resolved: the 2026-09-08 PR #1 smoke failure (`Expected tactical view mode, got chase.`) no longer applies; that branch has no commits beyond `main`.
 
 Treat any claim that "all checks pass" as incomplete unless it names the date, the branch, and the commit measured.
 

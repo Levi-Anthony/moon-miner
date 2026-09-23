@@ -1,5 +1,7 @@
 # Moon Miner
 
+> **Status note (2026-09-23):** The game now runs on Three.js; Phaser was retired in PR #10. Parts of this README describe the earlier Phaser build: the debug snapshot, the URL flags (`?mobile=1`, `?debug=1`, `?view=`), the Dynamics panel, the smoke coverage, and the 62-test proof paragraph. For the current substrate, read `HANDOFF.md` §0. For verified status, read `PROGRESS.md` "Last Verified" and `RECONCILIATION.md`.
+
 Moon Miner is being reframed from a grid rail puzzle into a short-session live-action extraction game about a spider-armed industrial rover that fabricates temporary nano-field under itself, launches an autonomous reclaim drone, and survives by managing route shape, arm capacity, nanobot flow, mining yield, and sunlight.
 
 Start a cold read with `CONCEPT_REFRAME.md`, then `GAME_DESIGN.md`, then `BETS.md`.
