@@ -22,8 +22,10 @@ export interface TerrainConfig {
   craterSize: number; // scales each crater's radius (1 = current)
   craterSpread: number; // how far craters scatter from map centre (1 = uniform, <1 clustered, >1 pushed to edges)
   craterBlockSize: number; // craters at least this radius are walls you drive around (huge = none block)
+  roadBrightness: number; // 0..1 glow of the laid road; steady all day (the sun never touches it)
+  daylight: number; // how strongly the sun lights the terrain; 0 = no day/night change, higher = brighter mornings
 }
-export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 0.6, craterSize: 1, craterSpread: 1, craterBlockSize: 45 };
+export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 0.6, craterSize: 1, craterSpread: 1, craterBlockSize: 45, roadBrightness: 0.8, daylight: 5 };
 
 export interface PanelCtx {
   campaign: Campaign;
@@ -35,6 +37,7 @@ export interface PanelCtx {
   rebuildDay: () => void;
   newGame: () => void;
   applyTerrain: () => void; // regenerate/redraw the ground for terrain-knob changes
+  applyLook: () => void; // redraw road brightness + daylight without touching terrain
   save: () => void;
 }
 
@@ -245,6 +248,10 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Tether range', min: 20, max: 12000, step: 20, fmt: int, hint: 'How far out from home the drone will reach. It lifts a run off one end of the ribbon whose midpoint is within this radius, and never a middle piece, so the network never splits. Max ≈ whole map.', get: tget('droneTetherRange'), set: tset('droneTetherRange') });
   addRow({ label: 'Aim bias', min: 0, max: 60, step: 0.5, fmt: p2, hint: 'How hard the way you FACE at launch picks which end the drone reclaims. 0 = always the oldest road nearest home (pure cleanup); high = it grabs from whichever end you point toward.', get: tget('reclaimAimBias'), set: tset('reclaimAimBias') });
   addRow({ label: 'Reclaim bite', min: 10, max: 6000, step: 20, fmt: int, hint: 'World units of road one drone flight lifts. Lower = takes a small chunk; higher = reels in more per trip.', get: () => rc.reclaimBite, set: (v) => (rc.reclaimBite = v) });
+
+  section('Light', 'Presentation only. The road glows steadily; daylight lights the terrain and fades toward sunset.');
+  addRow({ label: 'Road brightness', min: 0.1, max: 1, step: 0.05, fmt: p2, hint: 'How bright the laid road glows. Steady all day: the sun never brightens or dims it. 1 = full neon.', get: () => tc.roadBrightness, set: (v) => { tc.roadBrightness = v; ctx.applyLook(); } });
+  addRow({ label: 'Daylight strength', min: 0, max: 12, step: 0.25, fmt: p2, hint: 'How strongly the sun lights the ground. Mornings are brightest; it fades to the dark moon by sunset, so the ground tells you the time. 0 = no day/night change.', get: () => tc.daylight, set: (v) => { tc.daylight = v; ctx.applyLook(); } });
 
   section('Camera', 'Presentation only.');
   addRow({ label: 'Distance', min: 40, max: 2000, step: 10, fmt: int, hint: 'Also: mouse wheel / pinch to zoom.', get: () => cam.dist, set: (v) => (cam.dist = v) });
