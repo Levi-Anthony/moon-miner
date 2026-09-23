@@ -361,10 +361,19 @@ export class RoadModel {
     const ly = wsum > 0 ? cy / wsum : ne.py;
     const cross = (rover.x - lx) * -Math.sin(tangent) + (rover.y - ly) * Math.cos(tangent);
     const desired = tangent - Math.atan2(cross, lookahead);
-    // Same full-lock feel as before (followStrength over ~0.18 rad) but never
-    // more than half the error per frame.
-    const gain = Math.min(this.config.followStrength / 0.18, 0.5 / Math.max(1e-3, dt));
-    return angleDifference(desired, rover.heading) * gain;
+    // Exponential convergence: closes a followStrength-scaled FRACTION of the
+    // heading error each frame, asymptotic to (never reaching or overshooting)
+    // a full same-frame correction. That makes it self-limiting at any frame
+    // rate or any followStrength -- it can never ring -- so unlike the old
+    // linear gain hard-capped at 0.5/dt, there is no followStrength value
+    // above which turning the knob further does nothing. (The old cap saturated
+    // at ~5-6 with the default at 9, so the panel's whole 0-150 "Road lock
+    // strength" range above that was dead: 100 felt identical to 9.) Tuned so
+    // the default still closes ~half the error per frame, matching the old
+    // feel, and keeps getting measurably tighter all the way up the slider --
+    // headroom for a harder level to demand more grip than today's default.
+    const closeFrac = 1 - Math.exp((-this.config.followStrength * dt) / 0.18);
+    return (angleDifference(desired, rover.heading) * closeFrac) / Math.max(1e-3, dt);
   }
 
   isOnLaidRoad(state: ContinuousWorldState): boolean {
