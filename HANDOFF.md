@@ -42,7 +42,7 @@ Drive a nanobot-laying rover across a lunar field before sunset. Driving on new 
 
 1. **Screenshot-verify renders in headless Chromium before pushing.** Use a throwaway Playwright script with `CHROME_PATH=$(ls /opt/pw-browsers/chromium-*/chrome-linux/chrome | head -1)` to drive the game, take a `page.screenshot`, and read the PNG. `docs/audit/2026-09-24/session.mjs` is a working example.
 2. **The headless sim runs slow.** Under SwiftShader, game time advances at roughly ¼–⅙ of wall time. Short probes that "prove" nothing changed are usually a timing artifact. Verify the actual number; don't infer.
-3. **Read live state from `window.__mm3d.getState()`.** The smoke test (`scripts/continuous-smoke.mjs`) depends on it; keep it stable. `scripts/playthrough.mjs` still targets the Phaser hooks and does not run (DEV-55).
+3. **Read live state from `window.__mm3d.getState()`.** The smoke test (`scripts/continuous-smoke.mjs`) depends on it; keep it stable. `scripts/playthrough.mjs` also depends on it: it plays full levels with held keys and reads outcomes from `getState()` and the HUD.
 4. **Pin the feel with distinguishing questions.** When the owner says something is "wrong" or "off", ask sharp multiple-choice questions that separate the candidate causes before changing code.
 5. **Record and propagate every decision, including what was rejected and why.** The owner runs an ECB-first doctrine. For each meaningful change, put the trail in the PR body and commit message, add the PR to the index in `DECISIONS.md`, log an ECB pulse, and comment on the relevant Linear ticket (DEV team, workspace `ecos-ops`, project Moon Miner). If ECB or Linear is unavailable, say so and keep the repo record current for later propagation.
 6. **Commit small and attributed.** Each logical change is its own commit with a descriptive body. Never put a model identifier in repo artifacts.
@@ -82,13 +82,12 @@ Measured 2026-09-24 at `bef3b58` (see `PROGRESS.md` "Last Verified"):
   - `smoke:continuous`: boot, HUD and one drive. Needs `CHROME_PATH` in this container.
   - `report:last-light`: 5/5 routes won.
 - **CI** runs tests, build, smoke and the last-light report on every push to `main` and every PR. `audit.yml` runs `npm audit` weekly on its own, so a new advisory can't turn a code change red.
-- **Not covered:** the smoke test checks far less than the old Phaser smoke did (DEV-53). No harness plays a full level to its end state (DEV-55).
+- **Not covered:** the smoke test checks far less than the old Phaser smoke did (DEV-53). `npm run play:through` plays full levels to their end state but is too slow for CI, so it runs by hand.
 
 ## 5. Open work (Linear, project Moon Miner)
 
 | Ticket | Priority | Issue |
 |---|---|---|
-| DEV-55 | High | `play:through` targets Phaser hooks |
 | DEV-14 | High | Drone timing decision. Recheck after the eraser PRs. |
 | DEV-20 | High | Drone lift topology. Recheck after PRs #38/#39. |
 | DEV-13 | High | Close drift between build and design canon (`GAME_DESIGN.md`, `CONCEPT_REFRAME.md`) |

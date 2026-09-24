@@ -9,7 +9,7 @@ The game runs on Three.js (`index.html` → `src/three/bootstrap.ts`). Phaser wa
 - **Unit tests:** green as of 2026-09-24 on `main` at `bef3b58`, 189 tests in 18 files.
 - **Build:** green. **Audit:** 0 vulnerabilities.
 - **Smoke:** green. It checks boot, HUD and one drive through `window.__mm3d`.
-- **`npm run play:through`:** red. It targets the retired Phaser hooks (DEV-55). See Known Red.
+- **`npm run play:through`:** green since DEV-55 rewired it to `window.__mm3d`. With seed `audit-1` the default policy clears levels 1–3. It is not in CI.
 - The sections from "Last Good Commit" down (Last Good Commit, Next Slice, Completed, Next Bet Recommendations, Next Slices) predate the 3D build. Reconciling them is DEV-7.
 
 ## Last Verified
@@ -87,10 +87,9 @@ Kept deliberately, because it was wrong in both directions for two months. That 
 
 As of 2026-09-24 on `main` at `bef3b58`:
 
-- `npm run play:through` times out waiting for `#moon-miner-continuous-debug-state`, a Phaser-era hook the 3D build doesn't have. CI doesn't run it (DEV-55).
 - The last-light report labels `greedyLatePocketSloppy` "collapses into heavy crawl" while Crawl Seconds reads 0.0. The notes are fixed strings (`getLastLightRouteNote`). The report misleads, although the command exits 0 (DEV-51).
 
-Resolved since 2026-09-23: `npm audit` is clean after PR #29 bumped vitest to 4.1.11.
+Resolved since 2026-09-23: `npm audit` is clean after PR #29 bumped vitest to 4.1.11. `npm run play:through` runs again after DEV-55 (it failed in the 2026-09-24 record above).
 
 Treat any claim that "all checks pass" as incomplete unless it names the date, the branch, and the commit measured.
 

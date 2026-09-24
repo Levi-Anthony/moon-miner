@@ -41,6 +41,7 @@ The default mode is **Levels**: six authored levels, then an endless tail. Each 
 npm run verify          # unit tests + production build
 npm run smoke:continuous  # boots the game in headless Chromium, checks the HUD, drives once
 npm run report:last-light # self-play route table for the Last Light arena
+npm run play:through    # plays full levels through the real input path and tables the results
 npm run verify:audit    # npm audit, on its own
 npm run verify:full     # verify + smoke + audit
 ```
@@ -51,7 +52,7 @@ The latest hand-recorded run, with date, commit and environment, is `PROGRESS.md
 
 Known gaps:
 
-- `npm run play:through` targets hooks from the retired Phaser build and does not run (DEV-55).
+- `npm run play:through` is not in CI. The headless sim runs slower than real time, so each level takes one to three minutes of wall time. Run it by hand after changes to levels, economy or controls. Its options are listed at the top of the script (`--levels`, `--seed`, `--reserve`, `--greed`, `--json`).
 - The smoke test checks boot, HUD and one drive only (DEV-53).
 - Smoke needs `CHROME_PATH` pointing at a Chromium when Playwright's own build isn't installed.
 

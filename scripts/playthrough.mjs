@@ -1,15 +1,24 @@
-// Plays complete runs in the real build, through the real input path, and
+// Plays complete levels in the real build, through the real input path, and
 // reports what actually happened.
 //
 // The self-play routes in src/game/continuousSelfPlay.ts follow scripted
 // waypoints in a headless simulation. Useful, but it cannot answer "is this
-// playable" or "what does a shift campaign do to the seams", because it never
-// touches the browser, the render loop, or the keyboard. This drives the
-// shipped game with held keys and reads the same debug snapshot the player's
-// HUD is drawn from.
+// playable" or "what does a level ask of a player", because it never touches
+// the browser, the render loop, or the keyboard. This drives the shipped 3D
+// game with held keys and reads the same state the HUD is drawn from, through
+// `window.__mm3d` (src/three/bootstrap.ts).
 //
-//   node scripts/playthrough.mjs [--shifts 3] [--arena last-light-return]
-//                                [--mode keys|selfplay] [--campaigns 1] [--json]
+//   node scripts/playthrough.mjs [--levels 3] [--campaigns 1] [--seed <seed>]
+//                                [--reserve 1.6] [--greed 1] [--timeout 480]
+//                                [--json]
+//
+// Each campaign starts from cleared campaign storage (level 1, fresh seed, or
+// --seed), plays a level to its banner, records it, then presses R for the
+// next level (or the retry, if the level was missed).
+//
+// The headless sim runs slower than real time: frames are slow under
+// SwiftShader and the loop caps dt at 0.05 s, so a 45 s sun can take several
+// wall-clock minutes. The small default viewport keeps frames cheap.
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -19,33 +28,38 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
-const SNAPSHOT_ID = 'moon-miner-continuous-debug-state';
-const CARRY_KEY = 'moon-miner-carried-road-v1';
-const ARENA_KEY = 'moon-miner-continuous-arena-v1';
+// Campaign storage owned by src/three/loop.ts. Clearing it starts a new game at
+// level 1; the panel's tuning (mm3d-config-v1) is left alone on purpose, so a
+// run measures whatever the build ships with unless the caller changed it.
+const CAMPAIGN_KEYS = ['mm3d-campaign-v1', 'mm3d-level-v1', 'mm3d-seed-v1'];
+const SEED_KEY = 'mm3d-seed-v1';
 
 function arg(name, fallback) {
   const hit = process.argv.indexOf(`--${name}`);
   return hit === -1 ? fallback : process.argv[hit + 1];
 }
-const SHIFTS = Number(arg('shifts', 3));
+for (const retired of ['arena', 'mode']) {
+  if (process.argv.includes(`--${retired}`)) {
+    console.error(`--${retired} belonged to the Phaser build and has no 3D equivalent; the 3D build plays its level campaign.`);
+    process.exit(2);
+  }
+}
+// --shifts is the pre-3D name for the same count.
+const LEVELS = Number(arg('levels', arg('shifts', 3)));
 const CAMPAIGNS = Number(arg('campaigns', 1));
-const ARENA = arg('arena', 'last-light-return');
-const MODE = arg('mode', 'keys');
+const SEED = arg('seed', undefined);
+const TIMEOUT_SECONDS = Number(arg('timeout', 480));
 const AS_JSON = process.argv.includes('--json');
 // How much light to keep back for the trip home, as a multiple of the
 // estimated return time. Higher turns for home earlier. This is the whole
-// risk dial: the score is all-or-nothing at extraction, so ore mined on a run
-// that misses the deadline counts for exactly nothing.
+// risk dial: ore mined on a run that misses the deadline counts for nothing.
 const RESERVE = Number(arg('reserve', 1.6));
-// How much ore to chase, as a multiple of quota. At 1 the policy banks the
-// moment it has enough and leaves, which is why sweeping RESERVE alone could
-// never produce greed: the reserve only governs a quota not yet met. Above 1
-// the rover keeps working a field that always has more in it, which is the
-// decision the recorded human runs were actually making.
+// How much ore to chase, as a multiple of quota. At 1 the policy heads home
+// the moment it has enough; above 1 it keeps working seams for bonus.
 const GREED = Number(arg('greed', 1));
 
-// Same resolution order as the smoke check: explicit override, system browser,
-// whatever sits in PLAYWRIGHT_BROWSERS_PATH, then Playwright's own install.
+// Same resolution order as before: explicit override, system browser, whatever
+// sits in PLAYWRIGHT_BROWSERS_PATH, then Playwright's own install.
 function findChrome() {
   const candidates = [
     process.env.CHROME_PATH,
@@ -81,25 +95,40 @@ async function openPort() {
   });
 }
 
-const read = (page) =>
-  page.evaluate((id) => {
-    const el = document.getElementById(id);
-    return el ? JSON.parse(el.textContent) : null;
-  }, SNAPSHOT_ID);
+async function waitForHttp(url, ms = 30000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return;
+    } catch {
+      /* not up yet */
+    }
+    await delay(250);
+  }
+  throw new Error('dev server did not come up');
+}
 
 // The whole policy, evaluated in page so it sees the live world rather than a
-// snapshot that is already a frame old.
+// copy that is already a frame old. It also returns the few numbers the
+// harness accumulates between calls.
 const decide = (page) =>
-  page.evaluate(([id, reserve, greed]) => {
-    const el = document.getElementById(id);
-    const snapshot = el ? JSON.parse(el.textContent) : null;
-    if (!snapshot) return null;
-    const state = snapshot.state;
+  page.evaluate(([reserve, greed]) => {
+    const api = window.__mm3d;
+    if (!api) return null;
+    const state = api.getState();
     const rover = state.rover;
     const extraction = state.arena.extraction;
     const quota = extraction?.oreRequired ?? state.targetOre;
     const gap = quota * greed - rover.ore;
     const span = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+    const launch = document.getElementById('launch');
+    const sample = {
+      phase: state.phase,
+      elapsed: state.elapsedSeconds,
+      speedState: state.speedState,
+      nanobots: state.nanobots
+    };
 
     // Leave enough light to get home. Underestimating speed here is safer than
     // overestimating it, because arriving late scores nothing at all.
@@ -107,146 +136,202 @@ const decide = (page) =>
     const headHome = Boolean(extraction) && (gap <= 0 || state.solarSeconds < homeSeconds * reserve + 3);
 
     let target = extraction ?? rover;
+    let seam = null;
     if (!headHome) {
       const live = (state.fertileZones ?? []).filter((zone) => zone.remaining > 0.4);
       if (live.length) {
         // Nearest seam per unit of ore left in it.
         live.sort((a, b) => span(rover, a) / Math.max(a.remaining, 0.1) - span(rover, b) / Math.max(b.remaining, 0.1));
-        target = live[0];
+        seam = live[0];
+        target = seam;
       }
+    }
+
+    // Mining is stop-to-mine: the arms only harvest while the rover is parked
+    // on the seam. So inside the seam's core, let go of everything and wait.
+    if (seam && span(rover, seam) < seam.radius * 0.6) {
+      return { ...sample, steer: null, throttle: false, launch: false, parked: true };
     }
 
     let turn = Math.atan2(target.y - rover.y, target.x - rover.x) - rover.heading;
     while (turn > Math.PI) turn -= 2 * Math.PI;
     while (turn < -Math.PI) turn += 2 * Math.PI;
 
+    // Launch only while moving. Launched after standing still for the eraser
+    // aim delay, the drone erases the road ahead instead of reclaiming.
+    const eraser = /erase/i.test(launch?.textContent ?? '');
+    const canLaunch = Boolean(launch) && !launch.disabled && !eraser && Math.abs(rover.speed) > 20;
+
     return {
-      phase: state.phase,
+      ...sample,
       steer: turn > 0.09 ? 'd' : turn < -0.09 ? 'a' : null,
       // Do not drive hard while pointing the wrong way; turn first.
       throttle: Math.abs(turn) < 1.15,
-      launch: state.drone.status === 'ready' && state.nanobots < 2.2,
-      headHome
+      launch: canLaunch && state.nanobots < 2.2,
+      parked: false
     };
-  }, [SNAPSHOT_ID, RESERVE, GREED]);
+  }, [RESERVE, GREED]);
 
-function summarise(snapshot, loop) {
-  const state = snapshot.state;
-  const zones = state.fertileZones ?? [];
-  const remaining = zones.reduce((total, zone) => total + zone.remaining, 0);
-  return {
-    result: state.phase,
-    ore: Number(state.rover.ore.toFixed(2)),
-    required: state.arena.extraction?.oreRequired ?? state.targetOre,
-    solarLeft: Number(state.solarSeconds.toFixed(2)),
-    elapsed: Number(state.elapsedSeconds.toFixed(2)),
-    seamOreLeft: Number(remaining.toFixed(2)),
-    seamsAlive: zones.filter((zone) => zone.remaining > 0.4).length,
-    seamsTotal: zones.length,
-    lowestNanobots: Number((loop?.lowestNanobots ?? 0).toFixed(2)),
-    droneLaunches: loop?.droneLaunches ?? 0,
-    droneDeliveries: loop?.droneDeliveries ?? 0,
-    crawl: Number((loop?.speedSeconds?.crawl ?? 0).toFixed(1)),
-    fabricating: Number((loop?.speedSeconds?.fabricating ?? 0).toFixed(1)),
-    prepared: Number((loop?.speedSeconds?.prepared ?? 0).toFixed(1)),
-    hitLoop: Boolean(loop?.hitLoop)
-  };
-}
+const readOutcome = (page) =>
+  page.evaluate(() => {
+    const state = window.__mm3d.getState();
+    const zones = state.fertileZones ?? [];
+    const text = (id) => document.getElementById(id)?.textContent?.trim() ?? '';
+    return {
+      level: text('hud-day'),
+      result: state.phase,
+      banner: text('banner-title'),
+      ore: Number(state.rover.ore.toFixed(2)),
+      required: state.arena.extraction?.oreRequired ?? state.targetOre,
+      solarLeft: Number(state.solarSeconds.toFixed(2)),
+      solarWindow: Number(state.solarWindowSeconds.toFixed(2)),
+      elapsed: Number(state.elapsedSeconds.toFixed(2)),
+      seamOreLeft: Number(zones.reduce((total, zone) => total + zone.remaining, 0).toFixed(2)),
+      seamsAlive: zones.filter((zone) => zone.remaining > 0.4).length,
+      seamsTotal: zones.length,
+      message: state.message
+    };
+  });
 
-async function playShift(page, appUrl, shiftIndex) {
-  await page.goto(appUrl);
-  await page.waitForFunction((id) => Boolean(document.getElementById(id)), SNAPSHOT_ID, { timeout: 30000 });
-  await delay(600);
-
-  const opening = await read(page);
-  const carriedIn = (opening.state.fields ?? []).length;
-  const seamsAtDawn = (opening.state.fertileZones ?? []).reduce((total, zone) => total + zone.remaining, 0);
-
-  if (MODE === 'selfplay') {
-    await page.evaluate(() => window.__moonMinerContinuous?.startSelfPlay());
-  }
+async function playLevel(page, campaign, index) {
+  await page.waitForFunction(
+    () => window.__mm3d?.getState().phase === 'playing' && document.getElementById('banner')?.style.display !== 'flex',
+    null,
+    { timeout: 30000 }
+  );
+  // Pressing R swaps the world at once, but the HUD only redraws on the next
+  // frame; read the level label after two frames or it is the previous one.
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  const opening = await page.evaluate(() => ({
+    level: document.getElementById('hud-day')?.textContent?.trim() ?? '',
+    seed: window.localStorage.getItem('mm3d-seed-v1')
+  }));
 
   const held = new Set();
   const hold = async (key, want) => {
-    if (want && !held.has(key)) { await page.keyboard.down(key); held.add(key); }
-    if (!want && held.has(key)) { await page.keyboard.up(key); held.delete(key); }
+    if (want && !held.has(key)) {
+      await page.keyboard.down(key);
+      held.add(key);
+    }
+    if (!want && held.has(key)) {
+      await page.keyboard.up(key);
+      held.delete(key);
+    }
   };
 
-  const deadline = Date.now() + 120000;
-  let phase = 'playing';
-  while (phase === 'playing' && Date.now() < deadline) {
-    if (MODE === 'keys') {
-      const plan = await decide(page);
-      if (!plan) break;
-      phase = plan.phase;
-      if (phase !== 'playing') break;
-      await hold('w', plan.throttle);
-      await hold('a', plan.steer === 'a');
-      await hold('d', plan.steer === 'd');
-      if (plan.launch) await page.keyboard.press('Space');
-    } else {
-      const snapshot = await read(page);
-      phase = snapshot?.state.phase ?? 'playing';
-      if (phase !== 'playing') break;
+  const seconds = { prepared: 0, fabricating: 0, crawl: 0, parked: 0 };
+  let lowestNanobots = Infinity;
+  let launches = 0;
+  let lastElapsed = null;
+  let timedOut = false;
+
+  const deadline = Date.now() + TIMEOUT_SECONDS * 1000;
+  for (;;) {
+    if (Date.now() > deadline) {
+      timedOut = true;
+      break;
+    }
+    const plan = await decide(page);
+    if (!plan || plan.phase !== 'playing') break;
+
+    if (lastElapsed !== null && plan.elapsed > lastElapsed) {
+      const step = plan.elapsed - lastElapsed;
+      seconds[plan.speedState] = (seconds[plan.speedState] ?? 0) + step;
+      if (plan.parked) seconds.parked += step;
+    }
+    lastElapsed = plan.elapsed;
+    lowestNanobots = Math.min(lowestNanobots, plan.nanobots);
+
+    await hold('w', plan.throttle);
+    await hold('a', plan.steer === 'a');
+    await hold('d', plan.steer === 'd');
+    if (plan.launch) {
+      await page.keyboard.press(' ');
+      launches += 1;
     }
     await delay(60);
   }
   for (const key of [...held]) await page.keyboard.up(key);
 
-  const closing = await read(page);
-  const loop = await page.evaluate(() => window.__moonMinerContinuous?.getLoopSummary());
-  // The scene writes the carry on the phase change; give it a beat to land.
-  await delay(400);
-  return { shift: shiftIndex, carriedIn, seamsAtDawn: Number(seamsAtDawn.toFixed(2)), ...summarise(closing, loop) };
+  const outcome = await readOutcome(page);
+  const row = {
+    campaign,
+    run: index,
+    seed: opening.seed,
+    ...outcome,
+    level: opening.level,
+    result: timedOut ? 'timeout' : outcome.result,
+    crawl: Number(seconds.crawl.toFixed(1)),
+    fabricating: Number(seconds.fabricating.toFixed(1)),
+    prepared: Number(seconds.prepared.toFixed(1)),
+    parked: Number(seconds.parked.toFixed(1)),
+    droneLaunches: launches,
+    lowestNanobots: Number((Number.isFinite(lowestNanobots) ? lowestNanobots : 0).toFixed(2))
+  };
+
+  if (!timedOut) {
+    // The scene writes the campaign on the phase change; give it a beat, then
+    // continue (R advances after a clear and retries after a miss).
+    await delay(400);
+    await page.keyboard.press('r');
+  }
+  return { row, timedOut };
 }
 
 const port = await openPort();
-const vite = spawn(process.execPath, [`${PROJECT_ROOT}node_modules/vite/bin/vite.js`, '--port', String(port), '--strictPort'], {
+const vite = spawn(process.execPath, [`${PROJECT_ROOT}node_modules/vite/bin/vite.js`, '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
   cwd: PROJECT_ROOT,
   stdio: 'ignore'
 });
 const appUrl = `http://127.0.0.1:${port}/`;
 const chromePath = findChrome();
-const browser = await chromium.launch({
-  ...(chromePath ? { executablePath: chromePath } : {}),
-  headless: true,
-  args: ['--disable-gpu', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage', '--mute-audio']
-});
 
 const rows = [];
+let browser;
 try {
-  await delay(3500);
+  await waitForHttp(appUrl);
+  browser = await chromium.launch({
+    ...(chromePath ? { executablePath: chromePath } : {}),
+    headless: true,
+    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage', '--mute-audio']
+  });
   for (let campaign = 1; campaign <= CAMPAIGNS; campaign += 1) {
-    const page = await browser.newPage({ viewport: { width: 1040, height: 720 } });
+    const page = await browser.newPage({ viewport: { width: 640, height: 420 } });
     await page.goto(appUrl);
     await page.evaluate(
-      ([carry, arenaKey, arena]) => {
-        window.localStorage.removeItem(carry);
-        window.localStorage.setItem(arenaKey, arena);
+      ([keys, seedKey, seed]) => {
+        for (const key of keys) window.localStorage.removeItem(key);
+        if (seed) window.localStorage.setItem(seedKey, seed);
       },
-      [CARRY_KEY, ARENA_KEY, ARENA]
+      [CAMPAIGN_KEYS, SEED_KEY, SEED ?? null]
     );
-    for (let shift = 1; shift <= SHIFTS; shift += 1) {
-      rows.push({ campaign, ...(await playShift(page, appUrl, shift)) });
+    await page.reload();
+    await page.waitForFunction(() => Boolean(window.__mm3d), null, { timeout: 30000 });
+    for (let run = 1; run <= LEVELS; run += 1) {
+      const { row, timedOut } = await playLevel(page, campaign, run);
+      rows.push(row);
+      if (!AS_JSON) console.error(`campaign ${campaign} run ${run}: ${row.level} ${row.result} (${row.ore}/${row.required} ore, ${row.solarLeft}s sun left)`);
+      if (timedOut) break;
     }
     await page.close();
   }
 } finally {
-  await browser.close();
+  await browser?.close();
   vite.kill();
 }
 
 if (AS_JSON) {
   console.log(JSON.stringify(rows, null, 2));
 } else {
-  console.log(`Playthrough — arena ${ARENA}, mode ${MODE}, reserve ${RESERVE}, greed ${GREED}, ${CAMPAIGNS} campaign(s) x ${SHIFTS} shifts`);
-  console.log(
-    '| camp | shift | carried | seam ore at dawn | result | ore/req | sun left | seams alive | seam ore left | crawl | fab | prep | DL/DD | lowNb |'
-  );
-  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+  console.log(`Playthrough — reserve ${RESERVE}, greed ${GREED}, ${CAMPAIGNS} campaign(s) x ${LEVELS} level run(s)${SEED ? `, seed ${SEED}` : ''}`);
+  console.log('| camp | run | level | result | banner | ore/req | sun left/window | seams alive | seam ore left | crawl | fab | prep | parked | DL | lowNb |');
+  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const row of rows) {
     console.log(
-      `| ${row.campaign} | ${row.shift} | ${row.carriedIn} | ${row.seamsAtDawn} | ${row.result} | ${row.ore}/${row.required} | ${row.solarLeft} | ${row.seamsAlive}/${row.seamsTotal} | ${row.seamOreLeft} | ${row.crawl} | ${row.fabricating} | ${row.prepared} | ${row.droneLaunches}/${row.droneDeliveries} | ${row.lowestNanobots} |`
+      `| ${row.campaign} | ${row.run} | ${row.level} | ${row.result} | ${row.banner || '-'} | ${row.ore}/${row.required} | ${row.solarLeft}/${row.solarWindow} | ${row.seamsAlive}/${row.seamsTotal} | ${row.seamOreLeft} | ${row.crawl} | ${row.fabricating} | ${row.prepared} | ${row.parked} | ${row.droneLaunches} | ${row.lowestNanobots} |`
     );
   }
 }
+// A timed-out level means the harness could not finish it, which is a failure
+// of the run, not a result about the game.
+process.exit(rows.some((row) => row.result === 'timeout') ? 1 : 0);
