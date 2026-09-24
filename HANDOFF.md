@@ -4,7 +4,7 @@ Last updated: 2026-09-24, at `main` `bef3b58` (PR #40). Rewritten by DEV-58 from
 
 This file is the cold start for a fresh agent: what the game is now, how we work on it and why, and where things live. The pre-rewrite handoff (Phaser-era §1–§8, written 2026-09-16) is archived at `docs/archive/HANDOFF_2026-09-16.md`. Keep it for intent, not for current facts.
 
-The decision trail lives in `DECISIONS.md`. Its dated entries end 2026-09-15. PRs #10–#40 are indexed at the end of that file, and each one's reasoning is in its PR body and commit message.
+The decision trail lives in `DECISIONS.md`. Its dated entries end 2026-09-15. PRs #10 onward are indexed at the end of that file, and each one's reasoning is in its PR body and commit message.
 
 ---
 
@@ -48,6 +48,7 @@ Drive a nanobot-laying rover across a lunar field before sunset. Driving on new 
 5. **Record and propagate every decision, including what was rejected and why.** The owner runs an ECB-first doctrine. For each meaningful change, put the trail in the PR body and commit message, add the PR to the index in `DECISIONS.md`, log an ECB pulse, and comment on the relevant Linear ticket (DEV team, workspace `ecos-ops`, project Moon Miner). If ECB or Linear is unavailable, say so and keep the repo record current for later propagation.
 6. **Commit small and attributed.** Each logical change is its own commit with a descriptive body. Never put a model identifier in repo artifacts.
 7. **Tests are a spec, not a gate to game.** A deliberate design pivot may obsolete tests. Retarget them to the new rule; never skip or disable one to go green.
+8. **Always merge after changes (owner rule, 2026-09-24).** Once a change is validated (the local checks pass and CI is green on the PR), merge it to `main` with a merge commit, without waiting to be asked. The owner reviews on the live Pages build, which only deploys from `main`. Nothing sits in a draft PR. Anything that can't be undone (deleting branches, closing others' PRs, publishing outside the repo) still needs the owner's go-ahead.
 
 ## 3. Architecture map
 
