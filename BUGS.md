@@ -10,30 +10,22 @@ Actual:
 Proof:
 ```
 
+The game uses a random seed per new game (`mm3d-seed-v1` in localStorage). Read it from DevTools (`localStorage.getItem('mm3d-seed-v1')`) and put it in the report so the map can be reproduced.
+
+Linear (DEV team, project Moon Miner) is the live tracker. This file lists what is known broken on `main`, with the ticket for each.
+
 ## Known Issues
 
-- Rail graphics connect logically, but they are still prototype vector lines rather than polished track art.
-- Generated action sounds do not yet have a mute/settings control.
-- The first map now teaches reclaim, but it still needs repeated playtest tuning.
+As of 2026-09-24 on `main` at `bef3b58` (audit: `docs/audit/2026-09-24/STATE_AUDIT.md`):
+
+- **`npm run play:through` does not run** (DEV-55). The script waits for `#moon-miner-continuous-debug-state` and `window.__moonMinerContinuous`, hooks from the retired Phaser build. The 3D build exposes `window.__mm3d` instead.
+- **Phone HUD overlap** (DEV-56). At 390×844 the level-intro card covers the LEVEL and BONUS readouts. Proof: `docs/audit/2026-09-24/phone-boot.png`.
+- **Shadow type fallback** (DEV-57). `bootstrap.ts:140` requests `THREE.PCFSoftShadowMap`, which three 0.186 removed; it logs a warning and renders plain PCF shadows.
+- **Last-light report notes ignore the crawl metric** (DEV-51). Notes say "crawl pressure" / "heavy crawl" while Crawl Seconds is 0.0 on every route.
+- **Smoke coverage is narrow** (DEV-53). It checks boot, HUD and one drive; no HUD-overlap, phone, drone or end-of-level checks.
 
 ## Resolved Findings
 
-```text
-Status:
-Resolved 2026-06-29 by moving the tutorial old rail to (10,10), disconnected from base until the first route reaches the lower-center ore.
-Seed: apollo-17
-Steps:
-1. Start a run.
-2. Click Reclaim.
-3. Click the old base-side spur at (0,7) before moving or becoming resource constrained.
-4. Wait for the helper bot refund.
-5. Route to (10,11), mine, route to (17,10), mine, and return to base.
-Expected:
-If the first map is meant to teach reclaim through scarcity, reclaim should become salient when resources tighten without letting the player fully bypass that pressure.
-Actual:
-The old spur can be reclaimed immediately, raising nanobots from 20 to 22. That makes the standard lower-center -> east ore route winnable without the intended failed/blocked second-ore click.
-Proof:
-In-app browser sweep on 2026-06-28: immediate reclaim removed rail (0,7), nanobots became 22, and the route won with final state phase=won, ore=2/2, nanobots=1, message "Ore secured. Extraction window complete."
-Resolution proof:
-Rules regression now verifies the starting reclaim fails with "Helper bot cannot reach that rail.", the first route makes the tutorial spur reclaimable, reclaim refunds to 9 nanobots, and the full default route still wins. A 2026-06-29 headless Chrome smoke confirmed the same flow through the Phaser click path.
-```
+Pre-3D resolved findings are archived in `docs/archive/BUGS_resolved_pre-3d.md`.
+
+Dropped from the pre-3D Known Issues on 2026-09-24 because the 3D build no longer has the thing they describe: prototype vector rail lines (the road is a painted raster decal), the missing mute control for generated sounds (the 3D build plays no sound), and first-map reclaim tuning (the first map is now Level 1 of 6).

@@ -22,7 +22,7 @@ Use this before asking an agent to change anything.
 2. Go to the project folder:
 
 ```bash
-cd "/Users/prodadmin/Documents/Moon Miner"
+cd ~/Documents/moon-miner   # use the folder you cloned into
 ```
 
 3. Check Git reality:

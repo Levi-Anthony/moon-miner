@@ -1881,3 +1881,39 @@ Problem: re-driving over road you already laid must not stack a second ribbon
 DEV-22 grip unify · DEV-25 mobile launch-button · DEV-26 control panel / live
 tuning / New Game · DEV-27 define "1 game" (fixed-N) · DEV-47 vehicle classes →
 road-type presets (backlog) · DEV-48 rebuild-on-sandbox plan.
+
+
+## 2026-09-24: Index of PRs #10–#40 (the 3D substrate era)
+
+Added by DEV-58. The dated entries above end at the 2026-09-15 road rework. After that, decisions were recorded in each PR's body and in the feature commit message behind its merge, not here. This index points at them so the trail has no silent gap. It records what each PR shipped, by its merge subject. For the reasons and rejected options, read the PR on GitHub or run `git log -1 <merge>^2`. Retro-ticketing the same range in Linear is DEV-50.
+
+| PR | Merged | Merge | Subject |
+|---|---|---|---|
+| #10 | 2026-09-17 | `aec3983` | 3D substrate rebuild + procedural maps, terrain, drone/road economy, legibility |
+| #11 | 2026-09-17 | `c9785c6` | WS1 big moon — world scale + live Level-size slider |
+| #12 | 2026-09-17 | `c6e36f7` | perf — cap road-canvas resolution for smooth big worlds |
+| #13 | 2026-09-21 | `0336196` | moon vista — continuous ground, horizon fog, distant Earth |
+| #14 | 2026-09-22 | `9a7f14e` | WS-C PR A — camera Look-angle + crater size/spread knobs |
+| #15 | 2026-09-22 | `b9a1e28` | WS-C PR B — ore-pool generation knobs |
+| #16 | 2026-09-22 | `47fe63b` | widen all slider ranges past usable |
+| #17 | 2026-09-22 | `6b2f19d` | WS2 — no off-road + emergency rail-cannibalisation |
+| #18 | 2026-09-22 | `de0cb7d` | crisp road paint density + throttled GPU upload |
+| #19 | 2026-09-22 | `ddcdd69` | vista skirt no longer occludes the ground/road |
+| #20 | 2026-09-22 | `b736a16` | WS3 — background rail-stock growth + bonus readout |
+| #21 | 2026-09-22 | `85a7a05` | WS4 — switchable network-persistence modes |
+| #22 | 2026-09-22 | `da0a9b3` | WS5 — panel redesign + quick-help |
+| #23 | 2026-09-22 | `4f4bab7` | fix rail-slide left/right jitter |
+| #24 | 2026-09-22 | `278d685` | craters as walls |
+| #25 | 2026-09-22 | `53ced0a` | sun + shadows show the solar window |
+| #26 | 2026-09-22 | `90de1be` | DEV-23 — re-cut the self-play rig; suite green |
+| #27 | 2026-09-22 | `f870f0c` | fix Capacity-cap slider erasing banked rail growth |
+| #28 | 2026-09-23 | `8442797` | reconcile state surfaces after the 3D substrate flip |
+| #29 | 2026-09-23 | `9cf12e1` | bump vitest to 4.1.11, fix moderate audit advisory |
+| #30 | 2026-09-23 | `bbbf889` | fix grip's slider dead zone, expose the slide's turn-rate ceiling |
+
+Decisions in this range that change what older entries above say:
+
+- **Substrate (PR #10):** Three.js replaced Phaser. Entries above that name `src/scenes/*`, vector road drawing or the debug snapshot describe the retired build.
+- **Rail model (PR #35):** one grip model (`tuning.railGrip`) replaced the separate boost ramp, lock strength, corner turn limit and hidden release.
+- **Drone (PRs #38, #39):** launched while stopped for the aim delay, the drone erases the patch of road ahead. Otherwise it does the end reclaim.
+- **Levels (PR #40):** each level's sun, stock and quota come from a par route on its map, replacing fixed per-day numbers (quota 12, sun 75 s, stock 9).

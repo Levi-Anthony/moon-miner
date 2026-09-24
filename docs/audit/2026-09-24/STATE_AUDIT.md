@@ -1,6 +1,6 @@
 # State Audit — 2026-09-24 (checkpoint `bef3b58`)
 
-Scope: steps 1–3 of the evaluation plan. Read-only: no source, doc or config file outside `docs/audit/` was changed. Doc fixes and file moves are proposed at the end and wait for owner approval.
+Scope: steps 1–3 of the evaluation plan (read-only), then steps 4–5 (doc rewrites and archive moves) once the owner approved them. See "Applied" near the end. No source, config or test file was changed.
 
 Previous audit: `RECONCILIATION.md` (Linear DEV-49, checkpoint `f870f0c`, PR #27). This audit covers PRs #28–#40.
 
@@ -105,8 +105,26 @@ New tickets for new findings, children of DEV-54 in the Moon Miner project:
 - DEV-57: F3, `PCFSoftShadowMap` removed in three 0.186 (Low).
 - DEV-58: doc drift since PR #28 (C1–C4, C6–C8, C12, C16) (High).
 
+## Applied 2026-09-24 (steps 4–5, DEV-58, owner-approved)
+
+| File | Action taken |
+|---|---|
+| README.md | Removed the status banner. Rewrote Run, Controls and Proof Checks for the 3D build. Added the live-build link. Updated the Project Memory index. |
+| START_HERE.md | Replaced machine paths with a clone-relative path (DEV-8). Replaced URL Modes with "One URL, No Modes" and a Controls section (DEV-52). Replaced the hand-kept check list with pointers to CI and PROGRESS. |
+| PROGRESS.md | New Current Reality, Last Verified (this audit's run) and Known Red. The 2026-09-23 record is kept as superseded. Pre-3D sections flagged for DEV-7. |
+| BUGS.md | Known Issues replaced with F1–F3 and open Linear bugs, each ticketed. Pre-3D resolved entry moved to `docs/archive/BUGS_resolved_pre-3d.md`. |
+| HANDOFF.md | Rewritten for the current build: substrate, cold start, controls, doctrine (hook updated to `__mm3d`), architecture map, proof state, open work. Old file moved to `docs/archive/HANDOFF_2026-09-16.md` with an archive banner. |
+| DECISIONS.md | Appended an index of PRs #10–#40 with merge hashes, plus the four decisions that change what older entries say. |
+| RECONCILIATION.md | Added a pointer to this audit. Body unchanged. |
+| HUMAN_OPERATING_SYSTEM.md | Machine path replaced (DEV-8). |
+| ROUND_1_PLAYTEST.md | Moved to `docs/archive/` with a banner. |
+| GAME_DESIGN, CONCEPT_REFRAME, BETS, PLAYTESTING, PLAYTEST_PROMPT, SCAFFOLDING_STANDARD, PRIOR_ART | Unchanged, as proposed. Design-canon reconciliation stays with DEV-13. |
+
+No source, config or test file changed. Nothing was deleted.
+
 ## Not done in this pass
 
-- Steps 4–5 (doc moves, rewrites) and any code fix. All proposed above, pending approval.
+- Any code fix (DEV-55, DEV-56, DEV-57, DEV-51, DEV-11).
+- PROGRESS sections from "Last Good Commit" down (DEV-7) and the design-canon review (DEV-13).
 - A full level played to its end state (see §2 limit).
 - ECB patch: proposal 34a3a8cd (`moon_miner_road_rework_decisions`) from DEV-49 is still unapplied in ECB; this audit does not touch it.
