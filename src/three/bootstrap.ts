@@ -27,11 +27,12 @@ import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type Ro
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
 import { pushOutOfCraters } from './craters';
 import { START_BEARING, sunState } from './sun';
-import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type TerrainConfig } from './panel';
+import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_CONTROLS_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type ControlsConfig, type TerrainConfig } from './panel';
+import { stickToInput } from './stick';
 
-// --- Persisted config (loop + road + sim-tuning overrides + camera) ----------
+// --- Persisted config (loop + road + sim-tuning overrides + camera + look + controls)
 const CONFIG_KEY = 'mm3d-config-v1';
-function loadConfig(): { loop: LoopConfig; road: RoadConfig; tuning: Partial<ContinuousTuning>; cam: CameraConfig; terrain: TerrainConfig } {
+function loadConfig(): { loop: LoopConfig; road: RoadConfig; tuning: Partial<ContinuousTuning>; cam: CameraConfig; terrain: TerrainConfig; controls: ControlsConfig } {
   try {
     const raw = window.localStorage.getItem(CONFIG_KEY);
     const p = raw ? JSON.parse(raw) : {};
@@ -40,18 +41,20 @@ function loadConfig(): { loop: LoopConfig; road: RoadConfig; tuning: Partial<Con
       road: { ...DEFAULT_ROAD_CONFIG, ...(p.road ?? {}) },
       tuning: p.tuning ?? {},
       cam: { ...DEFAULT_CAMERA_CONFIG, ...(p.cam ?? {}) },
-      terrain: { ...DEFAULT_TERRAIN_CONFIG, ...(p.terrain ?? {}) }
+      terrain: { ...DEFAULT_TERRAIN_CONFIG, ...(p.terrain ?? {}) },
+      controls: { ...DEFAULT_CONTROLS_CONFIG, ...(p.controls ?? {}) }
     };
   } catch {
-    return { loop: { ...DEFAULT_LOOP_CONFIG }, road: { ...DEFAULT_ROAD_CONFIG }, tuning: {}, cam: { ...DEFAULT_CAMERA_CONFIG }, terrain: { ...DEFAULT_TERRAIN_CONFIG } };
+    return { loop: { ...DEFAULT_LOOP_CONFIG }, road: { ...DEFAULT_ROAD_CONFIG }, tuning: {}, cam: { ...DEFAULT_CAMERA_CONFIG }, terrain: { ...DEFAULT_TERRAIN_CONFIG }, controls: { ...DEFAULT_CONTROLS_CONFIG } };
   }
 }
 const savedConfig = loadConfig();
 const camCfg = savedConfig.cam;
 const terrainCfg = savedConfig.terrain;
+const controlsCfg: ControlsConfig = savedConfig.controls;
 function saveConfig(): void {
   try {
-    window.localStorage.setItem(CONFIG_KEY, JSON.stringify({ loop: campaign.config, road: road.config, tuning: campaign.tuningOverrides, cam: camCfg, terrain: terrainCfg }));
+    window.localStorage.setItem(CONFIG_KEY, JSON.stringify({ loop: campaign.config, road: road.config, tuning: campaign.tuningOverrides, cam: camCfg, terrain: terrainCfg, controls: controlsCfg }));
   } catch {
     /* storage may be unavailable */
   }
@@ -179,9 +182,9 @@ const DAY_COLOR = new THREE.Color(0xbfd0ff); // cold high-sun white
 const DUSK_COLOR = new THREE.Color(0xff9a54); // low-sun amber
 const AMBIENT_DAY = new THREE.Color(0x2a3550);
 const AMBIENT_DUSK = new THREE.Color(0x1a1526);
-// sunState() gives a 0..1-ish intensity curve; this scales it so sunlight reads
-// on the dark painted ground (see the ground material below).
-const SUN_GAIN = 3;
+// sunState() gives a 0..1-ish intensity curve; terrainCfg.sunGain ("Sun
+// intensity", 3 by default) scales it so sunlight reads on the dark painted
+// ground (see the ground material below).
 // How the moon surface answers light -- shared by the playfield AND the vista
 // skirt, so they always match and the arena's edge never shows (a tint or
 // material on one but not the other is exactly what draws that seam):
@@ -222,7 +225,7 @@ const sunDir = new THREE.Vector3();
 
 // t = 0 at first light, 1 at sunset.
 function updateSun(t: number): void {
-  const sky = sunState(t);
+  const sky = sunState(t, { startElev: terrainCfg.sunHigh, endElev: terrainCfg.sunLow, sweep: terrainCfg.sunSweep });
   const rx = state.rover.x - W / 2;
   const rz = state.rover.y - H / 2;
   // Keep the light (and so its shadow box) over the rover: the box is small for
@@ -232,14 +235,14 @@ function updateSun(t: number): void {
   sun.target.updateMatrixWorld();
   // Dusk: warmer and dimmer, with the ambient falling faster so the dark closes in.
   sun.color.copy(DAY_COLOR).lerp(DUSK_COLOR, sky.dusk);
-  sun.intensity = sky.intensity * SUN_GAIN;
+  sun.intensity = sky.intensity * Math.max(0, terrainCfg.sunGain);
   // The visible sun: along the light's direction, far from the camera, warming
   // and dimming with the day.
   sunDir.set(sky.offset.x, sky.offset.y, sky.offset.z).normalize();
   sunDisk.position.copy(camera.position).addScaledVector(sunDir, SUN_DISK_DIST);
   sunDisk.material.color.copy(DAY_COLOR).lerp(DUSK_COLOR, sky.dusk).multiplyScalar(0.6 + 0.8 * sky.intensity);
   ambient.color.copy(AMBIENT_DAY).lerp(AMBIENT_DUSK, sky.dusk);
-  ambient.intensity = sky.ambientIntensity;
+  ambient.intensity = sky.ambientIntensity * Math.max(0, terrainCfg.ambient);
   // No sky tint: the moon has no atmosphere, so the sky stays black all day.
   // The day/dusk read comes from the sun itself on the ground and skirt alike.
   // The painted crater/rille shading is lit from the same bearing. Repaint only
@@ -257,19 +260,32 @@ function sunDayFraction(): number {
 }
 
 // --- Starfield backdrop ------------------------------------------------------
+// A dome that rides with the camera, so the stars behave as if at infinity:
+// no parallax, and always ABOVE the horizon. They used to sit at fixed world
+// points only ~120 units up, so a camera raised (zoomed out, overhead view) or
+// looking across the far plain saw them below eye level -- scattered across the
+// ground like they were on the surface. The dome radius stays inside the
+// camera's far plane (fitVista floors it at 6000).
+const STAR_DOME = 3000;
+const STAR_MIN_ELEV = 0.035; // ~2 degrees: clear of the horizon line and any relief near it
+const STAR_COLOR = new THREE.Color(0x9fb6d8);
 const starGeo = new THREE.BufferGeometry();
 const starN = 900;
 const starPos = new Float32Array(starN * 3);
 for (let i = 0; i < starN; i += 1) {
-  const r = 2200 + Math.random() * 1200;
+  // Uniform over the sky above STAR_MIN_ELEV (uniform in sin(elevation)).
+  const lo = Math.sin(STAR_MIN_ELEV);
+  const el = Math.asin(lo + Math.random() * (1 - lo));
   const th = Math.random() * Math.PI * 2;
-  const ph = Math.acos(2 * Math.random() - 1);
-  starPos[i * 3] = r * Math.sin(ph) * Math.cos(th);
-  starPos[i * 3 + 1] = Math.abs(r * Math.cos(ph)) * 0.6 + 120;
-  starPos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+  starPos[i * 3] = STAR_DOME * Math.cos(el) * Math.cos(th);
+  starPos[i * 3 + 1] = STAR_DOME * Math.sin(el);
+  starPos[i * 3 + 2] = STAR_DOME * Math.cos(el) * Math.sin(th);
 }
 starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
-const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x9fb6d8, size: 3, sizeAttenuation: false, fog: false }));
+const starMat = new THREE.PointsMaterial({ color: STAR_COLOR, size: 3, sizeAttenuation: false, fog: false, depthWrite: false });
+const stars = new THREE.Points(starGeo, starMat);
+stars.frustumCulled = false; // it's re-centred on the camera every frame
+stars.renderOrder = -1; // behind everything it shares pixels with
 scene.add(stars);
 
 // --- Bloom post-processing (the neon glow) -----------------------------------
@@ -838,7 +854,10 @@ window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 // --- Touch / pointer drive: drag anywhere = a virtual stick -------------------
 const stickEl = document.getElementById('stick') as HTMLDivElement;
 const knobEl = stickEl.querySelector('.knob') as HTMLDivElement;
-const STICK_RADIUS = 66;
+// Stick size is a panel knob (Controls); the ring on screen matches it.
+function stickRadius(): number {
+  return Math.max(1, controlsCfg.stickRadius);
+}
 const touch = { active: false, id: -1, ox: 0, oy: 0, dx: 0, dy: 0 };
 // All active pointers on the canvas, so a second finger switches from driving
 // (one finger = the stick) to pinch-zoom (two fingers).
@@ -869,6 +888,9 @@ function beginTouch(e: PointerEvent): void {
   touch.oy = e.clientY;
   touch.dx = 0;
   touch.dy = 0;
+  const R = stickRadius();
+  stickEl.style.width = stickEl.style.height = `${R * 2}px`;
+  stickEl.style.margin = `${-R}px 0 0 ${-R}px`;
   stickEl.style.left = `${e.clientX}px`;
   stickEl.style.top = `${e.clientY}px`;
   stickEl.style.display = 'block';
@@ -889,8 +911,9 @@ function moveTouch(e: PointerEvent): void {
   if (!touch.active || e.pointerId !== touch.id) return;
   touch.dx = e.clientX - touch.ox;
   touch.dy = e.clientY - touch.oy;
-  const kx = Math.max(-STICK_RADIUS, Math.min(STICK_RADIUS, touch.dx));
-  const ky = Math.max(-STICK_RADIUS, Math.min(STICK_RADIUS, touch.dy));
+  const R = stickRadius();
+  const kx = Math.max(-R, Math.min(R, touch.dx));
+  const ky = Math.max(-R, Math.min(R, touch.dy));
   knobEl.style.transform = `translate(${kx}px, ${ky}px)`;
 }
 function endTouch(e: PointerEvent): void {
@@ -915,16 +938,12 @@ function readInput(): ContinuousInput {
   let reverse = down && !up;
 
   if (touch.active) {
-    // Same grammar as the keyboard: push up to drive, pull down to reverse,
-    // left/right to steer. A small deadzone so a resting thumb does nothing.
-    const dead = STICK_RADIUS * 0.2;
-    const span = STICK_RADIUS - dead;
-    const sx = Math.max(-1, Math.min(1, touch.dx / STICK_RADIUS));
-    if (Math.abs(touch.dx) > dead) steer = sx;
-    const forward = Math.max(0, (-touch.dy - dead) / span);
-    const back = Math.max(0, (touch.dy - dead) / span);
-    if (forward > 0) throttle = Math.min(1, forward);
-    reverse = back > 0 && forward === 0;
+    // Same grammar as the keyboard; dead zones + forward cone + curve are the
+    // Controls knobs (see stick.ts).
+    const st = stickToInput(touch.dx, touch.dy, controlsCfg);
+    if (st.steer !== 0) steer = st.steer;
+    if (st.throttle > 0) throttle = st.throttle;
+    reverse = st.reverse;
   }
 
   const driveIntent = throttle > 0;
@@ -945,7 +964,8 @@ let emergencyActive = false; // set each frame; drives the HUD mode label
 function updateCamera(dt: number): void {
   const rx = state.rover.x - W / 2;
   const rz = state.rover.y - H / 2;
-  const k = 1 - Math.pow(0.001, dt); // smooth follow
+  const lag = Math.max(0, camCfg.lag ?? DEFAULT_CAMERA_CONFIG.lag);
+  const k = lag <= 0 ? 1 : 1 - Math.exp(-dt / lag); // smooth follow (Follow lag knob)
   let target: THREE.Vector3;
   let look: THREE.Vector3;
   if (camCfg.overhead) {
@@ -1253,6 +1273,7 @@ function frame(now: number): void {
 
   updateSun(sunDayFraction());
   updateCamera(dt);
+  stars.position.copy(camera.position); // at infinity: rides with the camera
   stars.rotation.y += dt * 0.005; // a barely-there drift so the dark feels alive
   composer.render();
   requestAnimationFrame(frame);
@@ -1279,23 +1300,35 @@ function applyTerrain(): void {
 }
 // Light-knob change: road brightness needs the road re-stroked; daylight just
 // retunes how strongly the terrain (and the matching skirt) take the sun.
-function applyLook(): void {
+// The rest are cheap live properties (the sun's own intensity/path, fill light
+// and sun sweep are read per frame in updateSun).
+function applyLook(repaint = true): void {
   const d = Math.max(0, terrainCfg.daylight);
   groundMat.color.setScalar(d);
   skirtMat.color.set(GROUND_BASE).multiplyScalar(d);
-  repaintCanvas(road.edgesForPaint());
+  sun.castShadow = terrainCfg.shadows >= 0.5;
+  rim.intensity = Math.max(0, terrainCfg.rimLight);
+  bloom.strength = Math.max(0, terrainCfg.bloom);
+  bloom.threshold = Math.max(0, Math.min(1, terrainCfg.bloomThreshold));
+  starMat.color.copy(STAR_COLOR).multiplyScalar(Math.max(0, terrainCfg.stars));
+  stars.visible = terrainCfg.stars > 0;
+  sunDisk.scale.setScalar(Math.max(0, terrainCfg.sunDiskSize));
+  sunDisk.visible = terrainCfg.sunDiskSize > 0;
+  if (repaint) repaintCanvas(road.edgesForPaint());
 }
+applyLook(false); // saved look knobs take effect before the first frame
 createPanel({
   campaign,
   road,
   cam: camCfg,
   terrain: terrainCfg,
+  controls: controlsCfg,
   getState: () => state,
   applyTuning,
   rebuildDay: () => applyWorld(campaign.buildWorld()),
   newGame: () => { campaign.newGame(); applyWorld(campaign.buildWorld()); },
   applyTerrain,
-  applyLook,
+  applyLook: () => applyLook(),
   save: saveConfig
 });
 requestAnimationFrame(frame);

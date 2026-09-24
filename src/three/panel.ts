@@ -1,8 +1,8 @@
 // Control panel for the 3D build: a gear toggle + a scrollable overlay of live
-// knobs grouped into collapsible sections (World, Ore pools, Rover & rail,
-// Economy, Rail growth, Network & campaign, Slurp, Drone, Camera) with a "?"
-// quick-help toggle. Self-contained DOM; every change applies live and persists
-// via ctx.save().
+// knobs grouped into collapsible sections (Controls, World, Ore pools, Rover &
+// rail, Economy, Rail growth, Network & campaign, Slurp, Drone, Light & sky,
+// Camera) with a "?" quick-help toggle. Self-contained DOM; every change
+// applies live and persists via ctx.save().
 import type { ContinuousWorldState, ContinuousTuning } from '../game/continuous';
 import { PERSISTENCE_MODES, type Campaign } from './loop';
 import type { RoadModel } from './road';
@@ -13,8 +13,19 @@ export interface CameraConfig {
   fov: number; // field of view
   horizon: number; // 0 = look down at the ground (chase), 1 = tilt up toward the horizon
   overhead: boolean; // top-down (north-up) vs chase
+  lag: number; // seconds the chase camera takes to catch up (0 = locked to the rover)
 }
-export const DEFAULT_CAMERA_CONFIG: CameraConfig = { dist: 210, height: 190, fov: 55, horizon: 0, overhead: false };
+export const DEFAULT_CAMERA_CONFIG: CameraConfig = { dist: 210, height: 190, fov: 55, horizon: 0, overhead: false, lag: 0.145 };
+
+// Touch stick (drag anywhere). Fractions are of the stick radius.
+export interface ControlsConfig {
+  stickRadius: number; // px of thumb travel from centre to full deflection
+  steerDead: number; // 0..1 sideways travel ignored before steering starts
+  forwardCone: number; // degrees either side of straight ahead where pushing forward never steers
+  throttleDead: number; // 0..1 forward/back travel ignored before drive/reverse starts
+  steerCurve: number; // 1 = linear; >1 = finer control near centre, full lock still at the edge
+}
+export const DEFAULT_CONTROLS_CONFIG: ControlsConfig = { stickRadius: 66, steerDead: 0.2, forwardCone: 20, throttleDead: 0.2, steerCurve: 1 };
 
 export interface TerrainConfig {
   relief: number; // 0 = flat painted-only, 1 = full displacement height
@@ -24,20 +35,35 @@ export interface TerrainConfig {
   craterBlockSize: number; // craters at least this radius are walls you drive around (huge = none block)
   roadBrightness: number; // 0..1 glow of the laid road; steady all day (the sun never touches it)
   daylight: number; // how strongly the sun lights the terrain; 0 = no day/night change, higher = brighter mornings
+  sunGain: number; // sun light intensity multiplier (lights the rover, drone, beacon and casts the shadows)
+  sunHigh: number; // radians above the horizon at first light
+  sunLow: number; // radians above the horizon at last light
+  sunSweep: number; // radians the sun travels across the sky over the day
+  sunDiskSize: number; // size of the visible sun in the sky (0 = hidden)
+  ambient: number; // multiplier on the fill light (how dark the shadows are)
+  rimLight: number; // cool back light that edges the rover
+  shadows: number; // 1 = cast shadows, 0 = off (cheaper on slow phones)
+  bloom: number; // neon glow strength
+  bloomThreshold: number; // how bright a pixel must be to glow
+  stars: number; // starfield brightness (0 = off)
 }
-export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = { relief: 0.7, craterDensity: 0.6, craterSize: 1, craterSpread: 1, craterBlockSize: 45, roadBrightness: 0.8, daylight: 5 };
+export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = {
+  relief: 0.7, craterDensity: 0.6, craterSize: 1, craterSpread: 1, craterBlockSize: 45, roadBrightness: 0.8, daylight: 5,
+  sunGain: 3, sunHigh: 0.8, sunLow: 0.1, sunSweep: 1.1, sunDiskSize: 420, ambient: 1, rimLight: 0.9, shadows: 1, bloom: 0.55, bloomThreshold: 0.72, stars: 1
+};
 
 export interface PanelCtx {
   campaign: Campaign;
   road: RoadModel;
   cam: CameraConfig;
   terrain: TerrainConfig;
+  controls: ControlsConfig;
   getState: () => ContinuousWorldState;
   applyTuning: (patch: Partial<ContinuousTuning>) => void;
   rebuildDay: () => void;
   newGame: () => void;
   applyTerrain: () => void; // regenerate/redraw the ground for terrain-knob changes
-  applyLook: () => void; // redraw road brightness + daylight without touching terrain
+  applyLook: () => void; // re-apply light/glow/sky knobs (road brightness repaints) without touching terrain
   save: () => void;
 }
 
@@ -189,7 +215,19 @@ export function createPanel(ctx: PanelCtx): void {
 
   const cam = ctx.cam;
   const tc = ctx.terrain;
+  const cc = ctx.controls;
+  const deg = (rad: number) => `${Math.round((rad * 180) / Math.PI)}°`;
   const oreLayouts = ['Auto', 'Scatter', 'Ridge', 'Clusters', 'Belt'];
+
+  section('Controls', 'How the stick and wheel feel. Touch: drag anywhere for a stick; the stick knobs change nothing on a keyboard.');
+  addRow({ label: 'Stick size', min: 30, max: 200, step: 1, fmt: (v) => `${Math.round(v)}px`, hint: 'How far your thumb travels from centre to full deflection. Bigger = finer control, more travel.', get: () => cc.stickRadius, set: (v) => (cc.stickRadius = v) });
+  addRow({ label: 'Forward cone', min: 0, max: 60, step: 1, fmt: (v) => `±${Math.round(v)}°`, hint: 'Pushing forward within this angle of straight ahead drives dead straight: sideways drift in your thumb never steers. Wider = easier to drive straight, but you must swing further over to turn while driving.', get: () => cc.forwardCone, set: (v) => (cc.forwardCone = v) });
+  addRow({ label: 'Steer dead zone', min: 0, max: 0.8, step: 0.02, fmt: p2, hint: 'Sideways travel (fraction of the stick) ignored before steering starts, even when not pushing forward. Steering then ramps smoothly from zero, no jump.', get: () => cc.steerDead, set: (v) => (cc.steerDead = v) });
+  addRow({ label: 'Throttle dead zone', min: 0, max: 0.8, step: 0.02, fmt: p2, hint: 'Forward/back travel (fraction of the stick) ignored before you drive or reverse. A resting thumb does nothing.', get: () => cc.throttleDead, set: (v) => (cc.throttleDead = v) });
+  addRow({ label: 'Steer curve', min: 0.5, max: 3, step: 0.05, fmt: p2, hint: '1 = linear. Above 1 = gentle near the middle for fine corrections, still full lock at the edge. Below 1 = twitchy.', get: () => cc.steerCurve, set: (v) => (cc.steerCurve = v) });
+  addRow({ label: 'Turn rate', min: 0.3, max: 8, step: 0.05, fmt: (v) => `${deg(v)}/s`, hint: 'How fast the rover turns at full lock when you are steering yourself (off the rail, and pivoting in place).', get: tget('turnRate'), set: tset('turnRate') });
+  addRow({ label: 'Wheel speed', min: 0.5, max: 40, step: 0.1, fmt: (v) => `${(1 / v).toFixed(2)}s`, hint: 'Time for the wheel to travel from centre to full lock. Longer = heavier machine; shorter = snappier.', get: tget('steerRamp'), set: tset('steerRamp') });
+  addRow({ label: 'Break-off steer', min: 0.3, max: 1, step: 0.01, fmt: p2, hint: 'How far over (0..1) you must push the stick to come OFF the rail. Below this the rail owns the wheel. Keyboard A/D is always full (1).', get: tget('carryBreakSteer'), set: tset('carryBreakSteer') });
 
   section('World', 'Size + ground. Terrain applies live; Level size rebuilds the day on release.');
   addRow({ label: 'Level size', min: 0.4, max: 12, step: 0.1, fmt: p2, hint: 'How big the moon is — ground, seam spread and haul length all scale together. Rebuilds the day when you release the slider (New Game for a clean slate). Range runs past usable both ways so you can bracket the sweet spot.', get: () => cfg.arenaScale, set: (v) => (cfg.arenaScale = v), commit: () => ctx.rebuildDay() });
@@ -210,15 +248,23 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Track-spine (no off-road)', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off'), hint: 'On = you are always on your own track. Out of stock enters EMERGENCY: you crawl forward while the arms cannibalise your own laid rail to build ahead (network shrinks, camera judders), never a silent bare-ground roll. Off = classic driving.', get: () => (ctx.getState().tuning.trackSpine ? 1 : 0), set: (v) => ctx.applyTuning({ trackSpine: v >= 0.5 }) });
   addRow({ label: 'Laying speed', min: 5, max: 1500, step: 1, fmt: int, hint: 'Speed while laying fresh ribbon at the frontier — the strategic pace. Tune for decisions, not reflexes.', get: tget('fabricatingSpeed'), set: tset('fabricatingSpeed') });
   addRow({ label: 'Road top speed', min: 10, max: 3000, step: 5, fmt: int, hint: 'Top speed once you are rolling on ribbon you already laid — the ceiling you wind up toward. Max is deliberately silly.', get: tget('railSpeed'), set: tset('railSpeed') });
-  addRow({ label: 'Acceleration', min: 5, max: 2000, step: 5, fmt: int, hint: 'How fast the rail winds you up toward top speed on laid road (units/s²). It brakes three times harder than this. ~100 = about a second to full speed.', get: () => rc.railAccel, set: (v) => (rc.railAccel = v) });
+  addRow({ label: 'Acceleration', min: 5, max: 2000, step: 5, fmt: int, hint: 'How fast the rail winds you up toward top speed on laid road (units/s²). It brakes harder than this by Brake strength (3× by default). ~100 = about a second to full speed.', get: () => rc.railAccel, set: (v) => (rc.railAccel = v) });
   addRow({ label: 'Grip', min: 50, max: 20000, step: 50, fmt: int, hint: 'The rail\'s grip: the most sideways force it can hold (units/s²). This ONE number sets how sharply you can corner at any speed: turn limit = grip ÷ speed, and the rail slows for bends to √(grip ÷ curvature). Higher = tighter corners, faster.', get: tget('railGrip'), set: tset('railGrip') });
   addRow({ label: 'Corner braking', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'How much the rail slows itself for bends ahead. 1 = it always slows enough that grip holds — you never get flung off. 0 = no braking: go into a bend too fast and you slide off. Lower it for a harder level.', get: () => rc.cornerBraking, set: (v) => (rc.cornerBraking = v) });
+  addRow({ label: 'Brake strength', min: 0.5, max: 10, step: 0.1, fmt: (v) => `${v.toFixed(1)}×`, hint: 'How much harder the rail brakes than it accelerates. Lower = it starts slowing for bends earlier and more gently.', get: () => rc.railBrakeMult, set: (v) => (rc.railBrakeMult = v) });
+  addRow({ label: 'Grip reserve', min: 0.3, max: 1, step: 0.05, fmt: p2, hint: 'Share of grip the rail plans bends at. The rest is kept for the lock\'s own corrections. Lower = slower, safer corners; 1 = right at the limit.', get: () => rc.cornerGripReserve, set: (v) => (rc.cornerGripReserve = v) });
+  addRow({ label: 'Lock-on angle', min: 0, max: 0.98, step: 0.02, fmt: (v) => `≤${deg(Math.acos(Math.max(-1, Math.min(1, v))))}`, hint: 'How closely you must be driving ALONG cured road for the rail to grab you. Wider angle = it grabs you even when you cut across at a slant.', get: () => rc.lockAlign, set: (v) => (rc.lockAlign = v) });
+  addRow({ label: 'Lock hold width', min: 1, max: 4, step: 0.05, fmt: (v) => `${v.toFixed(2)}×`, hint: 'Once locked, you stay on until you are this many half-road-widths off the line. Higher = stickier.', get: () => rc.lockHoldWidth, set: (v) => (rc.lockHoldWidth = v) });
+  addRow({ label: 'Re-grab delay', min: 0, max: 3, step: 0.05, fmt: (v) => `${v.toFixed(2)}s`, hint: 'After you steer off, the rail will not grab you again for this long, so leaving actually leaves.', get: () => rc.lockReleaseSeconds, set: (v) => (rc.lockReleaseSeconds = v) });
+  addRow({ label: 'Line tracking', min: 1, max: 30, step: 0.5, fmt: p2, hint: 'How quickly the lock pulls you back to the road\'s centre line. Higher = tighter; lower = floatier.', get: () => rc.trackRate, set: (v) => (rc.trackRate = v) });
   addRow({ label: 'Road width (cars)', min: 0.5, max: 20, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Width of the laid road, in car-widths. Applies live.', get: () => rc.roadWidthCars, set: (v) => (rc.roadWidthCars = v) });
   addRow({ label: 'No-restack margin', min: 0, max: 10, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'How close a new lane may come to existing road before it stops laying (double-stack guard), beyond the road width. Higher = new lanes keep more clearance; you still lay freely everywhere else. Applies live.', get: () => rc.laneGapCars, set: (v) => (rc.laneGapCars = v) });
 
   section('Economy', "Mining, stock drain/recovery and the day's clock + quota.");
   addRow({ label: 'Mining yield', min: 0.01, max: 20, step: 0.01, fmt: p2, hint: 'Ore per second while parked in a seam.', get: tget('mineRate'), set: tset('mineRate') });
   addRow({ label: 'Fabrication drain', min: 0, max: 30, step: 0.05, fmt: p2, hint: 'Nanobots per second spent laying road on bare ground.', get: tget('fabricateCostPerSecond'), set: tset('fabricateCostPerSecond') });
+  addRow({ label: 'Crawl speed', min: 5, max: 400, step: 1, fmt: int, hint: 'How fast you limp when out of stock (crawl).', get: tget('crawlSpeed'), set: tset('crawlSpeed') });
+  addRow({ label: 'Base max stock', min: 4, max: 400, step: 1, fmt: int, hint: 'Nanobot capacity before any capacity climb. Higher = longer runs of fresh road before you run dry.', get: tget('maxNanobots'), set: tset('maxNanobots') });
   addRow({ label: 'Crawl recovery', min: 0, max: 20, step: 0.01, fmt: p2, hint: 'Nanobots per second regained while crawling (out of stock).', get: tget('crawlRecoveryPerSecond'), set: tset('crawlRecoveryPerSecond') });
   addRow({ label: 'Start stock', min: 0, max: 600, step: 1, fmt: int, hint: 'Nanobots you begin each day with. Applies next day.', get: tget('startingNanobots'), set: tset('startingNanobots') });
   addRow({ label: 'Sun window', min: 5, max: 3000, step: 5, fmt: int, hint: 'Seconds of daylight per day. Applies next day.', get: tget('startingSolarSeconds'), set: tset('startingSolarSeconds') });
@@ -243,21 +289,35 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ label: 'Slurp band', min: 0, max: 1, step: 0.02, fmt: p2, hint: 'Central fraction of a seam a fast pass slurps whole. 0 = slurp off.', get: () => rc.slurpBandPct, set: (v) => (rc.slurpBandPct = v) });
   addRow({ label: 'Slurp min boost', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Rail momentum (0..1 of the way from laying speed to top speed) you must be riding at for the slurp to charge.', get: () => rc.slurpMinBoost, set: (v) => (rc.slurpMinBoost = v) });
   addRow({ label: 'Slurp charge (s)', min: 0, max: 30, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Seconds of riding the rail at speed to arm the slurp (the HUD shows Rail ⚡). Dips drain it rather than reset it; once armed it stays armed while you are on the rail. Higher = must earn a longer run first.', get: () => rc.slurpChargeSeconds, set: (v) => (rc.slurpChargeSeconds = v) });
+  addRow({ label: 'Slurp drain', min: 0, max: 5, step: 0.1, fmt: (v) => `${v.toFixed(1)}×`, hint: 'How fast the charge drains when you are off the rail or slow (seconds lost per second). 0 = never drains; higher = one dip costs more.', get: () => rc.slurpChargeDrain, set: (v) => (rc.slurpChargeDrain = v) });
 
   section('Drone (cleanup / reclaim)', 'Lifts a run off ONE END of the ribbon, so the network never splits. Tether = reach; Aim bias = your facing picks which end.');
   addRow({ label: 'Tether range', min: 20, max: 12000, step: 20, fmt: int, hint: 'How far out from home the drone will reach. It lifts a run off one end of the ribbon whose midpoint is within this radius, and never a middle piece, so the network never splits. Max ≈ whole map.', get: tget('droneTetherRange'), set: tset('droneTetherRange') });
   addRow({ label: 'Aim bias', min: 0, max: 60, step: 0.5, fmt: p2, hint: 'How hard the way you FACE at launch picks which end the drone reclaims. 0 = always the oldest road nearest home (pure cleanup); high = it grabs from whichever end you point toward.', get: tget('reclaimAimBias'), set: tset('reclaimAimBias') });
+  addRow({ label: 'Drone speed', min: 20, max: 3000, step: 10, fmt: int, hint: 'How fast the drone flies out to the road it reclaims and back to you.', get: tget('droneSpeed'), set: tset('droneSpeed') });
   addRow({ label: 'Reclaim bite', min: 10, max: 6000, step: 20, fmt: int, hint: 'World units of road one drone flight lifts. Lower = takes a small chunk; higher = reels in more per trip.', get: () => rc.reclaimBite, set: (v) => (rc.reclaimBite = v) });
 
-  section('Light', 'Presentation only. The road glows steadily; daylight lights the terrain and fades toward sunset.');
+  section('Light & sky', 'Presentation only. The road glows steadily; the sun lights the terrain and sinks toward sunset, so the ground tells the time.');
   addRow({ label: 'Road brightness', min: 0.1, max: 1, step: 0.05, fmt: p2, hint: 'How bright the laid road glows. Steady all day: the sun never brightens or dims it. 1 = full neon.', get: () => tc.roadBrightness, set: (v) => { tc.roadBrightness = v; ctx.applyLook(); } });
   addRow({ label: 'Daylight strength', min: 0, max: 12, step: 0.25, fmt: p2, hint: 'How strongly the sun lights the ground. Mornings are brightest; it fades to the dark moon by sunset, so the ground tells you the time. 0 = no day/night change.', get: () => tc.daylight, set: (v) => { tc.daylight = v; ctx.applyLook(); } });
+  addRow({ label: 'Sun intensity', min: 0, max: 8, step: 0.1, fmt: p2, hint: 'How strongly the sun lights the rover, drone and beacon, and how dark their shadows read against the lit ground.', get: () => tc.sunGain, set: (v) => (tc.sunGain = v) });
+  addRow({ label: 'Sun at first light', min: 0.05, max: 1.5, step: 0.01, fmt: deg, hint: 'How high the sun starts the day. Lower = long shadows all day; near 90° the rover\'s shadow tucks underneath it.', get: () => tc.sunHigh, set: (v) => (tc.sunHigh = v) });
+  addRow({ label: 'Sun at sunset', min: 0, max: 1.5, step: 0.01, fmt: deg, hint: 'How high the sun is at last light. Near 0° = shadows stretch right across the field as time runs out.', get: () => tc.sunLow, set: (v) => (tc.sunLow = v) });
+  addRow({ label: 'Sun sweep', min: 0, max: 3.14, step: 0.02, fmt: deg, hint: 'How far the sun travels across the sky over the day. More = shadows visibly swing round, a stronger clock.', get: () => tc.sunSweep, set: (v) => (tc.sunSweep = v) });
+  addRow({ label: 'Sun disk size', min: 0, max: 1500, step: 10, fmt: (v) => (v <= 0 ? 'hidden' : int(v)), hint: 'Size of the visible sun in the sky (tilt the camera up with Look angle to see it).', get: () => tc.sunDiskSize, set: (v) => { tc.sunDiskSize = v; ctx.applyLook(); } });
+  addRow({ label: 'Shadows', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off'), hint: 'Real cast shadows from the sun. Off is cheaper on a slow phone.', get: () => tc.shadows, set: (v) => { tc.shadows = v; ctx.applyLook(); } });
+  addRow({ label: 'Fill light', min: 0, max: 3, step: 0.05, fmt: p2, hint: 'Ambient fill on the rover and props. Lower = darker, moodier shadow sides.', get: () => tc.ambient, set: (v) => (tc.ambient = v) });
+  addRow({ label: 'Rim light', min: 0, max: 3, step: 0.05, fmt: p2, hint: 'The cool back light that edges the rover and drone so they read against the dark.', get: () => tc.rimLight, set: (v) => { tc.rimLight = v; ctx.applyLook(); } });
+  addRow({ label: 'Glow', min: 0, max: 2, step: 0.05, fmt: p2, hint: 'Neon bloom strength on the road, seams and cab. 0 = no glow.', get: () => tc.bloom, set: (v) => { tc.bloom = v; ctx.applyLook(); } });
+  addRow({ label: 'Glow threshold', min: 0, max: 1, step: 0.02, fmt: p2, hint: 'How bright something must be to glow. Lower = more of the scene blooms; higher = only the brightest neon.', get: () => tc.bloomThreshold, set: (v) => { tc.bloomThreshold = v; ctx.applyLook(); } });
+  addRow({ label: 'Stars', min: 0, max: 2, step: 0.05, fmt: (v) => (v <= 0 ? 'off' : p2(v)), hint: 'Starfield brightness. The stars sit at infinity above the horizon.', get: () => tc.stars, set: (v) => { tc.stars = v; ctx.applyLook(); } });
 
   section('Camera', 'Presentation only.');
   addRow({ label: 'Distance', min: 40, max: 2000, step: 10, fmt: int, hint: 'Also: mouse wheel / pinch to zoom.', get: () => cam.dist, set: (v) => (cam.dist = v) });
   addRow({ label: 'Height', min: 20, max: 2000, step: 10, fmt: int, hint: 'How high the chase camera rides above the rover.', get: () => cam.height, set: (v) => (cam.height = v) });
   addRow({ label: 'Field of view', min: 15, max: 130, step: 1, fmt: int, hint: 'Lens angle. Wide = more in frame + faster/vaster feel; narrow = telephoto, flatter. (Distance moves the camera; FOV changes the lens.)', get: () => cam.fov, set: (v) => (cam.fov = v) });
   addRow({ label: 'Look angle', min: 0, max: 1.3, step: 0.05, fmt: p2, hint: 'Tilt the chase camera up toward the horizon. 0 = look down at the ground; higher lifts the view to reveal the horizon and Earth (past 1 over-tilts).', get: () => cam.horizon, set: (v) => (cam.horizon = v) });
+  addRow({ label: 'Follow lag', min: 0, max: 1, step: 0.01, fmt: (v) => `${v.toFixed(2)}s`, hint: 'How long the chase camera takes to catch up with the rover. 0 = rigidly locked; higher = a floatier, cinematic follow that shows speed.', get: () => cam.lag, set: (v) => (cam.lag = v) });
   const btns = document.createElement('div');
   btns.className = 'btns';
   const mk = (text: string, fn: () => void) => {

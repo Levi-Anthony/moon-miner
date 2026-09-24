@@ -41,6 +41,14 @@ export interface RoadConfig {
   railAccel: number; // how fast the rail winds you up toward top speed on laid road (units/s^2); braking is RAIL_BRAKE_MULT x this
   cornerBraking: number; // 0..1: how much the rail slows for bends ahead (1 = never exceed grip; 0 = none, you can overcook a corner)
   reclaimBite: number; // world units of ribbon one drone flight lifts (the reclaim chunk size)
+  // Lock + braking feel (defaults are the constants above).
+  lockAlign: number; // 0..1 how closely you must be driving along cured road to get ON the lock (dot product)
+  lockHoldWidth: number; // x half-width: once locked you stay on until this far off the line
+  lockReleaseSeconds: number; // after a hard steer off, the lock won't re-grab you for this long
+  trackRate: number; // how quickly the lock closes leftover heading/cross-track error
+  railBrakeMult: number; // the rail brakes this many times harder than it accelerates
+  cornerGripReserve: number; // 0..1 share of grip the rail plans bends at (the rest is kept for corrections)
+  slurpChargeDrain: number; // off the rail / slow, slurp charge drains this many seconds per second
 }
 
 export const DEFAULT_ROAD_CONFIG: RoadConfig = {
@@ -55,7 +63,14 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
   // ~ the old 1.1 s spin-up from laying speed to road top speed at defaults.
   railAccel: 100,
   cornerBraking: 1,
-  reclaimBite: 150 // a modest chunk per flight, not the whole run
+  reclaimBite: 150, // a modest chunk per flight, not the whole run
+  lockAlign: ROAD_ALIGN_MIN,
+  lockHoldWidth: LOCK_HOLD_WIDTH,
+  lockReleaseSeconds: LOCK_RELEASE_SECONDS,
+  trackRate: TRACK_RATE,
+  railBrakeMult: RAIL_BRAKE_MULT,
+  cornerGripReserve: CORNER_GRIP_RESERVE,
+  slurpChargeDrain: SLURP_CHARGE_DRAIN
 };
 
 export interface SlurpEvent { x: number; y: number; gained: number }
@@ -99,6 +114,9 @@ export class RoadModel {
     this.config = { ...config };
   }
 
+  private brakeMult(): number {
+    return Math.max(0.1, this.config.railBrakeMult);
+  }
   halfWidth(): number {
     return (this.config.roadWidthCars * CAR_WIDTH) / 2;
   }
@@ -380,11 +398,11 @@ export class RoadModel {
     const rover = state.rover;
     const ne = this.nearestCuredSeg(rover, state.elapsedSeconds);
     const hw = this.halfWidth();
-    if (!ne || ne.dist >= hw * (held ? LOCK_HOLD_WIDTH : 1)) return 0;
+    if (!ne || ne.dist >= hw * (held ? this.config.lockHoldWidth : 1)) return 0;
     const hx = Math.cos(rover.heading);
     const hy = Math.sin(rover.heading);
     const align = ne.tx * hx + ne.ty * hy;
-    if (!held && Math.abs(align) < ROAD_ALIGN_MIN) return 0;
+    if (!held && Math.abs(align) < this.config.lockAlign) return 0;
     const flip = align < 0 ? -1 : 1; // the line's direction, the way you're facing
     const here = this.lineAt(ne.px, ne.py, ne.tx * flip, ne.ty * flip, state.elapsedSeconds);
     const lookahead = hw * ROAD_FOLLOW_LOOKAHEAD_MULT;
@@ -398,7 +416,7 @@ export class RoadModel {
     // Cross-track error from the SMOOTHED line (left of travel +).
     const cross = (rover.x - lx) * -Math.sin(tangent) + (rover.y - ly) * Math.cos(tangent);
     const desired = tangent - Math.atan2(cross, lookahead);
-    const closeFrac = 1 - Math.exp((-TRACK_RATE * dt) / 0.18);
+    const closeFrac = 1 - Math.exp((-Math.max(0, this.config.trackRate) * dt) / 0.18);
     return feedForward + (angleDifference(desired, rover.heading) * closeFrac) / Math.max(1e-3, dt);
   }
 
@@ -407,7 +425,7 @@ export class RoadModel {
   isOnLaidRoad(state: ContinuousWorldState): boolean {
     const ne = this.nearestCuredSeg(state.rover, state.elapsedSeconds);
     if (!ne || ne.dist >= this.halfWidth()) return false;
-    return Math.abs(ne.tx * Math.cos(state.rover.heading) + ne.ty * Math.sin(state.rover.heading)) >= ROAD_ALIGN_MIN;
+    return Math.abs(ne.tx * Math.cos(state.rover.heading) + ne.ty * Math.sin(state.rover.heading)) >= this.config.lockAlign;
   }
 
   // One step of the rail, per frame, after the sim has moved the rover.
@@ -431,12 +449,12 @@ export class RoadModel {
     const span = Math.max(1, top - lay);
     // --- lock ---
     if (this.releaseTimer > 0) this.releaseTimer -= dt;
-    if (!active || Math.abs(steer) >= ROAD_CARRY_BREAK_STEER) {
-      if (this.locked) this.releaseTimer = LOCK_RELEASE_SECONDS;
+    if (!active || Math.abs(steer) >= (state.tuning.carryBreakSteer ?? ROAD_CARRY_BREAK_STEER)) {
+      if (this.locked) this.releaseTimer = this.config.lockReleaseSeconds;
       this.locked = false;
     } else if (this.locked) {
       const ne = this.nearestCuredSeg(state.rover, state.elapsedSeconds);
-      if (!ne || ne.dist >= this.halfWidth() * LOCK_HOLD_WIDTH) this.locked = false;
+      if (!ne || ne.dist >= this.halfWidth() * this.config.lockHoldWidth) this.locked = false;
     } else if (this.releaseTimer <= 0 && this.isOnLaidRoad(state)) {
       this.locked = true;
       this.cornerTimer = 0; // read the road ahead immediately
@@ -450,7 +468,7 @@ export class RoadModel {
         this.cornerTimer = CORNER_PROBE_INTERVAL;
       }
       const travelled = Math.max(0, state.rover.speed) * dt;
-      const decelPlan = Math.max(1, this.config.railAccel) * RAIL_BRAKE_MULT * RAIL_BRAKE_PLAN;
+      const decelPlan = Math.max(1, this.config.railAccel) * this.brakeMult() * RAIL_BRAKE_PLAN;
       let cornerLimit = Infinity;
       for (const c of this.cornerConstraints) {
         c.s -= travelled;
@@ -459,7 +477,7 @@ export class RoadModel {
       const braking = Math.max(0, Math.min(1, this.config.cornerBraking));
       const target = top + (Math.min(top, cornerLimit) - top) * braking;
       const accel = Math.max(1, this.config.railAccel);
-      v = v < target ? Math.min(target, v + accel * dt) : Math.max(target, v - accel * RAIL_BRAKE_MULT * dt);
+      v = v < target ? Math.min(target, v + accel * dt) : Math.max(target, v - accel * this.brakeMult() * dt);
     } else {
       v = Math.max(lay, v - (span * dt) / ROAD_BOOST_DECAY_SECONDS);
     }
@@ -478,8 +496,8 @@ export class RoadModel {
   // limit every frame -- the fastest speed from which the rail can still brake
   // down to each one in time: sqrt(v^2 + 2 * decel * s).
   private cornerConstraintsAhead(state: ContinuousWorldState, lay: number, top: number): { v: number; s: number }[] {
-    const grip = Math.max(1, state.tuning.railGrip) * CORNER_GRIP_RESERVE;
-    const decel = Math.max(1, this.config.railAccel) * RAIL_BRAKE_MULT * RAIL_BRAKE_PLAN;
+    const grip = Math.max(1, state.tuning.railGrip) * Math.max(0.05, Math.min(1, this.config.cornerGripReserve));
+    const decel = Math.max(1, this.config.railAccel) * this.brakeMult() * RAIL_BRAKE_PLAN;
     const step = this.halfWidth() * CORNER_PROBE_STEP;
     const window = this.halfWidth() * CORNER_PROBE_WINDOW;
     // Far enough to brake from top speed to laying speed, plus the probe's own
@@ -530,7 +548,7 @@ export class RoadModel {
   updateCharge(deltaSeconds: number, riding: boolean): void {
     this.charge = riding
       ? Math.min(this.config.slurpChargeSeconds + 1, this.charge + deltaSeconds)
-      : Math.max(0, this.charge - deltaSeconds * SLURP_CHARGE_DRAIN);
+      : Math.max(0, this.charge - deltaSeconds * Math.max(0, this.config.slurpChargeDrain));
   }
   // Armed once charged, for as long as you stay on the rail: braking into a
   // seam at the end of your road still slurps it.

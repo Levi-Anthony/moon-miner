@@ -10,7 +10,7 @@ const TURN_RATE = 2.25; // mirrors the sim
 const LAY = 130;
 
 interface Rover { x: number; y: number; heading: number; speed: number }
-function worldState(rover: Rover, tuning: { railSpeed: number; railGrip: number }, elapsed = 100): ContinuousWorldState {
+function worldState(rover: Rover, tuning: { railSpeed: number; railGrip: number; carryBreakSteer?: number }, elapsed = 100): ContinuousWorldState {
   return { rover, elapsedSeconds: elapsed, tuning: { fabricatingSpeed: LAY, ...tuning } } as unknown as ContinuousWorldState;
 }
 
@@ -147,6 +147,27 @@ describe('the rail lock: one way on, one way off', () => {
     expect(road.locked).toBe(false);
     for (let i = 0; i < 40; i += 1) road.update(st, 0, 1 / 60);
     expect(road.locked).toBe(true); // re-grabs once the release window passes
+  });
+
+  it('the break-off threshold is a tuning knob (a partial stick can be made to leave)', () => {
+    const road = layPath(line);
+    const tuning = { railSpeed: 236, railGrip: 1500, carryBreakSteer: 0.5 };
+    const st = worldState({ x: 300, y: 0, heading: 0, speed: 200 }, tuning);
+    road.update(st, 0, 1 / 60);
+    road.update(st, 0.6, 1 / 60);
+    expect(road.locked).toBe(false);
+  });
+
+  it('a longer re-grab delay keeps you off longer', () => {
+    const road = layPath(line);
+    road.config.lockReleaseSeconds = 2;
+    const st = worldState({ x: 300, y: 0, heading: 0, speed: 200 }, { railSpeed: 236, railGrip: 1500 });
+    road.update(st, 0, 1 / 60);
+    road.update(st, 1, 1 / 60);
+    for (let i = 0; i < 60; i += 1) road.update(st, 0, 1 / 60); // 1 s
+    expect(road.locked).toBe(false);
+    for (let i = 0; i < 70; i += 1) road.update(st, 0, 1 / 60);
+    expect(road.locked).toBe(true);
   });
 
   it('winds down to laying speed as the road runs out ahead', () => {
