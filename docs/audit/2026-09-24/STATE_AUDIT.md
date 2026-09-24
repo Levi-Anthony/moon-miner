@@ -44,7 +44,7 @@ What the build is today:
 Findings:
 
 - **F2 (DEV-56) — phone HUD overlap.** At 390×844 the level-intro card covers the `LEVEL` and `BONUS` readouts (see `phone-boot.png`). The smoke test's HUD-overlap check was a Phaser-era feature (README) and no longer exists (DEV-53).
-- **F3 (DEV-57) — deprecated shadow map constant.** The renderer requests `PCFSoftShadowMap`, which three 0.186 no longer has. It falls back silently, so the soft shadows tuned in PRs #31/#32 aren't what renders.
+- **F3 (DEV-57) — deprecated shadow map constant.** The renderer requests `PCFSoftShadowMap`, which three 0.186 no longer has. Three falls back to `PCFShadowMap` with only a console warning, so the soft shadows tuned in PRs #31/#32 aren't what renders.
 - **Observation, low confidence.** The phone run started in `Mining` with ore accruing before any input; the desktop run started in `Building`. Each fresh context gets a random game seed (`src/three/loop.ts:304`), so this is probably a seed whose spawn sits inside a seam. Not reproduced; worth a seeded check.
 - **Limit of this pass.** Headless SwiftShader advanced the sim about 3 s per 12 s of wall time, so a full level (43 s of sun) was not played to an end state here. F1 is the reason no scripted full-run check exists to fill that gap.
 
