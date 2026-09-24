@@ -1194,10 +1194,11 @@ function frame(now: number): void {
   // up on the lock, brakes for bends ahead). Feeds next frame's input.
   road.update(state, base.steer, dt, !reversing);
   const onRoadNow = road.locked;
-  // Slurp charge: only builds while genuinely at rail top speed on road, so the
-  // slurp is earned by a sustained run and can't grab the pool you're sitting on.
-  road.updateCharge(dt, onRoadNow && state.rover.speed >= state.tuning.railSpeed * 0.9);
-  const slurped = road.slurp(state);
+  // Slurp charge builds while you ride the rail at speed, so the slurp is earned
+  // by a sustained run; it only fires while you're driving through, so it can't
+  // grab the pool you're parked on.
+  road.updateCharge(dt, onRoadNow && Boolean(base.driveIntent) && road.boost >= road.config.slurpMinBoost);
+  const slurped = base.driveIntent ? road.slurp(state) : null;
   if (slurped) {
     addRailStock(state, state.tuning.railTricklePerSlurp); // WS3: flat refuel, not ore-scaled
     paintSlurp(slurped);
