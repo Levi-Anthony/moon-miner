@@ -1910,6 +1910,16 @@ Added by DEV-58. The dated entries above end at the 2026-09-15 road rework. Afte
 | #28 | 2026-09-23 | `8442797` | reconcile state surfaces after the 3D substrate flip |
 | #29 | 2026-09-23 | `9cf12e1` | bump vitest to 4.1.11, fix moderate audit advisory |
 | #30 | 2026-09-23 | `bbbf889` | fix grip's slider dead zone, expose the slide's turn-rate ceiling |
+| #31 | 2026-09-23 | `639f0b3` | make the sun's day/dusk cycle visible on the ground |
+| #32 | 2026-09-23 | `b9dd4ab` | make shadows and sunlight visible |
+| #33 | 2026-09-23 | `963f466` | restore the moon illusion (painted ground, matched vista, black sky) |
+| #34 | 2026-09-23 | `6334407` | readable day arc + steady, dimmable road |
+| #35 | 2026-09-23 | `81e0ab3` | rebuild the rail as one clean model (grip, corner braking, one way off) |
+| #36 | 2026-09-23 | `684b587` | make slurp actually fire |
+| #37 | 2026-09-23 | `570a5fc` | steering controls, feel knobs, starfield at infinity |
+| #38 | 2026-09-24 | `3408787` | road junctions, emergency guard zone, drone eraser |
+| #39 | 2026-09-24 | `b92c390` | aim-to-erase drone, curved sliders centred on defaults |
+| #40 | 2026-09-24 | `bef3b58` | levels with budgets derived from the map |
 
 Decisions in this range that change what older entries above say:
 
