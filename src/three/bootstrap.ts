@@ -137,7 +137,8 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 // Real cast shadows: the single strongest read of "the sun is moving".
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// PCF: three 0.186 removed PCFSoftShadowMap and fell back to this with a warning.
+renderer.shadowMap.type = THREE.PCFShadowMap;
 mount.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -237,6 +238,10 @@ function updateSun(t: number): void {
   // Dusk: warmer and dimmer, with the ambient falling faster so the dark closes in.
   sun.color.copy(DAY_COLOR).lerp(DUSK_COLOR, sky.dusk);
   sun.intensity = sky.intensity * Math.max(0, terrainCfg.sunGain);
+  // Shadows on the road's glow fade with the sun, like shadows on the lit
+  // terrain do, so they read strongest at first light and are faint at dusk
+  // (0.85 is sunState's first-light intensity in sun.ts).
+  roadShadowUniform.value = Math.max(0, Math.min(1, terrainCfg.roadShadow)) * Math.min(1, sky.intensity / 0.85) * (sun.intensity > 0 ? 1 : 0);
   // The visible sun: along the light's direction, far from the camera, warming
   // and dimming with the day.
   sunDir.set(sky.offset.x, sky.offset.y, sky.offset.z).normalize();
@@ -328,7 +333,12 @@ terrainTexture.colorSpace = THREE.SRGBColorSpace;
 //   - diffuse: the terrain-only canvas, lit by the sun at the Daylight strength.
 //     Sunlight brightens the craters/mare and their shadows fall on them, but it
 //     never reaches the road, so the road can't blow out at midday.
-// Receives shadows directly.
+// Receives shadows directly. Emissive light ignores shadows in three.js, so on
+// its own the road would glow straight through them and the shadow would seem to
+// pass UNDER the road. The patch below darkens the emissive layer by the sun's
+// own shadow term, scaled by uRoadShadow (Shadow on road x how high the sun is),
+// so a shadow lies across road and ground alike while daylight still never
+// changes the road's brightness.
 const groundMat = new THREE.MeshLambertMaterial({
   map: terrainTexture,
   color: new THREE.Color().setScalar(terrainCfg.daylight),
@@ -336,6 +346,21 @@ const groundMat = new THREE.MeshLambertMaterial({
   emissive: 0xffffff,
   emissiveIntensity: SURFACE_FILL
 });
+const roadShadowUniform = { value: 0 };
+groundMat.onBeforeCompile = (shader) => {
+  shader.uniforms.uRoadShadow = roadShadowUniform;
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', '#include <common>\nuniform float uRoadShadow;')
+    .replace(
+      '#include <lights_fragment_begin>',
+      `#include <lights_fragment_begin>
+#if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+  // Shadow-casting lights sort first, so shadow 0 is the sun (the rim casts none).
+  float sunShadow = receiveShadow ? getShadow( directionalShadowMap[ 0 ], directionalLightShadows[ 0 ].shadowMapSize, directionalLightShadows[ 0 ].shadowIntensity, directionalLightShadows[ 0 ].shadowBias, directionalLightShadows[ 0 ].shadowRadius, vDirectionalShadowCoord[ 0 ] ) : 1.0;
+  totalEmissiveRadiance *= mix( 1.0, sunShadow, uRoadShadow );
+#endif`
+    );
+};
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(W, H), groundMat);
 ground.rotation.x = -Math.PI / 2; // lie flat on XZ
 ground.receiveShadow = true;
