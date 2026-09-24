@@ -5,7 +5,7 @@ import { Campaign, DEFAULT_LOOP_CONFIG } from './loop';
 // Campaign uses window.localStorage inside try/catch, so under node it simply
 // runs without persistence -- fine for testing the pure loop/economy math.
 function fresh(): Campaign {
-  const c = new Campaign({ ...DEFAULT_LOOP_CONFIG, daysPerShift: 3, shiftsPerGame: 4, quota: 12, underQuotaFeePct: 0.5 });
+  const c = new Campaign({ ...DEFAULT_LOOP_CONFIG, mode: 1, daysPerShift: 3, shiftsPerGame: 4, quota: 12, underQuotaFeePct: 0.5 });
   c.dayNumber = 1;
   c.bankedOre = 0;
   return c;
@@ -79,7 +79,7 @@ describe('Campaign carried road', () => {
   // Shift 1 -> 2 stays on the same map (arenaRegenShifts 2); 2 -> 3 regenerates it.
   const tenRoad: [number, number, number, number][] = Array.from({ length: 10 }, (_, i) => [i, 0, i + 1, 0]);
   const boundary = (networkPersistence: number, day: number, shiftDecayPct = 0.4) => {
-    const c = new Campaign({ ...DEFAULT_LOOP_CONFIG, daysPerShift: 3, shiftsPerGame: 4, arenaRegenShifts: 2, networkPersistence, shiftDecayPct });
+    const c = new Campaign({ ...DEFAULT_LOOP_CONFIG, mode: 1, daysPerShift: 3, shiftsPerGame: 4, arenaRegenShifts: 2, networkPersistence, shiftDecayPct });
     c.dayNumber = day;
     const world = createContinuousWorld('t', {}, 'last-light-return');
     world.phase = 'won';
@@ -107,5 +107,46 @@ describe('Campaign carried road', () => {
 
   it('decay only bites at the boundary: mid-shift carries everything', () => {
     expect(boundary(1, 1).length).toBe(10);
+  });
+});
+
+describe('Levels mode', () => {
+  const levels = () => {
+    const c = new Campaign({ ...DEFAULT_LOOP_CONFIG, mode: 0, arenaScale: 2 });
+    c.gameSeed = 'levels-test';
+    c.levelIndex = 0;
+    return c;
+  };
+
+  it('builds a level with its quota, sun and stock derived from the map', () => {
+    const c = levels();
+    const { state } = c.buildWorld();
+    const b = c.level!.budget;
+    expect(state.arena.extraction!.oreRequired).toBe(b.quota);
+    expect(state.solarWindowSeconds).toBe(b.sunSeconds);
+    expect(state.nanobots).toBe(b.startStock);
+    expect(state.maxNanobots).toBeGreaterThanOrEqual(b.startStock);
+  });
+
+  it('clearing a level moves on; missing it retries the same map', () => {
+    const c = levels();
+    const first = c.buildWorld().state;
+    const again = c.buildWorld().state;
+    expect(again.fertileZones.map((z) => [z.x, z.y])).toEqual(first.fertileZones.map((z) => [z.x, z.y]));
+    c.endRun({ ...first, phase: 'lost' } as typeof first, []);
+    expect(c.levelIndex).toBe(0);
+    c.endRun({ ...first, phase: 'won', returnedUnderQuota: true } as typeof first, []);
+    expect(c.levelIndex).toBe(0); // under quota is not a clear
+    c.endRun({ ...first, phase: 'won', returnedUnderQuota: false, rover: { ...first.rover, ore: 20 } } as typeof first, []);
+    expect(c.levelIndex).toBe(1);
+    expect(c.bankedOre).toBe(20);
+    c.buildWorld();
+    expect(c.level!.index).toBe(1);
+  });
+
+  it('Sandbox mode builds with no level (the old day loop)', () => {
+    const c = new Campaign({ ...DEFAULT_LOOP_CONFIG, mode: 1 });
+    c.buildWorld();
+    expect(c.level).toBeNull();
   });
 });

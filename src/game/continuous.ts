@@ -1488,6 +1488,13 @@ function runFieldSystem(
   }
 }
 
+// Ore per second the seven industrial arms pull from a seam of this richness
+// while parked (the helper arm's small assist aside). Exported so level design
+// can estimate how long a seam takes to work.
+export function parkedMineRate(richness: number, tuning: ContinuousTuning): number {
+  return Math.max(0, richness) * INDUSTRIAL_ARMS * tuning.mineRate * STOP_MINE_EFFICIENCY;
+}
+
 function runMiningSystem(
   state: ContinuousWorldState,
   fertileZone: FertileZone | undefined,

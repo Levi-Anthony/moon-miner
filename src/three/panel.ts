@@ -4,7 +4,8 @@
 // Camera) with a "?" quick-help toggle. Self-contained DOM; every change
 // applies live and persists via ctx.save().
 import type { ContinuousWorldState, ContinuousTuning } from '../game/continuous';
-import { DEFAULT_LOOP_CONFIG, PERSISTENCE_MODES, type Campaign } from './loop';
+import { DEFAULT_LOOP_CONFIG, LOOP_MODES, PERSISTENCE_MODES, type Campaign } from './loop';
+import { levelSpec } from '../game/level';
 import { DEFAULT_ROAD_CONFIG } from './road';
 import { sliderCurve } from './sliderCurve';
 import type { RoadModel } from './road';
@@ -234,6 +235,13 @@ export function createPanel(ctx: PanelCtx): void {
   const deg = (rad: number) => `${Math.round((rad * 180) / Math.PI)}°`;
   const oreLayouts = ['Auto', 'Scatter', 'Ridge', 'Clusters', 'Belt'];
 
+  section('Levels', 'Levels pose one route question each; quota, sun and starting stock come from a par route on the map, so Level size and every speed knob keep them fair. Sandbox is the open day/shift loop.');
+  addRow({ label: 'Mode', min: 0, max: 1, step: 1, fmt: (v) => LOOP_MODES[Math.round(v)] ?? 'Levels', hint: 'Levels: clear a level (home with the quota) to go on; miss and you retry the same map. Sandbox: the open day → shift → game loop where every number is a knob. Switching rebuilds the day.', get: () => cfg.mode, set: (v) => (cfg.mode = Math.round(v)), commit: () => { ctx.rebuildDay(); sync(); } });
+  addRow({ label: 'Level', min: 1, max: 30, step: 1, fmt: (v) => `${Math.round(v)} · ${levelSpec(Math.round(v) - 1).name}`, hint: 'Jump to a level (Levels mode). Past the authored set, levels keep tightening.', get: () => ctx.campaign.levelIndex + 1, set: (v) => ctx.campaign.setLevel(Math.round(v) - 1), commit: () => { if (ctx.campaign.levelsMode()) ctx.rebuildDay(); } });
+  addRow({ mid: DEFAULT_LOOP_CONFIG.levelSunSlack, label: 'Sun slack', min: 0.3, max: 5, step: 0.05, fmt: (v) => `${v.toFixed(2)}×`, hint: 'Multiplies every level\'s daylight (which is already derived from its par route). Above 1 = more time; below 1 = harder than authored. Applies on the next level build.', get: () => cfg.levelSunSlack, set: (v) => (cfg.levelSunSlack = v), commit: () => { if (ctx.campaign.levelsMode()) ctx.rebuildDay(); } });
+  addRow({ mid: DEFAULT_LOOP_CONFIG.levelStockSlack, label: 'Stock slack', min: 0.3, max: 5, step: 0.05, fmt: (v) => `${v.toFixed(2)}×`, hint: 'Multiplies every level\'s starting nanobots (derived from the road its par route needs).', get: () => cfg.levelStockSlack, set: (v) => (cfg.levelStockSlack = v), commit: () => { if (ctx.campaign.levelsMode()) ctx.rebuildDay(); } });
+  addRow({ mid: DEFAULT_LOOP_CONFIG.levelQuotaShare, label: 'Quota share', min: 0.1, max: 1.5, step: 0.05, fmt: (v) => `${v.toFixed(2)}×`, hint: 'Multiplies every level\'s quota (a share of the ore on its par seams; capped at all of it).', get: () => cfg.levelQuotaShare, set: (v) => (cfg.levelQuotaShare = v), commit: () => { if (ctx.campaign.levelsMode()) ctx.rebuildDay(); } });
+
   section('Controls', 'How the stick and wheel feel. Touch: drag anywhere for a stick; the stick knobs change nothing on a keyboard.');
   addRow({ mid: DEFAULT_CONTROLS_CONFIG.stickRadius, label: 'Stick size', min: 30, max: 200, step: 1, fmt: (v) => `${Math.round(v)}px`, hint: 'How far your thumb travels from centre to full deflection. Bigger = finer control, more travel.', get: () => cc.stickRadius, set: (v) => (cc.stickRadius = v) });
   addRow({ mid: DEFAULT_CONTROLS_CONFIG.forwardCone, label: 'Forward cone', min: 0, max: 60, step: 1, fmt: (v) => `±${Math.round(v)}°`, hint: 'Pushing forward within this angle of straight ahead drives dead straight: sideways drift in your thumb never steers. Wider = easier to drive straight, but you must swing further over to turn while driving.', get: () => cc.forwardCone, set: (v) => (cc.forwardCone = v) });
@@ -284,9 +292,9 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ mid: ctx.tuningDefaults.crawlSpeed, label: 'Crawl speed', min: 5, max: 400, step: 1, fmt: int, hint: 'How fast you limp when out of stock (crawl).', get: tget('crawlSpeed'), set: tset('crawlSpeed') });
   addRow({ mid: ctx.tuningDefaults.maxNanobots, label: 'Base max stock', min: 4, max: 400, step: 1, fmt: int, hint: 'Nanobot capacity before any capacity climb. Higher = longer runs of fresh road before you run dry.', get: tget('maxNanobots'), set: tset('maxNanobots') });
   addRow({ mid: ctx.tuningDefaults.crawlRecoveryPerSecond, label: 'Crawl recovery', min: 0, max: 20, step: 0.01, fmt: p2, hint: 'Nanobots per second regained while crawling (out of stock).', get: tget('crawlRecoveryPerSecond'), set: tset('crawlRecoveryPerSecond') });
-  addRow({ mid: ctx.tuningDefaults.startingNanobots, label: 'Start stock', min: 0, max: 600, step: 1, fmt: int, hint: 'Nanobots you begin each day with. Applies next day.', get: tget('startingNanobots'), set: tset('startingNanobots') });
-  addRow({ mid: ctx.tuningDefaults.startingSolarSeconds, label: 'Sun window', min: 5, max: 3000, step: 5, fmt: int, hint: 'Seconds of daylight per day. Applies next day.', get: tget('startingSolarSeconds'), set: tset('startingSolarSeconds') });
-  addRow({ mid: DEFAULT_LOOP_CONFIG.quota, label: 'Daily quota', min: 1, max: 600, step: 1, fmt: int, hint: 'Ore you must bank per day. Return under it and you pay the fee below.', get: () => cfg.quota, set: (v) => { cfg.quota = Math.round(v); const ex = ctx.getState().arena.extraction; if (ex) ex.oreRequired = cfg.quota; } });
+  addRow({ mid: ctx.tuningDefaults.startingNanobots, label: 'Start stock', min: 0, max: 600, step: 1, fmt: int, hint: 'Sandbox (levels derive their own). Nanobots you begin each day with. Applies next day.', get: tget('startingNanobots'), set: tset('startingNanobots') });
+  addRow({ mid: ctx.tuningDefaults.startingSolarSeconds, label: 'Sun window', min: 5, max: 3000, step: 5, fmt: int, hint: 'Sandbox (levels derive their own). Seconds of daylight per day. Applies next day.', get: tget('startingSolarSeconds'), set: tset('startingSolarSeconds') });
+  addRow({ mid: DEFAULT_LOOP_CONFIG.quota, label: 'Daily quota', min: 1, max: 600, step: 1, fmt: int, hint: 'Sandbox (levels derive their own). Ore you must bank per day. Return under it and you pay the fee below.', get: () => cfg.quota, set: (v) => { cfg.quota = Math.round(v); const ex = ctx.getState().arena.extraction; if (ex && !ctx.campaign.levelsMode()) ex.oreRequired = cfg.quota; } });
   addRow({ mid: DEFAULT_LOOP_CONFIG.underQuotaFeePct, label: 'Under-quota fee', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Fraction of the haul skimmed when you return under quota.', get: () => cfg.underQuotaFeePct, set: (v) => (cfg.underQuotaFeePct = v) });
 
   section('Rail growth (independent of ore)', 'Background reach growth. Never reads ore amount.');
