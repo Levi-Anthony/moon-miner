@@ -13,9 +13,19 @@ import {
   type FieldPatch
 } from '../game/continuous';
 import type { ContinuousArenaId } from '../game/continuousArena';
+import { levelBudget, levelSpec, planPar, type LevelBudget, type LevelSpec } from '../game/level';
 import type { RoadEdgeQuad } from './road';
 
 export interface LoopConfig {
+  // 0 = LEVELS: authored levels, one route question each, with quota / sun /
+  //     starting stock derived from the map (see game/level.ts). Win to go on;
+  //     miss and you retry the same map.
+  // 1 = SANDBOX: the open day -> shift -> game loop, every number a panel knob.
+  mode: number;
+  // Levels only: multipliers on each level's own slack (1 = as authored).
+  levelSunSlack: number;
+  levelStockSlack: number;
+  levelQuotaShare: number;
   daysPerShift: number;
   shiftsPerGame: number;
   arenaRegenShifts: number;
@@ -33,7 +43,13 @@ export interface LoopConfig {
 
 export const PERSISTENCE_MODES = ['Reset each shift', 'Decay at shift', 'Persist'] as const;
 
+export const LOOP_MODES = ['Levels', 'Sandbox'] as const;
+
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
+  mode: 0,
+  levelSunSlack: 1,
+  levelStockSlack: 1,
+  levelQuotaShare: 1,
   daysPerShift: 3,
   shiftsPerGame: 4,
   arenaRegenShifts: 2,
@@ -49,6 +65,13 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
 
 const SAVE_KEY = 'mm3d-campaign-v1';
 const SEED_KEY = 'mm3d-seed-v1';
+const LEVEL_KEY = 'mm3d-level-v1';
+
+export interface LevelRun {
+  index: number; // 0-based
+  spec: LevelSpec;
+  budget: LevelBudget;
+}
 
 interface Save {
   day: number;
@@ -82,11 +105,24 @@ export class Campaign {
   // Live sim-tuning overrides from the control panel, applied to every world we
   // build so panel tweaks persist across days.
   tuningOverrides: Partial<ContinuousTuning> = {};
+  // Levels mode: which level you're on (persisted), and the last one built.
+  levelIndex = 0;
+  lastLevelCleared = false;
+  level: LevelRun | null = null;
 
   constructor(config: LoopConfig = DEFAULT_LOOP_CONFIG) {
     this.config = { ...config };
     this.gameSeed = this.loadSeed();
     this.loadSave();
+    this.levelIndex = this.loadLevel();
+  }
+
+  levelsMode(): boolean {
+    return Math.round(this.config.mode ?? 0) === 0;
+  }
+  setLevel(index: number): void {
+    this.levelIndex = Math.max(0, Math.floor(index));
+    this.saveLevel();
   }
 
   private clampInt(n: number): number {
@@ -105,6 +141,7 @@ export class Campaign {
     return `${this.gameSeed}:blk${this.blockOfShift(this.shiftOfDay(day))}`;
   }
   gameComplete(): boolean {
+    if (this.levelsMode()) return false; // levels run on (the last one keeps tightening)
     return this.dayNumber >= this.config.daysPerShift * this.config.shiftsPerGame;
   }
 
@@ -112,6 +149,8 @@ export class Campaign {
   // scale + carried road/depletion). Returns the state and the carried road
   // lattice to seed/repaint the road with.
   buildWorld(): { state: ContinuousWorldState; road: RoadEdgeQuad[] } {
+    if (this.levelsMode()) return this.buildLevel();
+    this.level = null;
     const state = createContinuousWorld(
       this.worldSeedFor(this.dayNumber),
       this.tuningOverrides,
@@ -135,6 +174,40 @@ export class Campaign {
     return { state, road: this.carriedRoad.map((q) => [...q] as RoadEdgeQuad) };
   }
 
+  // Levels: this level's map (fixed per game + level, so a retry is the same
+  // map), its ore shaped by the level on top of the panel's ore knobs, and its
+  // quota / sun / starting stock derived from a par route on that map. Nothing
+  // carries between levels: each is its own question.
+  private buildLevel(): { state: ContinuousWorldState; road: RoadEdgeQuad[] } {
+    const spec = levelSpec(this.levelIndex);
+    const t = this.tuningOverrides;
+    const tuning: Partial<ContinuousTuning> = {
+      ...t,
+      oreLayout: (t.oreLayout ?? 0) >= 1 ? t.oreLayout : spec.ore.layout ?? 0,
+      oreCount: (t.oreCount ?? 1) * (spec.ore.count ?? 1),
+      oreAmount: (t.oreAmount ?? 1) * (spec.ore.amount ?? 1),
+      orePoolSize: (t.orePoolSize ?? 1) * (spec.ore.poolSize ?? 1),
+      oreSpread: (t.oreSpread ?? 1) * (spec.ore.spread ?? 1)
+    };
+    const state = createContinuousWorld(`${this.gameSeed}:L${this.levelIndex}`, tuning, this.arenaId, [], {}, this.config.arenaScale);
+    const home = state.arena.extraction ?? state.arena.start;
+    const par = planPar(home, state.fertileZones, spec.seams, state.tuning, spec.target);
+    const budget = levelBudget(spec, par, state.tuning, {
+      sun: this.config.levelSunSlack ?? 1,
+      stock: this.config.levelStockSlack ?? 1,
+      quota: this.config.levelQuotaShare ?? 1
+    });
+    if (state.arena.extraction) {
+      state.arena = { ...state.arena, extraction: { ...state.arena.extraction, oreRequired: budget.quota } };
+    }
+    state.maxNanobots = Math.max(state.maxNanobots, budget.startStock);
+    state.nanobots = budget.startStock;
+    state.solarWindowSeconds = budget.sunSeconds;
+    state.solarSeconds = budget.sunSeconds;
+    this.level = { index: this.levelIndex, spec, budget };
+    return { state, road: [] };
+  }
+
   // A run ended: bank the day's haul (full on a clean win, minus the fee on an
   // under-quota return, nothing on a sunset loss), compute what carries into the
   // next day (road persists within a shift, wiped at a shift boundary; a hard
@@ -142,6 +215,17 @@ export class Campaign {
   // the banner shows this day's result; advance() moves on.
   endRun(state: ContinuousWorldState, road: RoadEdgeQuad[], bonus = 0): void {
     const won = state.phase === 'won';
+    if (this.levelsMode()) {
+      // Clear the level (home with the quota) to move on; anything else retries it.
+      const cleared = won && !state.returnedUnderQuota;
+      if (cleared) {
+        this.bankedOre += state.rover.ore;
+        this.bankedBonus += bonus;
+        this.setLevel(this.levelIndex + 1);
+      }
+      this.lastLevelCleared = cleared;
+      return;
+    }
     const fee = state.returnedUnderQuota ? 1 - this.config.underQuotaFeePct : 1;
     this.bankedOre += won ? state.rover.ore * fee : 0;
     this.bankedBonus += won ? bonus : 0;
@@ -174,6 +258,7 @@ export class Campaign {
   // Advance to the next day (or a fresh game after the last day), loading
   // whatever carried.
   advance(): void {
+    if (this.levelsMode()) return; // buildWorld reads the (possibly advanced) level
     if (this.gameComplete()) {
       this.newGame();
       return;
@@ -184,6 +269,7 @@ export class Campaign {
   newGame(): void {
     this.gameSeed = this.mintSeed();
     this.dayNumber = 1;
+    this.setLevel(0);
     this.bankedOre = 0;
     this.carriedFields = [];
     this.carriedDepletion = {};
@@ -199,6 +285,21 @@ export class Campaign {
   }
 
   // --- persistence ---
+  private loadLevel(): number {
+    try {
+      const n = Number(window.localStorage.getItem(LEVEL_KEY));
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+    } catch {
+      return 0;
+    }
+  }
+  private saveLevel(): void {
+    try {
+      window.localStorage.setItem(LEVEL_KEY, String(this.levelIndex));
+    } catch {
+      /* storage may be unavailable */
+    }
+  }
   private mintSeed(): string {
     return `g-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
   }

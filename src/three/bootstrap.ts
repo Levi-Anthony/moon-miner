@@ -29,6 +29,7 @@ import { pushOutOfCraters } from './craters';
 import { START_BEARING, sunState } from './sun';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_CONTROLS_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type ControlsConfig, type TerrainConfig } from './panel';
 import { stickToInput } from './stick';
+import { LEVELS, levelSpec } from '../game/level';
 
 // --- Persisted config (loop + road + sim-tuning overrides + camera + look + controls)
 const CONFIG_KEY = 'mm3d-config-v1';
@@ -761,10 +762,16 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
   }
   fitVista(); // resize the horizon skirt + fog fade to this world
   paintedSunBearing = START_BEARING; // a new day starts at first light
-  // 3D app: the day length is the Sun-window knob, not the arena's fixed 36s
-  // (so the panel knob bites and the default is learnable).
-  state.solarWindowSeconds = state.tuning.startingSolarSeconds;
-  state.solarSeconds = state.tuning.startingSolarSeconds;
+  // Sandbox: the day length is the Sun-window knob, not the arena's fixed 36s
+  // (so the panel knob bites and the default is learnable). Levels set their
+  // own sun (derived from the map) in the campaign.
+  if (!campaign.level) {
+    state.solarWindowSeconds = state.tuning.startingSolarSeconds;
+    state.solarSeconds = state.tuning.startingSolarSeconds;
+  } else {
+    const lv = campaign.level;
+    flash = { text: `Level ${lv.index + 1} · ${lv.spec.name} — ${lv.spec.teaches}`, until: performance.now() + 9000 };
+  }
   road.seed(built.road);
   road.boost = 0;
   road.locked = false;
@@ -1056,7 +1063,10 @@ function updateHud(): void {
   hud.sun.textContent = `${Math.ceil(state.solarSeconds)}s`;
   hud.sunBar.style.width = `${Math.min(100, (state.solarSeconds / Math.max(1, state.solarWindowSeconds)) * 100)}%`;
   hud.sunBar.style.background = state.solarSeconds / state.solarWindowSeconds < 0.25 ? '#ffb066' : '#8fb2ff';
-  hud.day.textContent = `D${campaign.dayInShiftOf()}/${campaign.config.daysPerShift} · S${campaign.shiftOfDay()}/${campaign.config.shiftsPerGame}`;
+  (hud.day.previousElementSibling as HTMLElement).textContent = campaign.level ? 'LEVEL' : 'SHIFT';
+  hud.day.textContent = campaign.level
+    ? (campaign.level.index < LEVELS.length ? `${campaign.level.index + 1}/${LEVELS.length}` : `${campaign.level.index + 1}`) // the name is in the start line + banner
+    : `D${campaign.dayInShiftOf()}/${campaign.config.daysPerShift} · S${campaign.shiftOfDay()}/${campaign.config.shiftsPerGame}`;
   hud.bonus.textContent = `+${Math.floor(bonusScore())}`;
   const onRoad = road.locked;
   hud.mode.textContent = state.arms.mining > 0
@@ -1080,6 +1090,19 @@ function showBanner(): void {
   hud.banner.className = won ? 'win' : 'lose';
   hud.banner.style.display = 'flex';
   hud.bannerTitle.textContent = finale ? 'GAME OVER' : won ? 'EXTRACTION REACHED' : 'RUN OVER';
+  const lv = campaign.level;
+  if (lv) {
+    const cleared = campaign.lastLevelCleared;
+    hud.banner.className = cleared ? 'win' : 'lose';
+    hud.bannerTitle.textContent = cleared ? `LEVEL ${lv.index + 1} CLEARED` : won ? 'UNDER QUOTA' : 'RUN OVER';
+    const b = lv.budget;
+    const par = `par ${Math.round(b.parSeconds)}s · ${b.par.seams.length} seam${b.par.seams.length === 1 ? '' : 's'}`;
+    const bonus = cleared ? `  ·  bonus +${Math.floor(bonusScore())} (${surplusOre().toFixed(1)} surplus ore, ${Math.round(slideDistance)} hands-off rail)` : '';
+    hud.bannerBody.textContent = `${state.message}  ·  ${par}${bonus}`;
+    const next = levelSpec(campaign.levelIndex);
+    cta.textContent = cleared ? `Tap for level ${campaign.levelIndex + 1}: ${next.name}` : `Tap to retry level ${lv.index + 1}`;
+    return;
+  }
   const bonusLine = won
     ? `  ·  bonus +${Math.floor(bonusScore())} (${surplusOre().toFixed(1)} surplus ore, ${Math.round(slideDistance)} hands-off rail) · ${Math.floor(campaign.bankedBonus)} total`
     : '';
@@ -1329,6 +1352,11 @@ function applyTuning(patch: Partial<ContinuousTuning>): void {
   campaign.tuningOverrides = { ...campaign.tuningOverrides, ...patch };
   state.tuning = resolveContinuousTuning({ ...state.tuning, ...patch });
   applyRailCapacity(state); // base capacity + grown ceiling (WS3)
+  if (campaign.level) {
+    // A level's sun and stock come from its map, not the Sandbox knobs.
+    state.maxNanobots = Math.max(state.maxNanobots, campaign.level.budget.startStock);
+    return;
+  }
   state.solarWindowSeconds = state.tuning.startingSolarSeconds;
   state.solarSeconds = Math.min(state.solarSeconds, state.solarWindowSeconds);
 }
