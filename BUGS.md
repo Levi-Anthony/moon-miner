@@ -19,12 +19,13 @@ Linear (DEV team, project Moon Miner) is the live tracker. This file lists what 
 As of 2026-09-24 on `main` at `bef3b58` (audit: `docs/audit/2026-09-24/STATE_AUDIT.md`):
 
 - **Phone HUD overlap** (DEV-56). At 390×844 the level-intro card covers the LEVEL and BONUS readouts. Proof: `docs/audit/2026-09-24/phone-boot.png`.
-- **Shadow type fallback** (DEV-57). `bootstrap.ts:140` requests `THREE.PCFSoftShadowMap`, which three 0.186 removed; it logs a warning and renders plain PCF shadows.
 - **Last-light report notes ignore the crawl metric** (DEV-51). Notes say "crawl pressure" / "heavy crawl" while Crawl Seconds is 0.0 on every route.
 - **Smoke coverage is narrow** (DEV-53). It checks boot, HUD and one drive; no HUD-overlap, phone, drone or end-of-level checks.
 
 ## Resolved Findings
 
+- **Shadows passed under the road** (DEV-59, fixed 2026-09-24). The road lives in the ground's emissive layer, which three.js shadows don't darken. A shader patch now darkens it by the sun's shadow term (panel knob: Light & sky → Shadow on road). Before/after: `docs/audit/2026-09-24/road-shadow-off.png`, `road-shadow-on.png`.
+- **Shadow type fallback** (DEV-57, fixed 2026-09-24). The renderer now asks for `PCFShadowMap` directly; three 0.186 had removed `PCFSoftShadowMap` and warned on every load.
 - **`npm run play:through` did not run** (DEV-55, fixed 2026-09-24). It waited for Phaser-era hooks; it now drives `window.__mm3d` and the level campaign.
 
 Pre-3D resolved findings are archived in `docs/archive/BUGS_resolved_pre-3d.md`.

@@ -36,7 +36,8 @@ export interface TerrainConfig {
   craterSize: number; // scales each crater's radius (1 = current)
   craterSpread: number; // how far craters scatter from map centre (1 = uniform, <1 clustered, >1 pushed to edges)
   craterBlockSize: number; // craters at least this radius are walls you drive around (huge = none block)
-  roadBrightness: number; // 0..1 glow of the laid road; steady all day (the sun never touches it)
+  roadBrightness: number; // 0..1 glow of the laid road; steady all day (daylight never changes it)
+  roadShadow: number; // 0..1 how far a cast shadow darkens the road's glow at full sun (0 = shadows stop at the road's edge)
   daylight: number; // how strongly the sun lights the terrain; 0 = no day/night change, higher = brighter mornings
   sunGain: number; // sun light intensity multiplier (lights the rover, drone, beacon and casts the shadows)
   sunHigh: number; // radians above the horizon at first light
@@ -51,7 +52,7 @@ export interface TerrainConfig {
   stars: number; // starfield brightness (0 = off)
 }
 export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = {
-  relief: 0.7, craterDensity: 0.6, craterSize: 1, craterSpread: 1, craterBlockSize: 45, roadBrightness: 0.8, daylight: 5,
+  relief: 0.7, craterDensity: 0.6, craterSize: 1, craterSpread: 1, craterBlockSize: 45, roadBrightness: 0.8, roadShadow: 0.6, daylight: 5,
   sunGain: 3, sunHigh: 0.8, sunLow: 0.1, sunSweep: 1.1, sunDiskSize: 420, ambient: 1, rimLight: 0.9, shadows: 1, bloom: 0.55, bloomThreshold: 0.72, stars: 1
 };
 
@@ -335,6 +336,7 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ mid: DEFAULT_TERRAIN_CONFIG.sunSweep, label: 'Sun sweep', min: 0, max: 3.14, step: 0.02, fmt: deg, hint: 'How far the sun travels across the sky over the day. More = shadows visibly swing round, a stronger clock.', get: () => tc.sunSweep, set: (v) => (tc.sunSweep = v) });
   addRow({ mid: DEFAULT_TERRAIN_CONFIG.sunDiskSize, label: 'Sun disk size', min: 0, max: 1500, step: 10, fmt: (v) => (v <= 0 ? 'hidden' : int(v)), hint: 'Size of the visible sun in the sky (tilt the camera up with Look angle to see it).', get: () => tc.sunDiskSize, set: (v) => { tc.sunDiskSize = v; ctx.applyLook(); } });
   addRow({ mid: DEFAULT_TERRAIN_CONFIG.shadows, label: 'Shadows', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off'), hint: 'Real cast shadows from the sun. Off is cheaper on a slow phone.', get: () => tc.shadows, set: (v) => { tc.shadows = v; ctx.applyLook(); } });
+  addRow({ mid: DEFAULT_TERRAIN_CONFIG.roadShadow, label: 'Shadow on road', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'How dark a cast shadow falls across the road at full sun. It fades with the sun, so dusk shadows are faint. 0 = the road glows through shadows.', get: () => tc.roadShadow, set: (v) => { tc.roadShadow = v; } });
   addRow({ mid: DEFAULT_TERRAIN_CONFIG.ambient, label: 'Fill light', min: 0, max: 3, step: 0.05, fmt: p2, hint: 'Ambient fill on the rover and props. Lower = darker, moodier shadow sides.', get: () => tc.ambient, set: (v) => (tc.ambient = v) });
   addRow({ mid: DEFAULT_TERRAIN_CONFIG.rimLight, label: 'Rim light', min: 0, max: 3, step: 0.05, fmt: p2, hint: 'The cool back light that edges the rover and drone so they read against the dark.', get: () => tc.rimLight, set: (v) => { tc.rimLight = v; ctx.applyLook(); } });
   addRow({ mid: DEFAULT_TERRAIN_CONFIG.bloom, label: 'Glow', min: 0, max: 2, step: 0.05, fmt: p2, hint: 'Neon bloom strength on the road, seams and cab. 0 = no glow.', get: () => tc.bloom, set: (v) => { tc.bloom = v; ctx.applyLook(); } });
