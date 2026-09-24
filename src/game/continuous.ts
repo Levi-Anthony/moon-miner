@@ -298,6 +298,13 @@ export interface ContinuousTuning {
   // corners at higher speed. (Replaces a fixed turn-rate cap that ignored speed,
   // which is what flung you off tight corners at speed.)
   railGrip: number;
+  // Wheel feel (presentation play and the sim alike). turnRate: rad/s at full
+  // lock off the rail; steerRamp: how fast the wheel travels to full lock (per
+  // second -- 4.6 is a little over a quarter second); carryBreakSteer: how far
+  // over (0..1) the stick must go to drop the cured-road carry and steer off.
+  turnRate: number;
+  steerRamp: number;
+  carryBreakSteer: number;
   lowStockWarningRatio: number;
   droneUrgencyRatio: number;
   // Refill rate (stock per second) while moving on prepared track when drone is
@@ -557,6 +564,9 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   gripFloor: 0.2,
   gripActiveSteerFactor: 0.5,
   railGrip: 1500,
+  turnRate: TURN_RATE,
+  steerRamp: STEER_RAMP_PER_SECOND,
+  carryBreakSteer: ROAD_CARRY_BREAK_STEER,
   lowStockWarningRatio: 0.18,
   droneUrgencyRatio: 0.32,
   // Refill while on prepared ground. Zero means no passive refill on track —
@@ -650,6 +660,9 @@ export const STABLE_FIRST_RUN_CONTINUOUS_TUNING: ContinuousTuning = {
   gripFloor: 0.2,
   gripActiveSteerFactor: 0.5,
   railGrip: 1500,
+  turnRate: TURN_RATE,
+  steerRamp: STEER_RAMP_PER_SECOND,
+  carryBreakSteer: ROAD_CARRY_BREAK_STEER,
   // Crawl is the overextension penalty, but at 0.1/s toward a 2.6 ceiling with a
   // 2.0 exit it took ~20s of near-stopped limping to claw back out -- and with no
   // loose end for the drone and no prepared road within reach, that read as a
@@ -1232,8 +1245,8 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     // always available from a standstill rather than waiting on a separate
     // pivot flag to be derived somewhere else.
     if (isSteering) {
-      state.rover.heading = wrapAngle(state.rover.heading + input.steer * TURN_RATE * pivotRate * deltaSeconds);
-      state.rover.turnRate = input.steer * TURN_RATE * pivotRate;
+      state.rover.heading = wrapAngle(state.rover.heading + input.steer * state.tuning.turnRate * pivotRate * deltaSeconds);
+      state.rover.turnRate = input.steer * state.tuning.turnRate * pivotRate;
       state.rover.speed = 0;
       state.message = input.reverseIntent
         ? 'Swinging on the spot.'
@@ -1273,13 +1286,13 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
   // to full lock in a single frame -- about 160 degrees per second on prepared
   // road -- which is the squirrel. Ramping it is what makes a heavy machine
   // feel heavy, and it costs nothing in responsiveness the player can perceive.
-  const steerRate = STEER_RAMP_PER_SECOND * deltaSeconds;
+  const steerRate = Math.max(0.01, state.tuning.steerRamp) * deltaSeconds;
   state.rover.steerInput = clamp(
     state.rover.steerInput + clamp(input.steer - state.rover.steerInput, -steerRate, steerRate),
     -1,
     1
   );
-  const playerTurn = state.rover.steerInput * TURN_RATE * turnMultiplier;
+  const playerTurn = state.rover.steerInput * state.tuning.turnRate * turnMultiplier;
 
   // Steering past the break is how you get OFF the rail, and it is the only
   // thing the wheel is for while you are on it. Held for railReleaseSeconds so
@@ -1328,7 +1341,7 @@ function steerAndMoveRover(state: ContinuousWorldState, input: ContinuousInput, 
     // it, the slide holds you. Self-play/tests pass no assistSteer and keep the
     // magnet unchanged.
     if (input.onRoad) {
-      const breakingOff = Math.abs(input.steer) >= ROAD_CARRY_BREAK_STEER;
+      const breakingOff = Math.abs(input.steer) >= state.tuning.carryBreakSteer;
       // Grip limit: the carry can turn at most railGrip / speed. Floored so it
       // stays sane at a crawl, capped so it stays sane on a stand-still.
       const carryCap = Math.min(TURN_RATE * 12, Math.max(0, state.tuning.railGrip) / Math.max(40, state.rover.speed));

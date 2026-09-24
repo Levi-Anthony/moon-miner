@@ -22,11 +22,19 @@ export interface SunState {
   offset: { x: number; y: number; z: number };
 }
 
+/** The day's path across the sky (panel knobs; defaults are the constants above). */
+export interface SunPath {
+  startElev: number; // radians above the horizon at first light
+  endElev: number; // radians above the horizon at last light
+  sweep: number; // radians of bearing travelled over the day
+}
+export const DEFAULT_SUN_PATH: SunPath = { startElev: START_ELEV, endElev: END_ELEV, sweep: SWEEP };
+
 // t = 0 at first light, 1 at sunset.
-export function sunState(t: number): SunState {
+export function sunState(t: number, path: SunPath = DEFAULT_SUN_PATH): SunState {
   const k = Math.max(0, Math.min(1, t));
-  const elev = START_ELEV + (END_ELEV - START_ELEV) * k;
-  const bearing = START_BEARING + SWEEP * k;
+  const elev = path.startElev + (path.endElev - path.startElev) * k;
+  const bearing = START_BEARING + path.sweep * k;
   // Warmth comes on a little ahead of halfway and deepens into sunset.
   const dusk = Math.pow(k, 1.3);
   return {
