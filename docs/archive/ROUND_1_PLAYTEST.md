@@ -1,3 +1,5 @@
+> **Archived 2026-09-24 (DEV-58).** Tracker for the V0 grid prototype, paused since 2026-07-01. The grid build is not what ships; kept for method and history. The playtest method itself lives in `PLAYTESTING.md` at the repo root.
+
 # Round 1 Playtest Tracker
 
 Status: paused, 0/5 sessions complete.

@@ -2,15 +2,36 @@
 
 ## Current Reality
 
-The presentation runs on Three.js (`index.html` → `src/three/bootstrap.ts`); Phaser was retired in PR #10 (2026-09-17). See `HANDOFF.md` §0 for the current substrate, and `RECONCILIATION.md` for the 2026-09-23 state-surface audit (Linear DEV-49).
+The game runs on Three.js (`index.html` → `src/three/bootstrap.ts`). Phaser was retired in PR #10 (2026-09-17). `HANDOFF.md` covers the current build, controls and architecture. `docs/audit/2026-09-24/STATE_AUDIT.md` (Linear DEV-54) is the latest state audit.
 
-- Desktop URL: `http://localhost:<printed-port>/`. The 3D build reads no URL parameters, so the older `?mobile=1`, `?debug=1` and `?view=` flags have no effect.
-- Unit tests: green as of 2026-09-23 on `main` at `f870f0c`, 134 tests in 13 files.
-- Build: green as of 2026-09-23.
-- Smoke: green as of 2026-09-23. The 3D smoke checks boot, HUD, and one drive through `window.__mm3d`.
-- Audit: **red** as of 2026-09-23. See Known Red.
+- **Build shape:** Levels mode by default. Six authored levels with map-derived budgets, then an endless tail (PR #40). Sandbox mode is in the ⚙ panel.
+- **URLs:** desktop and phone use the same URL, `http://localhost:<printed-port>/`. The build reads no URL parameters.
+- **Unit tests:** green as of 2026-09-24 on `main` at `bef3b58`, 189 tests in 18 files.
+- **Build:** green. **Audit:** 0 vulnerabilities.
+- **Smoke:** green. It checks boot, HUD and one drive through `window.__mm3d`.
+- **`npm run play:through`:** red. It targets the retired Phaser hooks (DEV-55). See Known Red.
+- The sections from "Last Good Commit" down (Last Good Commit, Next Slice, Completed, Next Bet Recommendations, Next Slices) predate the 3D build. Reconciling them is DEV-7.
 
 ## Last Verified
+
+Date: 2026-09-24 18:28 UTC
+
+Branch: `claude/evaluate-game-repo-docs-6r2q5d`, identical in code to `main` at `bef3b58` (Merge PR #40).
+
+Environment: Linux container, Node v22.22.2. Smoke and browser scripts needed `CHROME_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, because Playwright 1.61 expects browser build 1228 and the container ships 1194.
+
+Commands run:
+
+- `npm ci`: exit 0.
+- `npm test`: passed, 189 tests, 18 files.
+- `npm run build`: passed, one 673.53 kB chunk (gzip 178.60 kB), no size warning.
+- `npm audit`: 0 vulnerabilities.
+- `npm run smoke:continuous`: passed, "SMOKE OK — booted clean, HUD up, rover drove 46 units."
+- `npm run report:last-light`: passed, 5/5 routes won, Crawl Seconds 0.0 on every route.
+- `npm run play:through`: failed, `page.waitForFunction: Timeout 30000ms exceeded` at `scripts/playthrough.mjs:158` (DEV-55).
+- GitHub Actions CI and Pages: green on `main` for every merge from PR #37 to PR #40.
+
+### Superseded: the 2026-09-23 record
 
 Date: 2026-09-23 04:39 UTC
 
@@ -64,12 +85,12 @@ Kept deliberately, because it was wrong in both directions for two months. That 
 
 ## Known Red
 
-As of 2026-09-23 on `main` at `f870f0c`:
+As of 2026-09-24 on `main` at `bef3b58`:
 
-- `npm audit` exits 1 on 2 moderate advisories in the dev-only test runner (`vitest` / `@vitest/mocker` <= 4.1.10). `npm audit fix` is available. The audit runs weekly in `audit.yml` and does not gate CI.
-- The last-light report table labels `greedyLatePocketSloppy` "collapses into heavy crawl" while Crawl Seconds reads 0.0; the notes are fixed strings (`getLastLightRouteNote`). The report misleads, although the command exits 0.
+- `npm run play:through` times out waiting for `#moon-miner-continuous-debug-state`, a Phaser-era hook the 3D build doesn't have. CI doesn't run it (DEV-55).
+- The last-light report labels `greedyLatePocketSloppy` "collapses into heavy crawl" while Crawl Seconds reads 0.0. The notes are fixed strings (`getLastLightRouteNote`). The report misleads, although the command exits 0 (DEV-51).
 
-Resolved: the 2026-09-08 PR #1 smoke failure (`Expected tactical view mode, got chase.`) no longer applies; that branch has no commits beyond `main`.
+Resolved since 2026-09-23: `npm audit` is clean after PR #29 bumped vitest to 4.1.11.
 
 Treat any claim that "all checks pass" as incomplete unless it names the date, the branch, and the commit measured.
 
@@ -116,7 +137,7 @@ Treat any claim that "all checks pass" as incomplete unless it names the date, t
 - Added a reusable 99th-percentile scaffolding execution standard with phases, checkpoints, scoring, and cold-read step instructions.
 - Locked the first-run reclaim lesson by moving the tutorial old rail near the first ore, preventing immediate starting reclaim, and preserving the reclaim-required default route.
 - Added the automatic next-bet recommendation format: obvious bet, alternative bet, sleeper bet, tradeoffs, honest winner, confidence, and flip conditions.
-- Started the Round 1 first-time comprehension bet with an active five-participant tracker in `ROUND_1_PLAYTEST.md`.
+- Started the Round 1 first-time comprehension bet with an active five-participant tracker in `ROUND_1_PLAYTEST.md` (now `docs/archive/ROUND_1_PLAYTEST.md`).
 - Added the interpretive collaboration standard: infer the deeper ask, surface useful mental models, identify unasked questions, and red-team drift before locking meaningful product or creative work.
 - Applied the interpretive standard backward and corrected foundational drift: the grid prototype is now V0 prior art, Round 1 grid playtesting is paused, and the active direction is a continuous-motion nano-field extraction game.
 - Added `CONCEPT_REFRAME.md` and rewrote `GAME_DESIGN.md` around prepared field, autonomous drone reclaim logistics, arm-capacity mining, emergency crawl, and machine competence.
@@ -172,7 +193,7 @@ Superseded by the 2026-09-08 record above. Kept as history; do not read as curre
 - Visual smoke screenshot confirmed the driven field reads as a connected surface rather than a chain of separate patches.
 - Current active scene exposes `#moon-miner-continuous-debug-state`.
 - Prior V0 grid proof retained: headless Chrome smoke at `http://localhost:5173/` confirmed starting reclaim on `(10,10)` failed as unreachable, first ore left the rover at 7 nanobots, adjacent highlighted reclaim dispatched the helper bot, reclaim refunded to 9 nanobots, second ore was mined, and return to base ended in `phase=won`.
-- Documentation closeout: current README, `HANDOFF.md`, `CONCEPT_REFRAME.md`, `GAME_DESIGN.md`, `BETS.md`, `DECISIONS.md`, `PROGRESS.md`, `PLAYTESTING.md`, `ROUND_1_PLAYTEST.md`, and `PRIOR_ART.md` now agree that the continuous-motion spike is the active build and V0 grid playtesting remains paused.
+- Documentation closeout: current README, `HANDOFF.md`, `CONCEPT_REFRAME.md`, `GAME_DESIGN.md`, `BETS.md`, `DECISIONS.md`, `PROGRESS.md`, `PLAYTESTING.md`, `ROUND_1_PLAYTEST.md` (now `docs/archive/ROUND_1_PLAYTEST.md`), and `PRIOR_ART.md` now agree that the continuous-motion spike is the active build and V0 grid playtesting remains paused.
 
 ## Next Bet Recommendations
 

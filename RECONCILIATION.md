@@ -1,5 +1,7 @@
 # Reconciliation — 2026-09-23
 
+> **Superseded as the current audit (2026-09-24).** This records the state at `f870f0c` (PR #27) and stays accurate for that checkpoint. The follow-on audit at `bef3b58` (PRs #28–#40) is `docs/audit/2026-09-24/STATE_AUDIT.md` (DEV-54), and the doc actions it proposed were applied under DEV-58. `HANDOFF.md` was rewritten and its old version moved to `docs/archive/HANDOFF_2026-09-16.md`; `ROUND_1_PLAYTEST.md` moved to `docs/archive/`.
+
 Tracking: Linear **DEV-49** (related: DEV-13). Checkpoint: `main` at `f870f0c` (Merge PR #27).
 
 PR #10 (2026-09-17) rebuilt the presentation on Three.js and removed Phaser. PRs #11–#27 followed within five days. This pass checks each surface that records project state against `main` at `f870f0c`, and records a verdict for each item. Nothing here closes a PR, deletes a branch, changes a Linear status, or edits ECB. Those actions appear under **Proposed actions** and wait for owner approval.

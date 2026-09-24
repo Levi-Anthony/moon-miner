@@ -1,20 +1,18 @@
 # Start Here
 
-> **Status note (2026-09-23):** The game now runs on Three.js; Phaser was retired in PR #10. The URL flags below (`?mobile=1`, `?debug=1`, `?view=chase`) have no effect in the current build, and the test count has changed (134 as of 2026-09-23). The folder path `/Users/prodadmin/...` is one machine's path; use wherever you cloned the repo (Linear DEV-8). For current status, read `PROGRESS.md` "Last Verified" and `RECONCILIATION.md`.
-
 This file is the day-one operating manual for Moon Miner. It assumes you are intelligent, but it does not assume you already know command-line, Git, localhost, ports, dev servers, or testing rituals.
 
 Use this when you want to open the project, run the game, test it, or ask an agent for help without guessing.
 
 ## What This Folder Is
 
-The project lives here:
+The project lives wherever you cloned it, for example:
 
 ```bash
-/Users/prodadmin/Documents/Moon Miner
+~/Documents/moon-miner
 ```
 
-That folder contains the game code, documentation, tests, package setup, and Git history.
+That folder contains the game code, documentation, tests, package setup, and Git history. In the commands below, replace `~/Documents/moon-miner` with your own path.
 
 When a command in this guide says "run this," it means:
 
@@ -26,23 +24,22 @@ When a command in this guide says "run this," it means:
 To move Terminal into the project folder, run:
 
 ```bash
-cd "/Users/prodadmin/Documents/Moon Miner"
+cd ~/Documents/moon-miner
 ```
 
-The quotation marks matter because the folder name has a space in it.
+If your folder name has a space in it, put quotation marks around the part after `~/`, for example `cd ~/"Documents/Moon Miner"` (the `~/` must stay outside the quotes or the shell won't expand it).
 
 ## Vocabulary
 
 - **Terminal**: a text window where you tell the computer to run commands.
 - **Command**: one line of text you run in Terminal, such as `npm run dev`.
-- **Project folder**: the Moon Miner folder on this Mac.
+- **Project folder**: the folder you cloned Moon Miner into.
 - **npm**: the tool that runs this JavaScript/TypeScript project's scripts.
 - **Vite**: the local development server used to show the game in a browser.
 - **Dev server**: a temporary local web server running from your Terminal.
 - **localhost**: this same computer. `http://localhost:5173/` means "open port 5173 on this Mac."
 - **Port**: a numbered doorway on your computer. Vite often uses `5173`, but it may choose `5174`, `5175`, or another nearby number if the first one is busy.
-- **URL**: a browser address, such as `http://localhost:5173/?mobile=1`.
-- **Query flag**: the part after `?` in a URL. It changes the mode without changing the app.
+- **URL**: a browser address, such as `http://localhost:5173/`.
 - **Ctrl+C**: hold the `Control` key and press `C`. In Terminal, this usually stops the running command.
 
 ## First-Time Setup
@@ -106,51 +103,24 @@ If the browser later says "site can't be reached," the dev server is probably no
 npm run dev
 ```
 
-## URL Modes
+## One URL, No Modes
 
-Start with the exact `Local` URL printed by Vite. In these examples, the printed URL is:
+The game has one URL: the exact `Local` URL Vite printed, such as `http://localhost:5173/`. It reads no URL flags. Older guides mention `?mobile=1`, `?debug=1` and `?view=chase`. Those belonged to the retired Phaser build and now do nothing.
 
-```text
-http://localhost:5173/
-```
-
-Desktop/default mode:
+There is also a live copy on the web, rebuilt from `main` after every merge:
 
 ```text
-http://localhost:5173/
+https://levi-anthony.github.io/moon-miner/
 ```
 
-Mobile portrait simulation:
+## Controls
 
-```text
-http://localhost:5173/?mobile=1
-```
+- Drive: `W/A/S/D` or the arrow keys, or drag anywhere on the screen like a joystick.
+- Drone: `Space` or the `Launch` button.
+- After a level ends: `R` or tap the banner to go on (or retry).
+- Settings: the ⚙ button in the bottom-left corner opens the control panel.
 
-Debug tuning panel:
-
-```text
-http://localhost:5173/?debug=1
-```
-
-Mobile portrait plus debug workbench:
-
-```text
-http://localhost:5173/?mobile=1&debug=1
-```
-
-Old chase-camera comparison:
-
-```text
-http://localhost:5173/?view=chase
-```
-
-Mobile portrait plus chase-camera comparison:
-
-```text
-http://localhost:5173/?mobile=1&view=chase
-```
-
-Rule of thumb: the first mode flag starts with `?`. Extra flags use `&`.
+`README.md` has the full controls list.
 
 ## Real Phone Testing
 
@@ -188,11 +158,7 @@ Network: http://192.168.1.24:5173/
 ```
 
 4. On the phone, open that `Network` URL.
-5. For the mobile layout, add `?mobile=1`:
-
-```text
-http://192.168.1.24:5173/?mobile=1
-```
+5. Drag on the screen to drive. There is no separate mobile mode to switch on.
 
 If the phone cannot open the page:
 
@@ -235,30 +201,19 @@ Full verification:
 npm run verify:full
 ```
 
-Tests, build, browser smoke, then the audit last. Audit runs last on purpose: it used to sit ahead of the smoke check, so a red audit short-circuited the chain and the browser check never ran at all. As of September 8, 2026 this passes end to end on `main`.
+Tests, build, browser smoke, then the audit last. Audit runs last on purpose: it used to sit ahead of the smoke check, so a red audit short-circuited the chain and the browser check never ran at all. Check GitHub Actions or `PROGRESS.md` "Last Verified" for the latest result.
 
 ## Current Check Status
 
-As of September 8, 2026, measured on `main` at `787d502` plus the lockfile fix in this change:
+This guide no longer keeps a hand-written pass/fail list. Between July and September 2026 that list went stale in both directions at once, because nothing re-ran it.
 
-- `npm test` passes, 62 tests.
-- `npm run build` passes.
-- `npm audit` passes, 0 vulnerabilities.
-- `npm run smoke:continuous` passes.
-- `npm run verify`, `npm run verify:known-green`, and `npm run verify:full` all exit 0.
+Where to look instead:
 
-Nothing is known red on `main` right now.
+1. **GitHub Actions** runs tests, build, browser smoke and the Last Light report on every push to `main` and every pull request. A green check on a commit is the current answer for that commit.
+2. **`PROGRESS.md` "Last Verified"** is the latest run recorded by hand, with date, commit and environment.
+3. **Run the commands yourself** (above) when you need to know about your own copy.
 
-Two things not to assume from that:
-
-- **Branches differ.** The open PR #1 branch fails smoke with `Expected tactical view mode, got chase.` A green `main` says nothing about a branch.
-- **This section ages.** `npm audit` reads a live advisory feed, so it can go red with no code change at all. Between July 1 and September 8, 2026 this section was wrong in both directions at once: it called smoke red while smoke passed, and called audit clean while audit was failing on two high-severity advisories. Nobody noticed, because nothing re-runs these commands automatically.
-
-Do not let an agent say "all checks pass" unless it includes the current known-red status or has actually fixed it.
-
-As of September 8, 2026 nothing is known red on `main`. So an agent claiming green must also say which branch and which commit it measured, because a branch can differ. Re-run the commands; do not quote this section as evidence.
-
-Since September 8, 2026 these checks also run in GitHub Actions on every push and pull request, so a red result shows up on the pull request instead of waiting for someone to notice. That is the actual fix for how this section went stale: it was hand-maintained, and nothing re-ran the commands for two months.
+Do not let an agent say "all checks pass" unless it names the branch and commit it measured and has actually run the commands. A green `main` says nothing about a branch.
 
 ## When Something Goes Wrong
 
@@ -281,7 +236,7 @@ npm run dev
 5. If it is still broken, ask an agent and include:
    - The exact command you ran.
    - The exact error text.
-   - Whether you are in `/Users/prodadmin/Documents/Moon Miner`.
+   - Which folder you ran it in (Terminal shows it; `pwd` prints it).
 
 If the browser says "site can't be reached":
 
