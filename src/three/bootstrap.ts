@@ -1093,14 +1093,17 @@ let ribbonDrone: RibbonDrone | null = null;
 function launchRibbonReclaim(): void {
   if (ribbonDrone) { flash = { text: 'Drone is already out.', until: performance.now() + 1500 }; return; }
   const home = state.arena.extraction ?? state.arena.start;
-  const plan = road.reclaimPlan(home, state.tuning.droneTetherRange, road.config.reclaimBite, {
+  // Off the rail and facing road: the drone is an ERASER for the road right in
+  // front of you. Riding the rail: the usual cleanup, peeling one end.
+  const erase = road.locked ? null : road.eraserPlan(state.rover, state.rover.heading, home, state.tuning.droneTetherRange);
+  const plan = erase ?? road.reclaimPlan(home, state.tuning.droneTetherRange, road.config.reclaimBite, {
     heading: state.rover.heading,
     bias: state.tuning.reclaimAimBias
   });
   if (!plan) { flash = { text: 'No road within tether range to reclaim.', until: performance.now() + 1800 }; return; }
   const perUnit = state.tuning.fabricateCostPerSecond / Math.max(1, state.tuning.fabricatingSpeed);
   ribbonDrone = { phase: 'out', pos: { x: home.x, y: home.y }, home: { x: home.x, y: home.y }, plan, refund: plan.length * perUnit, lifted: false };
-  flash = { text: `Drone reclaiming ${plan.length.toFixed(0)} of road…`, until: performance.now() + 2000 };
+  flash = { text: erase ? `Drone erasing ${plan.length.toFixed(0)} of road ahead…` : `Drone reclaiming ${plan.length.toFixed(0)} of road…`, until: performance.now() + 2000 };
 }
 
 // Fly the reclaim drone out to the lift point, lift the ribbon, and carry the
@@ -1173,7 +1176,7 @@ function frame(now: number): void {
       state.speedState === 'crawl' &&
       !road.locked
   );
-  const emergencyStuck = emergency && !road.canCannibalise();
+  const emergencyStuck = emergency && !road.canCannibalise(state);
   emergencyActive = emergency;
   let input: ContinuousInput = reversing
     ? base
