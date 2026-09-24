@@ -26,6 +26,7 @@ const TRACK_RATE = 9; // how quickly the lock closes leftover heading error (fix
 const CORNER_PROBE_INTERVAL = 0.1; // re-read the road ahead ~10x/s (it's a speed limit, not a steer)
 const CORNER_PROBE_MAX = 900; // never look further ahead than this
 const RAIL_BRAKE_MULT = 3; // the rail brakes this many times harder than it accelerates
+const SLURP_CHARGE_DRAIN = 1; // off the rail / slow, slurp charge drains at this many seconds per second
 const RAIL_BRAKE_PLAN = 0.75; // plan braking at this share of the real decel, so it's early rather than just-in-time
 const CORNER_GRIP_RESERVE = 0.85; // the rail plans bends at this share of grip, keeping the rest for the lock's corrections
 const CORNER_PROBE_WINDOW = 1.2; // x half-width: tighter smoothing than the steer, so a tight bend isn't averaged away
@@ -87,8 +88,11 @@ export class RoadModel {
   locked = false; // riding the rail (the lock holds you and the rail sets your speed)
   private releaseTimer = 0;
   private cornerTimer = 0;
-  private cornerLimit = Infinity;
-  charge = 0; // seconds held at rail top speed; the slurp arms once it passes slurpChargeSeconds
+  // What the road ahead demands, from the last look-ahead: "be at speed v by
+  // distance s". Distances shrink every frame by how far you actually drove,
+  // so braking tracks continuously between the ~10 Hz reads.
+  private cornerConstraints: { v: number; s: number }[] = [];
+  charge = 0; // seconds of riding the rail at speed; the slurp arms once it passes slurpChargeSeconds
   config: RoadConfig;
 
   constructor(config: RoadConfig = DEFAULT_ROAD_CONFIG) {
@@ -121,7 +125,7 @@ export class RoadModel {
     this.locked = false;
     this.releaseTimer = 0;
     this.cornerTimer = 0;
-    this.cornerLimit = Infinity;
+    this.cornerConstraints = [];
   }
   edgeCount(): number {
     return this.segs.length;
@@ -324,7 +328,7 @@ export class RoadModel {
   // closeness, so the ~6-unit wobbly joints blur into one smooth line. Parallel
   // lanes (off laterally) and crossings (~90 degrees) are excluded. The tangent
   // is oriented along (rx,ry). Null when there's no cured road here.
-  private lineAt(px: number, py: number, rx: number, ry: number, elapsed: number, window = this.halfWidth() * ROAD_FOLLOW_LOOKAHEAD_MULT): { tangent: number; lx: number; ly: number } | null {
+  private lineAt(px: number, py: number, rx: number, ry: number, elapsed: number, window = this.halfWidth() * ROAD_FOLLOW_LOOKAHEAD_MULT): { tangent: number; lx: number; ly: number; nearest: number } | null {
     const lookahead = window;
     const hw = this.halfWidth();
     let sx = 0;
@@ -332,6 +336,7 @@ export class RoadModel {
     let cx = 0;
     let cy = 0;
     let wsum = 0;
+    let nearest = Infinity; // closest contributing segment midpoint to the probe
     for (const sg of this.segs) {
       if (elapsed - sg.t < ROAD_CURE_SECONDS) continue;
       const mx = (sg.ax + sg.bx) / 2 - px;
@@ -347,6 +352,7 @@ export class RoadModel {
       if (Math.abs(dot) < 0.5) continue; // a crossing, not this line
       if (dot < 0) { tx = -tx; ty = -ty; }
       const w = (1 - d / lookahead) * len;
+      if (d < nearest) nearest = d;
       sx += tx * w;
       sy += ty * w;
       cx += ((sg.ax + sg.bx) / 2) * w;
@@ -354,7 +360,7 @@ export class RoadModel {
       wsum += w;
     }
     if (wsum <= 0 || sx * sx + sy * sy <= 1e-9) return null;
-    return { tangent: Math.atan2(sy, sx), lx: cx / wsum, ly: cy / wsum };
+    return { tangent: Math.atan2(sy, sx), lx: cx / wsum, ly: cy / wsum, nearest };
   }
 
   // The lock: the turn rate (rad/s) that carries the rover along the laid
@@ -440,11 +446,18 @@ export class RoadModel {
     if (this.locked) {
       this.cornerTimer -= dt;
       if (this.cornerTimer <= 0) {
-        this.cornerLimit = this.cornerSpeedLimit(state, lay, top);
+        this.cornerConstraints = this.cornerConstraintsAhead(state, lay, top);
         this.cornerTimer = CORNER_PROBE_INTERVAL;
       }
+      const travelled = Math.max(0, state.rover.speed) * dt;
+      const decelPlan = Math.max(1, this.config.railAccel) * RAIL_BRAKE_MULT * RAIL_BRAKE_PLAN;
+      let cornerLimit = Infinity;
+      for (const c of this.cornerConstraints) {
+        c.s -= travelled;
+        cornerLimit = Math.min(cornerLimit, Math.sqrt(c.v * c.v + 2 * decelPlan * Math.max(0, c.s)));
+      }
       const braking = Math.max(0, Math.min(1, this.config.cornerBraking));
-      const target = top + (Math.min(top, this.cornerLimit) - top) * braking;
+      const target = top + (Math.min(top, cornerLimit) - top) * braking;
       const accel = Math.max(1, this.config.railAccel);
       v = v < target ? Math.min(target, v + accel * dt) : Math.max(target, v - accel * RAIL_BRAKE_MULT * dt);
     } else {
@@ -458,29 +471,40 @@ export class RoadModel {
   // sqrt(grip / curvature), and from here you can still brake down to it if
   // you're under sqrt(v_bend^2 + 2 * decel * distance). The end of the road
   // counts as a "bend" you must reach at laying speed.
-  private cornerSpeedLimit(state: ContinuousWorldState, lay: number, top: number): number {
+  // Read the road ahead into speed constraints ("be at v by distance s").
+  // Walks forward along the smoothed line from the rover: each bend demands
+  // sqrt(grip / curvature) where it starts, and the end of the road demands
+  // laying speed where the road runs out. update() turns these into a speed
+  // limit every frame -- the fastest speed from which the rail can still brake
+  // down to each one in time: sqrt(v^2 + 2 * decel * s).
+  private cornerConstraintsAhead(state: ContinuousWorldState, lay: number, top: number): { v: number; s: number }[] {
     const grip = Math.max(1, state.tuning.railGrip) * CORNER_GRIP_RESERVE;
     const decel = Math.max(1, this.config.railAccel) * RAIL_BRAKE_MULT * RAIL_BRAKE_PLAN;
     const step = this.halfWidth() * CORNER_PROBE_STEP;
     const window = this.halfWidth() * CORNER_PROBE_WINDOW;
-    const maxDist = Math.min(CORNER_PROBE_MAX, (top * top - lay * lay) / (2 * decel) + step * 2);
+    // Far enough to brake from top speed to laying speed, plus the probe's own
+    // reach and the distance covered before the next read.
+    const maxDist = Math.min(CORNER_PROBE_MAX, (top * top - lay * lay) / (2 * decel) + step * 3 + top * CORNER_PROBE_INTERVAL);
+    const out: { v: number; s: number }[] = [];
     let px = state.rover.x;
     let py = state.rover.y;
     let rx = Math.cos(state.rover.heading);
     let ry = Math.sin(state.rover.heading);
     let prev: number | null = null;
-    let limit = Infinity;
     for (let s = 0; s <= maxDist; s += step) {
       const f = this.lineAt(px, py, rx, ry, state.elapsedSeconds, window);
-      if (!f) {
-        limit = Math.min(limit, Math.sqrt(lay * lay + 2 * decel * Math.max(0, s - step)));
+      // The road has ended once there's no road AT the probe -- not merely none
+      // within the smoothing window, which still sees the last stretch from up
+      // to a window past the end and made the rail brake as if the road ran on.
+      if (!f || f.nearest > step) {
+        out.push({ v: lay, s: Math.max(0, s - step) });
         break;
       }
       if (prev !== null) {
         const kappa = Math.abs(angleDifference(f.tangent, prev)) / step;
         if (kappa > 1e-5) {
           const vBend = Math.sqrt(grip / kappa);
-          limit = Math.min(limit, Math.sqrt(vBend * vBend + 2 * decel * Math.max(0, s - step)));
+          if (vBend < top) out.push({ v: vBend, s: Math.max(0, s - step) });
         }
       }
       prev = f.tangent;
@@ -494,13 +518,24 @@ export class RoadModel {
       px += rx * step - ry * lat;
       py += ry * step + rx * lat;
     }
-    return limit;
+    return out;
   }
-  updateCharge(deltaSeconds: number, atTopSpeed: boolean): void {
-    this.charge = atTopSpeed ? Math.min(this.config.slurpChargeSeconds + 1, this.charge + deltaSeconds) : 0;
+  // Slurp charge builds while you ride the rail at speed (`riding`: locked on,
+  // driving, rail momentum at or above slurpMinBoost) and DRAINS -- never
+  // snaps to zero -- when you're not, so a brief dip (a bend the rail brakes
+  // for, a moment off the throttle) costs only its own duration. It used to
+  // require 90% of max top speed and reset on any dip, so the rail's own
+  // braking -- for a bend, or for the road ending at the seam you laid it into
+  // -- disarmed it right before the seam, and it almost never fired.
+  updateCharge(deltaSeconds: number, riding: boolean): void {
+    this.charge = riding
+      ? Math.min(this.config.slurpChargeSeconds + 1, this.charge + deltaSeconds)
+      : Math.max(0, this.charge - deltaSeconds * SLURP_CHARGE_DRAIN);
   }
+  // Armed once charged, for as long as you stay on the rail: braking into a
+  // seam at the end of your road still slurps it.
   slurpArmed(): boolean {
-    return this.config.slurpBandPct > 0 && this.boost >= this.config.slurpMinBoost && this.charge >= this.config.slurpChargeSeconds;
+    return this.config.slurpBandPct > 0 && this.locked && this.charge >= this.config.slurpChargeSeconds;
   }
 
   slurp(state: ContinuousWorldState): SlurpEvent | null {

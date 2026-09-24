@@ -164,3 +164,44 @@ describe('the rail lock: one way on, one way off', () => {
     expect(LAY + (600 - LAY) * road.boost).toBeLessThan(600 * 0.5); // most of the way back down to laying speed
   });
 });
+
+describe('slurp: earned by riding the rail, not reset by the rail braking', () => {
+  it('charge drains on a dip instead of resetting', () => {
+    const road = new RoadModel();
+    for (let i = 0; i < 60; i += 1) road.updateCharge(1 / 60, true); // 1 s riding
+    for (let i = 0; i < 18; i += 1) road.updateCharge(1 / 60, false); // 0.3 s dip
+    expect(road.charge).toBeCloseTo(0.7, 1);
+  });
+
+  it('fires through a seam at the END of the road you laid into it (the rail brakes, the slurp still lands)', () => {
+    // A straight run-up into a seam whose core sits right at the end of the road.
+    const line = Array.from({ length: 200 }, (_, i) => ({ x: i * 3, y: 0 })); // x 0..597
+    const road = layPath(line);
+    const zone = { id: 'z', remaining: 9, vein: { from: { x: 555, y: 0 }, to: { x: 605, y: 0 }, width: 40 } };
+    const rover = { x: 10, y: 0, heading: 0, speed: LAY, ore: 0 };
+    const st = { ...worldState(rover, { railSpeed: 236, railGrip: 1500 }), fertileZones: [zone] } as unknown as ContinuousWorldState;
+    const dt = 1 / 60;
+    let fired = false;
+    let minSpeedNearSeam = Infinity;
+    road.update(st, 0, dt);
+    for (let t = 0; t < 6 && !fired && rover.x < 600; t += dt) {
+      rover.speed = LAY + (236 - LAY) * road.boost;
+      if (rover.x > 560) minSpeedNearSeam = Math.min(minSpeedNearSeam, rover.speed); // entering the seam's core
+      rover.x += rover.speed * dt;
+      road.update(st, 0, dt);
+      road.updateCharge(dt, road.locked && road.boost >= road.config.slurpMinBoost);
+      if (road.slurp(st)) fired = true;
+    }
+    expect(minSpeedNearSeam).toBeLessThan(236 * 0.9); // the rail really did brake for the road's end...
+    expect(fired).toBe(true); // ...and the slurp still fired
+    expect(zone.remaining).toBe(0);
+    expect(rover.ore).toBe(9);
+  });
+
+  it('does not arm off the rail', () => {
+    const road = new RoadModel();
+    for (let i = 0; i < 200; i += 1) road.updateCharge(1 / 60, true);
+    expect(road.charge).toBeGreaterThan(road.config.slurpChargeSeconds);
+    expect(road.slurpArmed()).toBe(false); // not locked on anything
+  });
+});

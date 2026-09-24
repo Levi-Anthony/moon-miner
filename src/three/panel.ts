@@ -241,8 +241,8 @@ export function createPanel(ctx: PanelCtx): void {
 
   section('Slurp', 'Fast rail passes grab whole seams.');
   addRow({ label: 'Slurp band', min: 0, max: 1, step: 0.02, fmt: p2, hint: 'Central fraction of a seam a fast pass slurps whole. 0 = slurp off.', get: () => rc.slurpBandPct, set: (v) => (rc.slurpBandPct = v) });
-  addRow({ label: 'Slurp min boost', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Rail boost (0..1) needed before a slurp can fire at all.', get: () => rc.slurpMinBoost, set: (v) => (rc.slurpMinBoost = v) });
-  addRow({ label: 'Slurp charge (s)', min: 0, max: 30, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Seconds at rail top speed before the slurp arms. Higher = must earn a longer run first.', get: () => rc.slurpChargeSeconds, set: (v) => (rc.slurpChargeSeconds = v) });
+  addRow({ label: 'Slurp min boost', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Rail momentum (0..1 of the way from laying speed to top speed) you must be riding at for the slurp to charge.', get: () => rc.slurpMinBoost, set: (v) => (rc.slurpMinBoost = v) });
+  addRow({ label: 'Slurp charge (s)', min: 0, max: 30, step: 0.1, fmt: (v) => v.toFixed(1), hint: 'Seconds of riding the rail at speed to arm the slurp (the HUD shows Rail ⚡). Dips drain it rather than reset it; once armed it stays armed while you are on the rail. Higher = must earn a longer run first.', get: () => rc.slurpChargeSeconds, set: (v) => (rc.slurpChargeSeconds = v) });
 
   section('Drone (cleanup / reclaim)', 'Lifts a run off ONE END of the ribbon, so the network never splits. Tether = reach; Aim bias = your facing picks which end.');
   addRow({ label: 'Tether range', min: 20, max: 12000, step: 20, fmt: int, hint: 'How far out from home the drone will reach. It lifts a run off one end of the ribbon whose midpoint is within this radius, and never a middle piece, so the network never splits. Max ≈ whole map.', get: tget('droneTetherRange'), set: tset('droneTetherRange') });
