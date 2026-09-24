@@ -49,6 +49,19 @@ export interface RoadConfig {
   railBrakeMult: number; // the rail brakes this many times harder than it accelerates
   cornerGripReserve: number; // 0..1 share of grip the rail plans bends at (the rest is kept for corrections)
   slurpChargeDrain: number; // off the rail / slow, slurp charge drains this many seconds per second
+  // Junctions: when your new road meets existing road (laying stops for the
+  // no-restack rule) or leaves it onto fresh ground, the two are joined if the
+  // gap is within this many half-widths beyond the no-lay distance. 0 = never join.
+  junctionReach: number;
+  // Emergency cannibalising never eats rail within this many car lengths of the
+  // rover (under you, just behind), nor in a cone this many car lengths ahead.
+  cannibalGuard: number;
+  cannibalGuardAhead: number;
+  // Drone eraser: launched while OFF the rail, the drone erases road directly
+  // ahead of you (within eraserReach, a patch of eraserRadius) instead of
+  // peeling an end. 0 reach = off (always the end reclaim).
+  eraserReach: number;
+  eraserRadius: number;
 }
 
 export const DEFAULT_ROAD_CONFIG: RoadConfig = {
@@ -70,7 +83,12 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
   trackRate: TRACK_RATE,
   railBrakeMult: RAIL_BRAKE_MULT,
   cornerGripReserve: CORNER_GRIP_RESERVE,
-  slurpChargeDrain: SLURP_CHARGE_DRAIN
+  slurpChargeDrain: SLURP_CHARGE_DRAIN,
+  junctionReach: 1.5,
+  cannibalGuard: 1.2,
+  cannibalGuardAhead: 5,
+  eraserReach: 320,
+  eraserRadius: 70
 };
 
 export interface SlurpEvent { x: number; y: number; gained: number }
@@ -99,6 +117,8 @@ export class RoadModel {
   private pts: Pt[] = []; // the driven ribbon (for separation + spacing + cure)
   private segs: Seg[] = []; // ribbon segments (for painting, the lock, crossings, persistence)
   private last: Vec2 | null = null;
+  private tipJoined = false; // the current stroke's tip has already been joined onto road it ran into
+  private blocked = false; // the last sample was refused because you're on/at existing road
   boost = 0; // 0..1 rail momentum, fed to the sim as roadRunway
   locked = false; // riding the rail (the lock holds you and the rail sets your speed)
   private releaseTimer = 0;
@@ -138,6 +158,8 @@ export class RoadModel {
     this.pts.length = 0;
     this.segs.length = 0;
     this.last = null;
+    this.tipJoined = false;
+    this.blocked = false;
     this.boost = 0;
     this.charge = 0;
     this.locked = false;
@@ -231,8 +253,35 @@ export class RoadModel {
   // EMERGENCY (no fresh stock left): is there any OLDER laid rail — beyond the
   // fresh tail under the rover — that the arms could cannibalise to keep moving?
   // When false, the rover is truly out of material and must halt.
-  canCannibalise(): boolean {
-    return this.segs.length - this.recentPointCount() > 0;
+  canCannibalise(state?: ContinuousWorldState): boolean {
+    const older = this.segs.length - this.recentPointCount();
+    if (older <= 0) return false;
+    if (!state) return true;
+    for (let i = 0; i < older; i += 1) if (!this.cannibalGuarded(this.segs[i], state)) return true;
+    return false;
+  }
+
+  // Rail the arms may NOT eat in an emergency: anything within cannibalGuard
+  // car lengths of the rover (the rail under you and just behind) and anything
+  // in a cone straight ahead out to cannibalGuardAhead car lengths (the road
+  // you're about to need). Everything else is fair game.
+  private cannibalGuarded(s: Seg, state: ContinuousWorldState): boolean {
+    const r = state.rover;
+    const q = segDist(r.x, r.y, s.ax, s.ay, s.bx, s.by);
+    if (q.d <= Math.max(0, this.config.cannibalGuard) * CAR_WIDTH) return true;
+    const ahead = Math.max(0, this.config.cannibalGuardAhead) * CAR_WIDTH;
+    if (q.d > ahead) return false;
+    // Directly ahead: the road's nearest point, or either end, sits in a ~35
+    // degree cone around your heading.
+    const hx = Math.cos(r.heading);
+    const hy = Math.sin(r.heading);
+    for (const [px, py] of [[q.qx, q.qy], [s.ax, s.ay], [s.bx, s.by]] as const) {
+      const dx = px - r.x;
+      const dy = py - r.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d <= ahead && (dx * hx + dy * hy) / d >= 0.82) return true;
+    }
+    return false;
   }
 
   // EMERGENCY advance: out of stock but still pushing into new ground. The arms
@@ -252,8 +301,10 @@ export class RoadModel {
     const ranked: Array<{ i: number; d: number }> = [];
     for (let i = 0; i < older; i += 1) {
       const s = this.segs[i];
+      if (this.cannibalGuarded(s, state)) continue; // never the rail under, just behind or ahead of you
       ranked.push({ i, d: segDist(cur.x, cur.y, s.ax, s.ay, s.bx, s.by).d });
     }
+    if (ranked.length === 0) return { laid: [], advanced: false };
     ranked.sort((a, b) => a.d - b.d);
     const eat = ranked.slice(0, Math.min(2, ranked.length)).map((r) => r.i);
     // Lay the stub under the rover (forced), then eat the cannibalised segments.
@@ -289,26 +340,107 @@ export class RoadModel {
     // driving anywhere else always lays, so there are no dead zones, and a tight
     // scribble still can't pile up because its older loops trip this.
     const olderSegs = this.segs.length - this.recentPointCount();
+    const hx = Math.cos(state.rover.heading);
+    const hy = Math.sin(state.rover.heading);
     if (olderSegs > 0) {
       const noLay = this.noLayDistance();
       for (let i = 0; i < olderSegs; i += 1) {
         const s = this.segs[i];
-        if (segDist(cur.x, cur.y, s.ax, s.ay, s.bx, s.by).d < noLay) return [];
+        if (segDist(cur.x, cur.y, s.ax, s.ay, s.bx, s.by).d < noLay) {
+          // You've run into existing road: join your stroke's tip onto it, once,
+          // so the rail carries straight through the junction.
+          this.blocked = true;
+          if (!this.tipJoined && prev) {
+            this.tipJoined = true;
+            const join = this.joinSeg(prev, prev.x + hx * this.halfWidth(), prev.y + hy * this.halfWidth(), olderSegs, state.elapsedSeconds, true);
+            if (join) return [join];
+          }
+          return [];
+        }
       }
     }
 
     const point: Pt = { x: cur.x, y: cur.y, t: state.elapsedSeconds };
     this.pts.push(point);
     if (this.pts.length > MAX_POINTS) this.pts.shift();
-    let edge: RoadEdge | null = null;
+    const out: RoadEdge[] = [];
     if (prev && Math.hypot(cur.x - prev.x, cur.y - prev.y) <= this.halfWidth() * 3) {
       const seg: Seg = { ax: prev.x, ay: prev.y, bx: cur.x, by: cur.y, t: state.elapsedSeconds };
       this.segs.push(seg);
       if (this.segs.length > MAX_POINTS) this.segs.shift();
-      edge = { ax: seg.ax, ay: seg.ay, bx: seg.bx, by: seg.by };
+      out.push({ ax: seg.ax, ay: seg.ay, bx: seg.bx, by: seg.by });
+    } else if (this.blocked && olderSegs > 0) {
+      // A fresh stroke starting next to existing road (you just drove off it):
+      // join it back, so leaving the road leaves a junction, not a gap.
+      const join = this.joinSeg(cur, cur.x - hx * this.halfWidth(), cur.y - hy * this.halfWidth(), olderSegs, state.elapsedSeconds, false);
+      if (join) out.push(join);
     }
+    this.tipJoined = false;
+    this.blocked = false;
     this.last = cur;
-    return edge ? [edge] : [];
+    return out;
+  }
+
+  // A junction segment between `end` (a stroke's tip or start) and the nearest
+  // point on OLDER road to `probe` (a little ahead of a tip, a little behind a
+  // start, so the joint follows your direction of travel instead of kinking
+  // square). Only when the gap is short enough to be an implied junction.
+  private joinSeg(end: Vec2, probeX: number, probeY: number, olderSegs: number, t: number, fromEnd: boolean): RoadEdge | null {
+    const reach = this.noLayDistance() + Math.max(0, this.config.junctionReach) * this.halfWidth();
+    if (this.config.junctionReach <= 0) return null;
+    let best: { d: number; qx: number; qy: number } | null = null;
+    for (let i = 0; i < olderSegs; i += 1) {
+      const s = this.segs[i];
+      const q = segDist(probeX, probeY, s.ax, s.ay, s.bx, s.by);
+      if (!best || q.d < best.d) best = q;
+    }
+    if (!best) return null;
+    const len = Math.hypot(best.qx - end.x, best.qy - end.y);
+    if (len < 1 || len > reach) return null;
+    const seg: Seg = fromEnd
+      ? { ax: end.x, ay: end.y, bx: best.qx, by: best.qy, t }
+      : { ax: best.qx, ay: best.qy, bx: end.x, by: end.y, t };
+    this.segs.push(seg);
+    if (this.segs.length > MAX_POINTS) this.segs.shift();
+    this.pts.push({ x: best.qx, y: best.qy, t });
+    return { ax: seg.ax, ay: seg.ay, bx: seg.bx, by: seg.by };
+  }
+
+  // Drone ERASER: the road directly ahead of you. Marches out along your heading
+  // (from just past your nose to eraserReach) and takes the first road it meets;
+  // the plan is every segment touching a circle of eraserRadius around that
+  // point (within the tether). Unlike the end reclaim this CAN cut the network:
+  // it's for clearing a malformed bit of road you're looking at.
+  eraserPlan(from: Vec2, heading: number, home: Vec2, tetherRange: number): RoadReclaimPlan | null {
+    const reach = Math.max(0, this.config.eraserReach);
+    const radius = Math.max(1, this.config.eraserRadius);
+    if (reach <= 0 || this.segs.length === 0) return null;
+    const hw = this.halfWidth();
+    const hx = Math.cos(heading);
+    const hy = Math.sin(heading);
+    let target: Vec2 | null = null;
+    for (let d = CAR_WIDTH * 0.6; d <= reach && !target; d += hw * 0.5) {
+      const px = from.x + hx * d;
+      const py = from.y + hy * d;
+      let bestD = hw;
+      for (const s of this.segs) {
+        const q = segDist(px, py, s.ax, s.ay, s.bx, s.by);
+        if (q.d < bestD) { bestD = q.d; target = { x: q.qx, y: q.qy }; }
+      }
+    }
+    if (!target) return null;
+    const indices: number[] = [];
+    const edges: RoadEdge[] = [];
+    let length = 0;
+    this.segs.forEach((s, i) => {
+      if (segDist(target!.x, target!.y, s.ax, s.ay, s.bx, s.by).d > radius) return;
+      if (Math.hypot((s.ax + s.bx) / 2 - home.x, (s.ay + s.by) / 2 - home.y) > tetherRange) return;
+      indices.push(i);
+      edges.push({ ax: s.ax, ay: s.ay, bx: s.bx, by: s.by });
+      length += Math.hypot(s.bx - s.ax, s.by - s.ay);
+    });
+    if (indices.length === 0) return null;
+    return { edges, length, point: target, indices };
   }
 
   // --- persistence: carry the ribbon across days within a shift ---------------
