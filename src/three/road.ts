@@ -57,11 +57,14 @@ export interface RoadConfig {
   // rover (under you, just behind), nor in a cone this many car lengths ahead.
   cannibalGuard: number;
   cannibalGuardAhead: number;
-  // Drone eraser: launched while OFF the rail, the drone erases road directly
-  // ahead of you (within eraserReach, a patch of eraserRadius) instead of
-  // peeling an end. 0 reach = off (always the end reclaim).
+  // Drone eraser: stop, aim (pivot in place is fine) and after eraserAimDelay
+  // seconds a target marker shows the road straight ahead (within eraserReach,
+  // a patch of eraserRadius); Launch then erases it instead of peeling an end.
+  // A tap while driving or just after stopping is the usual reclaim.
+  // 0 reach = eraser off.
   eraserReach: number;
   eraserRadius: number;
+  eraserAimDelay: number;
 }
 
 export const DEFAULT_ROAD_CONFIG: RoadConfig = {
@@ -88,7 +91,8 @@ export const DEFAULT_ROAD_CONFIG: RoadConfig = {
   cannibalGuard: 1.2,
   cannibalGuardAhead: 5,
   eraserReach: 320,
-  eraserRadius: 70
+  eraserRadius: 70,
+  eraserAimDelay: 0.8
 };
 
 export interface SlurpEvent { x: number; y: number; gained: number }

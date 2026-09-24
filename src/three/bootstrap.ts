@@ -93,7 +93,7 @@ const road = new RoadModel(savedConfig.road);
 const campaign = new Campaign(savedConfig.loop);
 // The 3D app opts the drone into its repurposed role (the sim defaults preserve
 // the classic behaviour for tests). Saved values win, so panel tweaks persist.
-campaign.tuningOverrides = {
+const APP_TUNING: Partial<ContinuousTuning> = {
   reclaimProtectLoop: true, // never cut the loop
   droneTetherRange: 560, // keep a line home
   reclaimAimBias: 3, // your facing aims the drone
@@ -110,9 +110,9 @@ campaign.tuningOverrides = {
   // and give a learnable day length (the arena's fixed 36s "last light" is
   // brutal). Both are panel knobs; these are just gentler defaults.
   fabricatingSpeed: 130,
-  startingSolarSeconds: 75,
-  ...savedConfig.tuning
+  startingSolarSeconds: 75
 };
+campaign.tuningOverrides = { ...APP_TUNING, ...savedConfig.tuning };
 let state!: ContinuousWorldState;
 let runEnded = false; // guards the once-per-run bank/persist
 // Bonus (mastery acknowledgement, never the win): distance ridden on cured rail
@@ -813,6 +813,21 @@ const tether = new THREE.Line(
 tether.visible = false;
 scene.add(tether);
 
+// Eraser target: a warm ring on the road the drone will erase. Shows once
+// you've been stopped (aiming, pivoting in place is fine) for the aim delay;
+// Launch then erases that patch instead of reclaiming an end.
+const eraseMarker = new THREE.Mesh(
+  new THREE.RingGeometry(0.86, 1, 56),
+  new THREE.MeshBasicMaterial({ color: 0xff6a4d, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false, side: THREE.DoubleSide, fog: false })
+);
+eraseMarker.rotation.x = -Math.PI / 2;
+eraseMarker.renderOrder = 5;
+eraseMarker.visible = false;
+scene.add(eraseMarker);
+let stillSeconds = 0; // how long the rover has been stopped (not driving, not reversing)
+let eraseTarget: RoadReclaimPlan | null = null; // the armed eraser plan (marker showing)
+let eraseProbeTimer = 0;
+
 // --- Transient 3D bursts (slurp, mining tick) --------------------------------
 interface Burst { mesh: THREE.Mesh; born: number; ttl: number; grow: number }
 const bursts: Burst[] = [];
@@ -1093,9 +1108,11 @@ let ribbonDrone: RibbonDrone | null = null;
 function launchRibbonReclaim(): void {
   if (ribbonDrone) { flash = { text: 'Drone is already out.', until: performance.now() + 1500 }; return; }
   const home = state.arena.extraction ?? state.arena.start;
-  // Off the rail and facing road: the drone is an ERASER for the road right in
-  // front of you. Riding the rail: the usual cleanup, peeling one end.
-  const erase = road.locked ? null : road.eraserPlan(state.rover, state.rover.heading, home, state.tuning.droneTetherRange);
+  // Stopped and aimed (the marker is showing): the drone is an ERASER for the
+  // road you're pointing at. Otherwise (driving, or just stopped): the usual
+  // cleanup, peeling one end.
+  const erase = eraseTarget ? road.eraserPlan(state.rover, state.rover.heading, home, state.tuning.droneTetherRange) : null; // fresh indices
+  eraseTarget = null;
   const plan = erase ?? road.reclaimPlan(home, state.tuning.droneTetherRange, road.config.reclaimBite, {
     heading: state.rover.heading,
     bias: state.tuning.reclaimAimBias
@@ -1142,6 +1159,29 @@ function updateRibbonDrone(dt: number): void {
     new THREE.Vector3(rd.home.x - W / 2, 8, rd.home.y - H / 2),
     new THREE.Vector3(rd.pos.x - W / 2, 60, rd.pos.y - H / 2)
   ]);
+}
+
+// Stopped long enough to be aiming -> arm the eraser on the road straight ahead
+// (re-probed ~10x/s as you pivot) and show where it will land.
+function updateEraserAim(dt: number, moving: boolean): void {
+  stillSeconds = moving || state.rover.speed > 1 ? 0 : stillSeconds + dt;
+  const aiming = state.phase === 'playing' && !ribbonDrone && road.config.eraserReach > 0 && stillSeconds >= road.config.eraserAimDelay;
+  if (!aiming) {
+    eraseTarget = null;
+    eraseProbeTimer = 0;
+  } else if ((eraseProbeTimer -= dt) <= 0) {
+    eraseProbeTimer = 0.1;
+    const home = state.arena.extraction ?? state.arena.start;
+    eraseTarget = road.eraserPlan(state.rover, state.rover.heading, home, state.tuning.droneTetherRange);
+  }
+  eraseMarker.visible = Boolean(eraseTarget);
+  if (eraseTarget) {
+    eraseMarker.position.set(eraseTarget.point.x - W / 2, 6, eraseTarget.point.y - H / 2);
+    eraseMarker.scale.setScalar(Math.max(1, road.config.eraserRadius));
+    (eraseMarker.material as THREE.MeshBasicMaterial).opacity = 0.55 + 0.3 * Math.sin(performance.now() / 160);
+  }
+  const label = eraseTarget ? 'Erase' : 'Launch';
+  if (launchBtn.firstChild && launchBtn.firstChild.textContent !== label) launchBtn.firstChild.textContent = label;
 }
 
 function launch(): void {
@@ -1247,6 +1287,7 @@ function frame(now: number): void {
   // otherwise it runs the sim's field reclaim.
   if (state.tuning.ribbonEconomy) {
     updateRibbonDrone(dt);
+    updateEraserAim(dt, Boolean(base.driveIntent) || reversing);
   } else {
     drone.visible = state.drone.status !== 'ready';
     tether.visible = drone.visible;
@@ -1326,6 +1367,7 @@ createPanel({
   cam: camCfg,
   terrain: terrainCfg,
   controls: controlsCfg,
+  tuningDefaults: resolveContinuousTuning(APP_TUNING),
   getState: () => state,
   applyTuning,
   rebuildDay: () => applyWorld(campaign.buildWorld()),
