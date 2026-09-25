@@ -1883,7 +1883,7 @@ tuning / New Game · DEV-27 define "1 game" (fixed-N) · DEV-47 vehicle classes 
 road-type presets (backlog) · DEV-48 rebuild-on-sandbox plan.
 
 
-## 2026-09-24: Index of PRs #10–#40 (the 3D substrate era)
+## 2026-09-24: Index of PRs #10–#43 (the 3D substrate era)
 
 Added by DEV-58. The dated entries above end at the 2026-09-15 road rework. After that, decisions were recorded in each PR's body and in the feature commit message behind its merge, not here. This index points at them so the trail has no silent gap. It records what each PR shipped, by its merge subject. For the reasons and rejected options, read the PR on GitHub or run `git log -1 <merge>^2`. Retro-ticketing the same range in Linear is DEV-50.
 
@@ -1920,10 +1920,15 @@ Added by DEV-58. The dated entries above end at the 2026-09-15 road rework. Afte
 | #38 | 2026-09-24 | `3408787` | road junctions, emergency guard zone, drone eraser |
 | #39 | 2026-09-24 | `b92c390` | aim-to-erase drone, curved sliders centred on defaults |
 | #40 | 2026-09-24 | `bef3b58` | levels with budgets derived from the map |
+| #41 | 2026-09-24 | `a7410f3` | state audit at bef3b58 and docs brought up to the 3D build (DEV-54, DEV-58) |
+| #42 | 2026-09-24 | `60ccc2c` | rewire play:through to the 3D build (DEV-55) |
+| #43 | 2026-09-24 | `b089374` | lay shadows across the road, not under it (DEV-59, DEV-57) |
 
-Decisions in this range that change what older entries above say:
+New merges add a row here. Decisions in this range that change what older entries above say:
 
 - **Substrate (PR #10):** Three.js replaced Phaser. Entries above that name `src/scenes/*`, vector road drawing or the debug snapshot describe the retired build.
 - **Rail model (PR #35):** one grip model (`tuning.railGrip`) replaced the separate boost ramp, lock strength, corner turn limit and hidden release.
 - **Drone (PRs #38, #39):** launched while stopped for the aim delay, the drone erases the patch of road ahead. Otherwise it does the end reclaim.
+- **Road shadows (PR #43):** amends PR #34. Daylight still never changes the road's brightness, but cast shadows now darken it. The owner ruled that shadows lie on top of the road.
+- **Process (2026-09-24):** validated changes merge to `main` without waiting to be asked (HANDOFF §2, rule 8).
 - **Levels (PR #40):** each level's sun, stock and quota come from a par route on its map, replacing fixed per-day numbers (quota 12, sun 75 s, stock 9).
