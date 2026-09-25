@@ -81,7 +81,7 @@ Measured 2026-09-24 at `bef3b58` (see `PROGRESS.md` "Last Verified"):
   - `npm test`: 189 tests in 18 files.
   - Build.
   - `npm audit`: 0 vulnerabilities.
-  - `smoke:continuous`: boot, HUD and one drive. Needs `CHROME_PATH` in this container.
+  - `smoke:continuous`: boot, HUD, one drive, and the phone HUD layout. Needs `CHROME_PATH` in this container.
   - `report:last-light`: 5/5 routes won.
 - **CI** runs tests, build, smoke and the last-light report on every push to `main` and every PR. `audit.yml` runs `npm audit` weekly on its own, so a new advisory can't turn a code change red.
 - **Not covered:** the smoke test checks far less than the old Phaser smoke did (DEV-53). `npm run play:through` plays full levels to their end state but is too slow for CI, so it runs by hand.
@@ -93,7 +93,6 @@ Measured 2026-09-24 at `bef3b58` (see `PROGRESS.md` "Last Verified"):
 | DEV-14 | High | Drone timing decision. Recheck after the eraser PRs. |
 | DEV-20 | High | Drone lift topology. Recheck after PRs #38/#39. |
 | DEV-13 | High | Close drift between build and design canon (`GAME_DESIGN.md`, `CONCEPT_REFRAME.md`) |
-| DEV-56 | Medium | Phone HUD overlap |
 | DEV-24 | Medium | Road legibility |
 | DEV-47 | Medium | Vehicle classes → road types |
 | DEV-7 | Medium | PROGRESS contradictions |

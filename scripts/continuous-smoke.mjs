@@ -102,9 +102,30 @@ try {
   const moved = Math.hypot(after.x - before.x, after.y - before.y);
   if (moved < 20) fail(`driving did not move the rover (moved ${moved.toFixed(1)} units)`);
 
+  // Phone layout: the HUD wraps on a narrow screen, and the objective line must
+  // sit under it, not over its readouts (DEV-56).
+  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  phone.on('pageerror', (e) => errors.push(String(e)));
+  await phone.goto(url, { waitUntil: 'load' });
+  await delay(1800);
+  const covered = await phone.evaluate(() => {
+    const line = document.getElementById('line');
+    if (!line || !line.textContent) return null;
+    const l = line.getBoundingClientRect();
+    return [...document.querySelectorAll('#hud .vital, #hud .chip')]
+      .filter((e) => {
+        const r = e.getBoundingClientRect();
+        return r.left < l.right && r.right > l.left && r.top < l.bottom && r.bottom > l.top;
+      })
+      .map((e) => e.querySelector('b')?.textContent ?? e.id);
+  });
+  if (covered === null) fail('phone: objective line did not render');
+  if (covered.length) fail(`phone: objective line covers HUD readouts: ${covered.join(', ')}`);
+  await phone.close();
+
   if (errors.length) fail(`page errors:\n${errors.join('\n')}`);
 
-  console.log(`SMOKE OK — booted clean, HUD up, rover drove ${moved.toFixed(0)} units.`);
+  console.log(`SMOKE OK — booted clean, HUD up, rover drove ${moved.toFixed(0)} units, phone HUD clear.`);
   await browser.close();
   vite.kill('SIGTERM');
   process.exit(0);

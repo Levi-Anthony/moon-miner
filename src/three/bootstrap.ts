@@ -1078,6 +1078,17 @@ const hud = {
 };
 const MODE_LABEL: Record<string, string> = { fabricating: 'Building', prepared: 'Prepared', crawl: 'Crawl' };
 
+// The objective line sits just under the HUD. The HUD wraps to more rows on a
+// narrow screen, so a fixed offset put the line over its second row (DEV-56);
+// follow the HUD's real bottom edge instead.
+const hudBar = el('hud');
+function placeLine(): void {
+  hud.line.style.top = `${Math.round(hudBar.getBoundingClientRect().bottom) + 6}px`;
+}
+placeLine();
+new ResizeObserver(placeLine).observe(hudBar);
+window.addEventListener('resize', placeLine);
+
 function updateHud(): void {
   const quota = state.arena.extraction?.oreRequired ?? state.targetOre;
   hud.nano.textContent = `${state.nanobots.toFixed(1)}/${Math.floor(state.maxNanobots)}`;
