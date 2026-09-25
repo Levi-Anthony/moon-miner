@@ -10,7 +10,7 @@
 //
 //   node scripts/playthrough.mjs [--levels 3] [--campaigns 1] [--seed <seed>]
 //                                [--reserve 1.6] [--greed 1] [--timeout 480]
-//                                [--json]
+//                                [--json] [--dump-runs runs.json]
 //
 // Each campaign starts from cleared campaign storage (level 1, fresh seed, or
 // --seed), plays a level to its banner, records it, then presses R for the
@@ -20,7 +20,7 @@
 // SwiftShader and the loop caps dt at 0.05 s, so a 45 s sun can take several
 // wall-clock minutes. The small default viewport keeps frames cheap.
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -50,6 +50,10 @@ const CAMPAIGNS = Number(arg('campaigns', 1));
 const SEED = arg('seed', undefined);
 const TIMEOUT_SECONDS = Number(arg('timeout', 480));
 const AS_JSON = process.argv.includes('--json');
+// Write the run records the game saved (src/three/runRecord.ts) to a file, e.g.
+// to feed harness runs through `scripts/ingest-run.mjs` like the owner's.
+const DUMP_RUNS = arg('dump-runs', undefined);
+const dumped = [];
 // How much light to keep back for the trip home, as a multiple of the
 // estimated return time. Higher turns for home earlier. This is the whole
 // risk dial: ore mined on a run that misses the deadline counts for nothing.
@@ -322,6 +326,7 @@ try {
       if (!AS_JSON) console.error(`campaign ${campaign} run ${run}: ${row.level} ${row.result} (${row.ore}/${row.required} ore, ${row.solarLeft}s sun left)`);
       if (timedOut) break;
     }
+    if (DUMP_RUNS) dumped.push(...(await page.evaluate(() => window.__mm3d?.runs?.() ?? [])));
     await page.close();
   }
 } finally {
@@ -329,6 +334,7 @@ try {
   vite.kill();
 }
 
+if (DUMP_RUNS) writeFileSync(DUMP_RUNS, JSON.stringify(dumped, null, 2) + '\n');
 if (AS_JSON) {
   console.log(JSON.stringify(rows, null, 2));
 } else {

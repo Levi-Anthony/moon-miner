@@ -8,6 +8,10 @@
 2. The end-of-level banner has **Send run data**. The ⚙ panel has **Send saved runs**, which re-sends everything saved in that browser. Either one opens a GitHub issue titled `[run-data] …`, pre-filled with the records as fenced JSON. The owner presses Submit.
 3. `.github/workflows/ingest-run.yml` validates the records (`scripts/ingest-run.mjs`), appends new ones here (runs it already has are skipped by `id`), commits to `main`, and closes the issue with a comment. A malformed issue gets a comment saying what was wrong and stays open. Only issues from the owner or collaborators are ingested.
 
+## Agent-played runs
+
+`npm run play:through -- --dump-runs runs.json` saves the records from levels an agent plays in its container. They can go through the same issue path. Set `build` to something like `harness` so they're easy to tell apart from the owner's runs.
+
 ## If this file is missing or looks stale
 
 - No runs have been sent yet, or the newest haven't been submitted. Unsent runs stay in the owner's browser until the next send.
