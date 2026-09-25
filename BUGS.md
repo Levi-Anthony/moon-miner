@@ -23,6 +23,7 @@ As of 2026-09-24 on `main` at `bef3b58` (audit: `docs/audit/2026-09-24/STATE_AUD
 
 ## Resolved Findings
 
+- **Run data never reached anywhere an agent could read** (DEV-61, fixed 2026-09-25). The 3D rebuild had dropped run capture entirely, and the earlier versions stored nothing durable. Runs now go to `data/runs/runs.jsonl` through a `[run-data]` issue and the ingest-run workflow; smoke fails if capture breaks. See `data/runs/README.md`.
 - **Phone HUD overlap** (DEV-56, fixed 2026-09-25). The objective line was pinned 58px from the top, and the HUD wraps to two rows on a phone. The line now follows the HUD's real bottom edge; at phone width the HUD fits its five readouts in one row. `smoke:continuous` now fails if the line covers any readout at 390×844. Before/after: `docs/audit/2026-09-24/phone-boot.png`, `phone-hud-fixed.png`.
 - **Shadows passed under the road** (DEV-59, fixed 2026-09-24). The road lives in the ground's emissive layer, which three.js shadows don't darken. A shader patch now darkens it by the sun's shadow term (panel knob: Light & sky → Shadow on road). Before/after: `docs/audit/2026-09-24/road-shadow-off.png`, `road-shadow-on.png`.
 - **Shadow type fallback** (DEV-57, fixed 2026-09-24). The renderer now asks for `PCFShadowMap` directly; three 0.186 had removed `PCFSoftShadowMap` and warned on every load.

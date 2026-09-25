@@ -1923,6 +1923,8 @@ Added by DEV-58. The dated entries above end at the 2026-09-15 road rework. Afte
 | #41 | 2026-09-24 | `a7410f3` | state audit at bef3b58 and docs brought up to the 3D build (DEV-54, DEV-58) |
 | #42 | 2026-09-24 | `60ccc2c` | rewire play:through to the 3D build (DEV-55) |
 | #43 | 2026-09-24 | `b089374` | lay shadows across the road, not under it (DEV-59, DEV-57) |
+| #44 | 2026-09-24 | `03a8f66` | record the always-merge rule and index PRs #41–#43 |
+| #45 | 2026-09-25 | `79e91a1` | keep the objective line clear of the phone HUD (DEV-56) |
 
 New merges add a row here. Decisions in this range that change what older entries above say:
 
@@ -1930,5 +1932,6 @@ New merges add a row here. Decisions in this range that change what older entrie
 - **Rail model (PR #35):** one grip model (`tuning.railGrip`) replaced the separate boost ramp, lock strength, corner turn limit and hidden release.
 - **Drone (PRs #38, #39):** launched while stopped for the aim delay, the drone erases the patch of road ahead. Otherwise it does the end reclaim.
 - **Road shadows (PR #43):** amends PR #34. Daylight still never changes the road's brightness, but cast shadows now darken it. The owner ruled that shadows lie on top of the road.
+- **Run data (DEV-61, 2026-09-25):** runs are stored in the repo (`data/runs/runs.jsonl`) through a pre-filled GitHub issue and an ingest workflow. The owner chose a repo file over a Supabase table. A static page can't hold a write token, so the owner presses Submit. Rejected: Artifact DB (not available on Pages), clipboard export (nothing stored), a table in open-brain (mixes game telemetry into ECB).
 - **Process (2026-09-24):** validated changes merge to `main` without waiting to be asked (HANDOFF §2, rule 8).
 - **Levels (PR #40):** each level's sun, stock and quota come from a par route on its map, replacing fixed per-day numbers (quota 12, sun 75 s, stock 9).

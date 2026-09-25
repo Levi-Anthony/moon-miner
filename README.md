@@ -31,6 +31,7 @@ The game runs on Three.js. It reads no URL parameters: older flags such as `?mob
 - **Mine:** park on an ore seam.
 - **Win a level:** get home to extraction with the ore quota before the sun sets.
 - **Next level or retry:** after a level ends, press `R` or tap the banner.
+- **Send run data:** on the end-of-level banner. Opens a pre-filled GitHub issue; press Submit and the run is stored in `data/runs/runs.jsonl` for later analysis. Runs you don't send stay saved in the browser until the next send.
 - **⚙ (bottom left):** the control panel, with live knobs for controls, world, ore, rail, economy, drone, light and campaign mode (Levels or Sandbox). Settings persist in this browser.
 
 The default mode is **Levels**: six authored levels, then an endless tail. Each level's sun, starting stock and quota come from a par route planned on its map (`src/game/level.ts`).
@@ -42,6 +43,7 @@ npm run verify          # unit tests + production build
 npm run smoke:continuous  # boots the game in headless Chromium, checks the HUD, drives once, checks the phone layout
 npm run report:last-light # self-play route table for the Last Light arena
 npm run play:through    # plays full levels through the real input path and tables the results
+npm run runs            # the owner's stored runs from the live game (data/runs/runs.jsonl)
 npm run verify:audit    # npm audit, on its own
 npm run verify:full     # verify + smoke + audit
 ```

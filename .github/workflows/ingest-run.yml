@@ -1,0 +1,76 @@
+name: Ingest run data
+
+# The live game opens a pre-filled "[run-data]" issue (src/three/runRecord.ts)
+# because a static page can't hold a token to write to the repo. This stores the
+# issue's run records in data/runs/runs.jsonl on main, where any later session
+# can read them, then closes the issue. A malformed issue gets a comment saying
+# what was wrong and stays open. See DEV-61.
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: ingest-run
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    # Only the owner and collaborators can add data; anyone else's issue is ignored.
+    if: >-
+      startsWith(github.event.issue.title, '[run-data]') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Parse and append
+        id: ingest
+        run: node scripts/ingest-run.mjs --message-file "$RUNNER_TEMP/ingest-message.md"
+
+      - name: Commit to main
+        if: steps.ingest.outputs.added != '0'
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/runs/runs.jsonl
+          git commit -m "Add run data from issue #${ISSUE_NUMBER}"
+          # Another push can land between checkout and here; rebase and retry.
+          for attempt in 1 2 3 4; do
+            git push origin HEAD:main && exit 0
+            sleep $((attempt * 3))
+            git pull --rebase origin main
+          done
+          exit 1
+
+      - name: Report and close
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/ingest-message.md"
+          gh issue close "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --reason completed
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if [ ! -s "$RUNNER_TEMP/ingest-message.md" ]; then
+            echo "Could not store this run data: the ingest job failed. See the Actions log." > "$RUNNER_TEMP/ingest-message.md"
+          fi
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/ingest-message.md"

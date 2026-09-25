@@ -204,7 +204,8 @@ async function playLevel(page, campaign, index) {
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const opening = await page.evaluate(() => ({
     level: document.getElementById('hud-day')?.textContent?.trim() ?? '',
-    seed: window.localStorage.getItem('mm3d-seed-v1')
+    seed: window.localStorage.getItem('mm3d-seed-v1'),
+    worldSeed: window.__mm3d.getState().seed
   }));
 
   const held = new Set();
@@ -254,6 +255,13 @@ async function playLevel(page, campaign, index) {
   for (const key of [...held]) await page.keyboard.up(key);
 
   const outcome = await readOutcome(page);
+  // Every finished level must leave a run record (DEV-61); a missing one fails the run.
+  const recorded = timedOut
+    ? null
+    : await page.evaluate(() => {
+        const runs = window.__mm3d?.runs?.() ?? [];
+        return runs[runs.length - 1] ?? null;
+      });
   const row = {
     campaign,
     run: index,
@@ -266,7 +274,8 @@ async function playLevel(page, campaign, index) {
     prepared: Number(seconds.prepared.toFixed(1)),
     parked: Number(seconds.parked.toFixed(1)),
     droneLaunches: launches,
-    lowestNanobots: Number((Number.isFinite(lowestNanobots) ? lowestNanobots : 0).toFixed(2))
+    lowestNanobots: Number((Number.isFinite(lowestNanobots) ? lowestNanobots : 0).toFixed(2)),
+    recorded: Boolean(recorded && recorded.seed === opening.worldSeed && Math.abs(recorded.ore - outcome.ore) < 0.011)
   };
 
   if (!timedOut) {
@@ -324,14 +333,17 @@ if (AS_JSON) {
   console.log(JSON.stringify(rows, null, 2));
 } else {
   console.log(`Playthrough — reserve ${RESERVE}, greed ${GREED}, ${CAMPAIGNS} campaign(s) x ${LEVELS} level run(s)${SEED ? `, seed ${SEED}` : ''}`);
-  console.log('| camp | run | level | result | banner | ore/req | sun left/window | seams alive | seam ore left | crawl | fab | prep | parked | DL | lowNb |');
-  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+  console.log('| camp | run | level | result | banner | ore/req | sun left/window | seams alive | seam ore left | crawl | fab | prep | parked | DL | lowNb | recorded |');
+  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const row of rows) {
     console.log(
-      `| ${row.campaign} | ${row.run} | ${row.level} | ${row.result} | ${row.banner || '-'} | ${row.ore}/${row.required} | ${row.solarLeft}/${row.solarWindow} | ${row.seamsAlive}/${row.seamsTotal} | ${row.seamOreLeft} | ${row.crawl} | ${row.fabricating} | ${row.prepared} | ${row.parked} | ${row.droneLaunches} | ${row.lowestNanobots} |`
+      `| ${row.campaign} | ${row.run} | ${row.level} | ${row.result} | ${row.banner || '-'} | ${row.ore}/${row.required} | ${row.solarLeft}/${row.solarWindow} | ${row.seamsAlive}/${row.seamsTotal} | ${row.seamOreLeft} | ${row.crawl} | ${row.fabricating} | ${row.prepared} | ${row.parked} | ${row.droneLaunches} | ${row.lowestNanobots} | ${row.recorded ? 'yes' : 'NO'} |`
     );
   }
 }
 // A timed-out level means the harness could not finish it, which is a failure
 // of the run, not a result about the game.
-process.exit(rows.some((row) => row.result === 'timeout') ? 1 : 0);
+// A level that ends without a run record means run capture broke (DEV-61).
+const missing = rows.filter((row) => row.result !== 'timeout' && !row.recorded);
+if (missing.length) console.error(`${missing.length} finished level(s) left no run record — run capture is broken (DEV-61).`);
+process.exit(rows.some((row) => row.result === 'timeout') || missing.length ? 1 : 0);

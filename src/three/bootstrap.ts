@@ -27,6 +27,7 @@ import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type Ro
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
 import { pushOutOfCraters } from './craters';
 import { START_BEARING, sunState } from './sun';
+import { appendRun, buildRunRecord, createRunStats, accumulateRunStats, diffKnobs, loadRunHistory, runIssueUrl, saveRunHistory, unsentRuns, type RunRecord, type RunStats } from './runRecord';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_CONTROLS_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type ControlsConfig, type TerrainConfig } from './panel';
 import { stickToInput } from './stick';
 import { LEVELS, levelSpec } from '../game/level';
@@ -120,6 +121,16 @@ let runEnded = false; // guards the once-per-run bank/persist
 // at speed with no steering input -- the zero-steer slide -- plus surplus ore
 // over quota, scored at extraction.
 let slideDistance = 0;
+// Per-run stats for the run record (src/three/runRecord.ts, DEV-61).
+let runStats: RunStats = createRunStats(0);
+const RUN_REPO = 'Levi-Anthony/moon-miner';
+function storage(): Storage | undefined {
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+}
 const SLIDE_PER_POINT = 50; // rail units per bonus point
 const SURPLUS_ORE_POINTS = 5; // bonus points per ore over quota
 function surplusOre(): number {
@@ -806,6 +817,7 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
   rebuildWorldMeshes();
   runEnded = false;
   slideDistance = 0;
+  runStats = createRunStats(state.nanobots);
 }
 
 // --- Rover --------------------------------------------------------------------
@@ -1155,6 +1167,74 @@ function onContinue(): void {
 window.addEventListener('keydown', (e) => { if (e.key.toLowerCase() === 'r') onContinue(); });
 hud.banner.addEventListener('pointerdown', onContinue);
 
+// --- Run data (DEV-61) -------------------------------------------------------
+// Every finished run is kept in local history; "Send run data" opens a GitHub
+// issue pre-filled with the unsent ones, and the ingest-run workflow stores them
+// in data/runs/runs.jsonl on main. Nothing is lost if the button is skipped:
+// unsent runs ride along with the next send.
+const sendRunsBtn = el('send-runs') as HTMLButtonElement;
+const runsNote = el('runs-note');
+let pendingSend: RunRecord[] = [];
+function recordRun(levelRun: typeof campaign.level): void {
+  const record = buildRunRecord({
+    state,
+    stats: runStats,
+    build: __BUILD_SHA__,
+    mode: levelRun ? 'levels' : 'sandbox',
+    level: levelRun
+      ? { index: levelRun.index, name: levelRun.spec.name, startStock: levelRun.budget.startStock, parSeconds: levelRun.budget.parSeconds, parSeams: levelRun.budget.par.seams.length }
+      : null,
+    cleared: campaign.lastLevelCleared,
+    day: campaign.dayNumber,
+    bonus: bonusScore(),
+    slide: slideDistance,
+    device: { w: window.innerWidth, h: window.innerHeight, touch: navigator.maxTouchPoints > 0 },
+    knobs: diffKnobs({
+      loop: { current: campaign.config, defaults: DEFAULT_LOOP_CONFIG },
+      road: { current: road.config, defaults: DEFAULT_ROAD_CONFIG },
+      tuning: { current: campaign.tuningOverrides, defaults: APP_TUNING },
+      terrain: { current: terrainCfg, defaults: DEFAULT_TERRAIN_CONFIG },
+      controls: { current: controlsCfg, defaults: DEFAULT_CONTROLS_CONFIG }
+    })
+  });
+  const history = appendRun(loadRunHistory(storage()), record);
+  const saved = saveRunHistory(storage(), history);
+  pendingSend = unsentRuns(history);
+  if (!saved) pendingSend = [record]; // no storage: still offer this run
+  const n = pendingSend.length;
+  runsNote.textContent = saved
+    ? `${n} run${n === 1 ? '' : 's'} not yet sent. Opens GitHub; press Submit there.`
+    : 'This browser can\'t save run history; send this run now or it is lost.';
+  sendRunsBtn.textContent = n === 1 ? 'Send run data' : `Send ${n} runs`;
+  sendRunsBtn.disabled = false;
+}
+function sendRuns(): void {
+  if (!pendingSend.length) return;
+  const { url, count } = runIssueUrl(RUN_REPO, pendingSend);
+  const sentIds = new Set(pendingSend.slice(-count).map((r) => r.id));
+  // Not 'noopener' in the features: with it, window.open returns null even on
+  // success, which is indistinguishable from a blocked pop-up. Cut the link after.
+  const opened = window.open(url, '_blank');
+  if (opened) {
+    opened.opener = null;
+  } else {
+    // Pop-up blocked: navigate this tab instead; the run is already saved locally.
+    window.location.href = url;
+  }
+  const history = loadRunHistory(storage()).map((r) => (sentIds.has(r.id) ? { ...r, sent: true } : r));
+  saveRunHistory(storage(), history);
+  pendingSend = unsentRuns(history);
+  const left = pendingSend.length;
+  runsNote.textContent = left
+    ? `Opened GitHub with the newest ${count}; press Submit there. ${left} older run${left === 1 ? '' : 's'} still to send.`
+    : 'Opened GitHub. Press Submit there to store it.';
+  sendRunsBtn.disabled = left === 0;
+  sendRunsBtn.textContent = left ? `Send ${left} more` : 'Opened on GitHub';
+}
+// The banner's own tap means "continue"; the send button must not trigger it.
+sendRunsBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+sendRunsBtn.addEventListener('click', (e) => { e.stopPropagation(); sendRuns(); });
+
 // --- Drone launch + transient message flash ----------------------------------
 let flash: { text: string; until: number } | null = null;
 const launchBtn = document.getElementById('launch') as HTMLButtonElement;
@@ -1245,8 +1325,15 @@ function updateEraserAim(dt: number, moving: boolean): void {
 
 function launch(): void {
   if (state.phase !== 'playing') return;
-  if (state.tuning.ribbonEconomy) { launchRibbonReclaim(); return; }
+  if (state.tuning.ribbonEconomy) {
+    const wasOut = ribbonDrone !== null;
+    launchRibbonReclaim();
+    if (!wasOut && ribbonDrone !== null) runStats.droneLaunches += 1;
+    return;
+  }
+  const wasReady = state.drone.status === 'ready';
   const res = launchReclaimDrone(state);
+  if (wasReady && res.state.drone.status !== 'ready') runStats.droneLaunches += 1;
   state = res.state;
   flash = { text: res.message, until: performance.now() + 2000 };
 }
@@ -1293,6 +1380,7 @@ function frame(now: number): void {
   if (base.steer === 0 && !reversing && road.locked && road.boost > 0.5) {
     slideDistance += Math.hypot(state.rover.x - prevX, state.rover.y - prevY);
   }
+  accumulateRunStats(runStats, state, dt, Math.hypot(state.rover.x - prevX, state.rover.y - prevY));
 
   // Lay the road. Normal drive paints the new stroke; in emergency the arms lay a
   // stub AND eat older rail (net shrink), so we repaint the whole ribbon to show
@@ -1368,7 +1456,9 @@ function frame(now: number): void {
   // Run just ended: bank + compute carry once, then show the result banner.
   if (state.phase !== 'playing' && !runEnded) {
     runEnded = true;
+    const levelRun = campaign.level; // the level just played, before endRun moves on
     campaign.endRun(state, road.serialize(), bonusScore());
+    recordRun(levelRun);
     showBanner();
   }
 
@@ -1436,6 +1526,13 @@ createPanel({
   applyTuning,
   rebuildDay: () => applyWorld(campaign.buildWorld()),
   newGame: () => { campaign.newGame(); applyWorld(campaign.buildWorld()); },
+  sendAllRuns: () => {
+    const all = loadRunHistory(storage());
+    if (!all.length) return 0;
+    pendingSend = all;
+    sendRuns();
+    return all.length;
+  },
   applyTerrain,
   applyLook: () => applyLook(),
   save: saveConfig
@@ -1454,5 +1551,8 @@ window.addEventListener('resize', () => {
 (window as unknown as { __mm3d?: unknown }).__mm3d = {
   getState: () => state,
   road,
-  keys
+  keys,
+  runs: () => loadRunHistory(storage()),
+  pendingRuns: () => pendingSend,
+  runIssue: () => runIssueUrl(RUN_REPO, pendingSend)
 };
