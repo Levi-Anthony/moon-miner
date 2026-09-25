@@ -123,9 +123,36 @@ try {
   if (covered.length) fail(`phone: objective line covers HUD readouts: ${covered.join(', ')}`);
   await phone.close();
 
+  // Run capture (DEV-61): end the run by running out the sun, then a run record
+  // must be saved and the banner must offer to send it. This is the check that
+  // was missing every previous time run data quietly disappeared.
+  await page.evaluate(() => {
+    window.__mm3d.getState().solarSeconds = 0.05;
+  });
+  await page.waitForFunction(() => window.__mm3d.getState().phase !== 'playing', null, { timeout: 15000 });
+  await delay(300);
+  const capture = await page.evaluate(() => {
+    const runs = window.__mm3d.runs?.() ?? [];
+    const btn = document.getElementById('send-runs');
+    const url = window.__mm3d.runIssue?.()?.url ?? '';
+    return {
+      saved: runs.length,
+      seed: runs[runs.length - 1]?.seed,
+      worldSeed: window.__mm3d.getState().seed,
+      button: Boolean(btn && btn.offsetParent !== null && !btn.disabled),
+      url
+    };
+  });
+  if (!capture.saved) fail('run capture: no run record saved after the run ended');
+  if (capture.seed !== capture.worldSeed) fail(`run capture: saved record is for ${capture.seed}, not this run (${capture.worldSeed})`);
+  if (!capture.button) fail('run capture: the Send run data button is not shown on the end banner');
+  if (!capture.url.startsWith('https://github.com/') || !decodeURIComponent(capture.url).includes('```json moon-miner-runs')) {
+    fail('run capture: the GitHub issue URL is missing or has no run data block');
+  }
+
   if (errors.length) fail(`page errors:\n${errors.join('\n')}`);
 
-  console.log(`SMOKE OK — booted clean, HUD up, rover drove ${moved.toFixed(0)} units, phone HUD clear.`);
+  console.log(`SMOKE OK — booted clean, HUD up, rover drove ${moved.toFixed(0)} units, phone HUD clear, run captured.`);
   await browser.close();
   vite.kill('SIGTERM');
   process.exit(0);

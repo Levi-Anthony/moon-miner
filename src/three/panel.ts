@@ -67,6 +67,8 @@ export interface PanelCtx {
   applyTuning: (patch: Partial<ContinuousTuning>) => void;
   rebuildDay: () => void;
   newGame: () => void;
+  // Re-send every saved run record to GitHub (duplicates are skipped on ingest).
+  sendAllRuns: () => number;
   applyTerrain: () => void; // regenerate/redraw the ground for terrain-knob changes
   applyLook: () => void; // re-apply light/glow/sky knobs (road brightness repaints) without touching terrain
   save: () => void;
@@ -367,6 +369,7 @@ export function createPanel(ctx: PanelCtx): void {
     viewBtn,
     mk('New Game', () => { ctx.newGame(); sync(); }),
     mk('Reset Day', () => { ctx.rebuildDay(); sync(); }),
+    mk('Send saved runs', () => { if (!ctx.sendAllRuns()) alert('No runs saved in this browser yet.'); }),
     mk('Close', () => { panel.style.display = 'none'; })
   );
   panel.appendChild(btns);
