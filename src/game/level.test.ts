@@ -64,7 +64,7 @@ describe('budgets come from the map', () => {
     for (const scale of [1, 2, 4]) {
       for (let i = 0; i < LEVELS.length + 3; i += 1) {
         const spec = levelSpec(i);
-        const w = createContinuousWorld(`t:L${i}`, { fabricatingSpeed: 130, oreLayout: spec.ore.layout ?? 0, oreCount: spec.ore.count ?? 1 }, 'last-light-return', [], {}, scale);
+        const w = createContinuousWorld(`t:L${i}`, { fabricatingSpeed: 130 }, 'last-light-return', [], {}, scale);
         const par = planPar(w.arena.extraction!, w.fertileZones, spec.seams, w.tuning, spec.target);
         const b = levelBudget(spec, par, w.tuning);
         expect(par.seams.length).toBe(Math.min(spec.seams, w.fertileZones.length));

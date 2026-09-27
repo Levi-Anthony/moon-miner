@@ -5,6 +5,7 @@
 // (mm3d-*) so it never collides with the old Phaser save.
 import {
   createContinuousWorld,
+  resolveContinuousTuning,
   carryFieldsOvernight,
   carryDepletionOvernight,
   applyRailCapacity,
@@ -66,11 +67,27 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
 const SAVE_KEY = 'mm3d-campaign-v1';
 const SEED_KEY = 'mm3d-seed-v1';
 const LEVEL_KEY = 'mm3d-level-v1';
+const LEVEL_CARRY_KEY = 'mm3d-level-carry-v1';
+
+// What a Levels-mode day inherits from the day before it in the same shift:
+// the road you laid, the field under it, and which seams you emptied. Tagged
+// with the shift's map seed and the day it is the START of, so a retry, a
+// level jump or a new shift can never pick up road from a different map.
+interface LevelCarry {
+  mapSeed: string;
+  dayInShift: number; // 0-based: this carry is the starting state of that day
+  road: RoadEdgeQuad[];
+  fields: FieldPatch[];
+  depletion: Record<string, number>;
+}
 
 export interface LevelRun {
   index: number; // 0-based
   spec: LevelSpec;
   budget: LevelBudget;
+  shift: number; // 1-based shift this level's day belongs to
+  dayInShift: number; // 1-based day within that shift
+  daysPerShift: number;
 }
 
 interface Save {
@@ -105,6 +122,12 @@ export class Campaign {
   // Live sim-tuning overrides from the control panel, applied to every world we
   // build so panel tweaks persist across days.
   tuningOverrides: Partial<ContinuousTuning> = {};
+  // The shipped tuning the app starts from (bootstrap's APP_TUNING). Level
+  // budgets are derived from THIS, not from tuningOverrides, so a panel change
+  // makes a level easier or harder instead of being re-balanced away.
+  baseTuning: Partial<ContinuousTuning> = {};
+  // Levels: the road/field/depletion the current day starts from (see LevelCarry).
+  levelCarry: LevelCarry | null = null;
   // Levels mode: which level you're on (persisted), and the last one built.
   levelIndex = 0;
   lastLevelCleared = false;
@@ -115,6 +138,7 @@ export class Campaign {
     this.gameSeed = this.loadSeed();
     this.loadSave();
     this.levelIndex = this.loadLevel();
+    this.levelCarry = this.loadLevelCarry();
   }
 
   levelsMode(): boolean {
@@ -174,38 +198,56 @@ export class Campaign {
     return { state, road: this.carriedRoad.map((q) => [...q] as RoadEdgeQuad) };
   }
 
-  // Levels: this level's map (fixed per game + level, so a retry is the same
-  // map), its ore shaped by the level on top of the panel's ore knobs, and its
-  // quota / sun / starting stock derived from a par route on that map. Nothing
-  // carries between levels: each is its own question.
+  // Levels are the days of a shift (owner, 2026-09-27). Every day in a shift
+  // is played on the same map, and the road you laid, the field under it and
+  // the seams you emptied carry into the next day. Your nanobot stock does not:
+  // each day starts from its own derived stock. A new shift is a new map.
+  levelDaysPerShift(): number {
+    return this.clampInt(this.config.daysPerShift);
+  }
+  private levelMapSeed(index = this.levelIndex): string {
+    return `${this.gameSeed}:S${Math.floor(index / this.levelDaysPerShift())}`;
+  }
+
+  // Levels: this day's map (fixed per game + shift, so a retry and the rest of
+  // the shift are the same moon), the panel's ore knobs as they are, and the
+  // quota / sun / starting stock derived from a par route on that map.
   private buildLevel(): { state: ContinuousWorldState; road: RoadEdgeQuad[] } {
     const spec = levelSpec(this.levelIndex);
-    const t = this.tuningOverrides;
-    const tuning: Partial<ContinuousTuning> = {
-      ...t,
-      oreLayout: (t.oreLayout ?? 0) >= 1 ? t.oreLayout : spec.ore.layout ?? 0,
-      oreCount: (t.oreCount ?? 1) * (spec.ore.count ?? 1),
-      oreAmount: (t.oreAmount ?? 1) * (spec.ore.amount ?? 1),
-      orePoolSize: (t.orePoolSize ?? 1) * (spec.ore.poolSize ?? 1),
-      oreSpread: (t.oreSpread ?? 1) * (spec.ore.spread ?? 1)
-    };
-    const state = createContinuousWorld(`${this.gameSeed}:L${this.levelIndex}`, tuning, this.arenaId, [], {}, this.config.arenaScale);
+    const perShift = this.levelDaysPerShift();
+    const dayInShift = this.levelIndex % perShift;
+    const mapSeed = this.levelMapSeed();
+    const carry = this.levelCarry && this.levelCarry.mapSeed === mapSeed && this.levelCarry.dayInShift === dayInShift ? this.levelCarry : null;
+    const state = createContinuousWorld(mapSeed, this.tuningOverrides, this.arenaId, carry?.fields ?? [], carry?.depletion ?? {}, this.config.arenaScale);
     const home = state.arena.extraction ?? state.arena.start;
-    const par = planPar(home, state.fertileZones, spec.seams, state.tuning, spec.target);
-    const budget = levelBudget(spec, par, state.tuning, {
-      sun: this.config.levelSunSlack ?? 1,
+    // Budgets come from the SHIPPED tuning, so the sliders bite. Before this a
+    // faster rover got a proportionally shorter sun, cheaper road got a
+    // proportionally smaller stock, and Sun window was overwritten outright (and
+    // Start stock too: a run with Start stock 50 began on 4).
+    const base = resolveContinuousTuning(this.baseTuning);
+    const par = planPar(home, state.fertileZones, spec.seams, base, spec.target);
+    // Ore amount scales every seam, so a quota taken as a share of the par ore
+    // would scale with it and cancel the knob. Quote the par ore at base amount.
+    const amountRatio = Math.max(1e-6, state.tuning.oreAmount) / Math.max(1e-6, base.oreAmount);
+    const budget = levelBudget(spec, { ...par, ore: par.ore / amountRatio }, base, {
+      sun: (this.config.levelSunSlack ?? 1) * (state.tuning.startingSolarSeconds / Math.max(1e-6, base.startingSolarSeconds)),
       stock: this.config.levelStockSlack ?? 1,
       quota: this.config.levelQuotaShare ?? 1
     });
     if (state.arena.extraction) {
       state.arena = { ...state.arena, extraction: { ...state.arena.extraction, oreRequired: budget.quota } };
     }
+    // Every day starts with a FULL tank (owner, 2026-09-27: stock resets each
+    // day). The tank is your cap (Base max stock), raised when this level's par
+    // route needs more. Before this a day opened at its derived stock -- often
+    // the floor of 4 -- against a cap of 24, and "4/24" read as yesterday's
+    // leftovers rather than a reset.
     state.maxNanobots = Math.max(state.maxNanobots, budget.startStock);
-    state.nanobots = budget.startStock;
+    state.nanobots = state.maxNanobots;
     state.solarWindowSeconds = budget.sunSeconds;
     state.solarSeconds = budget.sunSeconds;
-    this.level = { index: this.levelIndex, spec, budget };
-    return { state, road: [] };
+    this.level = { index: this.levelIndex, spec, budget, shift: Math.floor(this.levelIndex / perShift) + 1, dayInShift: dayInShift + 1, daysPerShift: perShift };
+    return { state, road: (carry?.road ?? []).map((q) => [...q] as RoadEdgeQuad) };
   }
 
   // A run ended: bank the day's haul (full on a clean win, minus the fee on an
@@ -217,11 +259,24 @@ export class Campaign {
     const won = state.phase === 'won';
     if (this.levelsMode()) {
       // Clear the level (home with the quota) to move on; anything else retries it.
+      // A miss replays the day from the same starting road (the carry for this
+      // day is left as it was), so a failed attempt never builds tomorrow's road.
       const cleared = won && !state.returnedUnderQuota;
       if (cleared) {
         this.bankedOre += state.rover.ore;
         this.bankedBonus += bonus;
-        this.setLevel(this.levelIndex + 1);
+        const next = this.levelIndex + 1;
+        const sameMap = this.levelMapSeed(next) === this.levelMapSeed();
+        this.saveLevelCarry(sameMap
+          ? {
+              mapSeed: this.levelMapSeed(next),
+              dayInShift: next % this.levelDaysPerShift(),
+              road,
+              fields: carryFieldsOvernight(state.fields, state.tuning),
+              depletion: carryDepletionOvernight(state.fertileZones)
+            }
+          : null);
+        this.setLevel(next);
       }
       this.lastLevelCleared = cleared;
       return;
@@ -276,6 +331,7 @@ export class Campaign {
     this.carriedRoad = [];
     this.carriedRailGrowth = 0;
     this.bankedBonus = 0;
+    this.saveLevelCarry(null);
     try {
       window.localStorage.setItem(SEED_KEY, this.gameSeed);
       window.localStorage.removeItem(SAVE_KEY);
@@ -296,6 +352,31 @@ export class Campaign {
   private saveLevel(): void {
     try {
       window.localStorage.setItem(LEVEL_KEY, String(this.levelIndex));
+    } catch {
+      /* storage may be unavailable */
+    }
+  }
+  private loadLevelCarry(): LevelCarry | null {
+    try {
+      const raw = window.localStorage.getItem(LEVEL_CARRY_KEY);
+      const p = raw ? (JSON.parse(raw) as Partial<LevelCarry>) : null;
+      if (!p || typeof p.mapSeed !== 'string' || typeof p.dayInShift !== 'number') return null;
+      return {
+        mapSeed: p.mapSeed,
+        dayInShift: p.dayInShift,
+        road: Array.isArray(p.road) ? p.road : [],
+        fields: Array.isArray(p.fields) ? p.fields : [],
+        depletion: p.depletion && typeof p.depletion === 'object' ? p.depletion : {}
+      };
+    } catch {
+      return null;
+    }
+  }
+  private saveLevelCarry(carry: LevelCarry | null): void {
+    this.levelCarry = carry;
+    try {
+      if (carry) window.localStorage.setItem(LEVEL_CARRY_KEY, JSON.stringify(carry));
+      else window.localStorage.removeItem(LEVEL_CARRY_KEY);
     } catch {
       /* storage may be unavailable */
     }

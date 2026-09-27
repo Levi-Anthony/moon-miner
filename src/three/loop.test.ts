@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { createContinuousWorld } from '../game/continuous';
+import { createContinuousWorld, resolveContinuousTuning } from '../game/continuous';
 import { Campaign, DEFAULT_LOOP_CONFIG } from './loop';
+import type { RoadEdgeQuad } from './road';
 
 // Campaign uses window.localStorage inside try/catch, so under node it simply
 // runs without persistence -- fine for testing the pure loop/economy math.
@@ -124,7 +125,7 @@ describe('Levels mode', () => {
     const b = c.level!.budget;
     expect(state.arena.extraction!.oreRequired).toBe(b.quota);
     expect(state.solarWindowSeconds).toBe(b.sunSeconds);
-    expect(state.nanobots).toBe(b.startStock);
+    expect(state.nanobots).toBe(state.maxNanobots);
     expect(state.maxNanobots).toBeGreaterThanOrEqual(b.startStock);
   });
 
@@ -142,6 +143,62 @@ describe('Levels mode', () => {
     expect(c.bankedOre).toBe(20);
     c.buildWorld();
     expect(c.level!.index).toBe(1);
+  });
+
+  // Owner, 2026-09-27: levels are the days of a shift. Same map all shift, the
+  // road carries day to day, stock resets each day, a new shift is a new map.
+  const roadOf = (n: number) => Array.from({ length: n }, (_, i) => [i, 0, i + 1, 0] as unknown as RoadEdgeQuad);
+  const clear = (c: Campaign, road: RoadEdgeQuad[]) => {
+    const s = c.buildWorld().state;
+    c.endRun({ ...s, phase: 'won', returnedUnderQuota: false, rover: { ...s.rover, ore: 999 } } as typeof s, road);
+  };
+
+  it('days in a shift share one map and carry the road; stock resets each day', () => {
+    const c = levels();
+    const day1 = c.buildWorld().state;
+    clear(c, roadOf(5));
+    const day2 = c.buildWorld();
+    expect(c.level!.shift).toBe(1);
+    expect(c.level!.dayInShift).toBe(2);
+    expect(day2.state.fertileZones.map((z) => [z.x, z.y])).toEqual(day1.fertileZones.map((z) => [z.x, z.y]));
+    expect(day2.road.length).toBe(5);
+    expect(day2.state.nanobots).toBe(day2.state.maxNanobots); // a full tank every morning
+  });
+
+  it('a missed day retries from that morning\'s road, not the failed attempt\'s', () => {
+    const c = levels();
+    clear(c, roadOf(4));
+    const s = c.buildWorld().state;
+    c.endRun({ ...s, phase: 'lost' } as typeof s, roadOf(40));
+    expect(c.buildWorld().road.length).toBe(4);
+  });
+
+  it('a new shift is a new map with no road', () => {
+    const c = levels();
+    const first = c.buildWorld().state;
+    for (let d = 0; d < DEFAULT_LOOP_CONFIG.daysPerShift; d += 1) clear(c, roadOf(3));
+    const next = c.buildWorld();
+    expect(c.level!.shift).toBe(2);
+    expect(c.level!.dayInShift).toBe(1);
+    expect(next.road.length).toBe(0);
+    expect(next.state.fertileZones.map((z) => [z.x, z.y])).not.toEqual(first.fertileZones.map((z) => [z.x, z.y]));
+  });
+
+  it('budgets come from the shipped tuning, so sliders bite instead of being re-balanced away', () => {
+    const base = levels();
+    base.buildWorld();
+    const b0 = base.level!.budget;
+    const faster = levels();
+    faster.tuningOverrides = { fabricatingSpeed: 400 };
+    faster.buildWorld();
+    expect(faster.level!.budget.sunSeconds).toBe(b0.sunSeconds);
+    const stocked = levels();
+    stocked.tuningOverrides = { maxNanobots: 90 };
+    expect(stocked.buildWorld().state.nanobots).toBe(90);
+    const rich = levels();
+    rich.tuningOverrides = { oreAmount: 3 };
+    rich.buildWorld();
+    expect(rich.level!.budget.quota).toBe(b0.quota);
   });
 
   it('Sandbox mode builds with no level (the old day loop)', () => {
