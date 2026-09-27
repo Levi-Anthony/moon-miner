@@ -21,14 +21,6 @@
 import type { ContinuousTuning, FertileZone, Vec2 } from './continuous';
 import { parkedMineRate } from './continuous';
 
-export interface LevelOre {
-  layout?: number; // 1 scatter | 2 ridge | 3 clusters | 4 belt (unset = seeded)
-  count?: number; // pool-count multiplier
-  amount?: number;
-  poolSize?: number;
-  spread?: number;
-}
-
 export interface LevelSpec {
   name: string;
   teaches: string; // one line, shown when the level starts
@@ -37,45 +29,40 @@ export interface LevelSpec {
   quotaShare: number; // quota as a share of the par seams' ore
   sunSlack: number; // sun window as a multiple of par time
   stockSlack: number; // starting stock as a multiple of par stock
-  ore: LevelOre;
+  // No per-level ore shape: levels are the days of a shift and share its map
+  // (owner, 2026-09-27), so the ore layout belongs to the shift, not the level.
 }
 
 export const LEVELS: LevelSpec[] = [
   {
     name: 'First haul',
     teaches: 'Lay road out to a seam, park on it to mine, then ride your own road home.',
-    seams: 1, quotaShare: 0.8, sunSlack: 2.4, stockSlack: 1.7,
-    ore: { layout: 3, count: 0.6 }
+    seams: 1, quotaShare: 0.8, sunSlack: 2.4, stockSlack: 1.7
   },
   {
     name: 'Two stops',
     teaches: 'Chain two seams on one road, then ride the whole thing home on the rail.',
-    seams: 2, quotaShare: 0.8, sunSlack: 2, stockSlack: 1.5,
-    ore: { count: 0.8 }
+    seams: 2, quotaShare: 0.8, sunSlack: 2, stockSlack: 1.5
   },
   {
     name: 'The long lode',
-    teaches: 'Seams strung along a line: lay it once, ride it fast. Charge the slurp (Rail ⚡) and blast a seam on the way back.',
-    seams: 3, quotaShare: 0.85, sunSlack: 1.7, stockSlack: 1.4,
-    ore: { layout: 2 }
+    teaches: 'Lay it once, ride it fast. Charge the slurp (Rail ⚡) and blast a seam on the way back.',
+    seams: 3, quotaShare: 0.85, sunSlack: 1.7, stockSlack: 1.4
   },
   {
     name: 'Branch lines',
     teaches: 'Your road is a network: branch off it (it joins itself) and any branch rides you home.',
-    seams: 3, quotaShare: 0.85, sunSlack: 1.6, stockSlack: 1.3,
-    ore: { layout: 1 }
+    seams: 3, quotaShare: 0.85, sunSlack: 1.6, stockSlack: 1.3
   },
   {
     name: 'Rich and far',
     teaches: 'The rich seams are the far ones. Get there, get paid, get home before sunset.',
-    seams: 2, target: 'richest', quotaShare: 0.85, sunSlack: 1.45, stockSlack: 1.2,
-    ore: { layout: 3 }
+    seams: 2, target: 'richest', quotaShare: 0.85, sunSlack: 1.45, stockSlack: 1.2
   },
   {
     name: 'Last light',
     teaches: 'Everything, tight. Every second out is a second back.',
-    seams: 4, quotaShare: 0.9, sunSlack: 1.3, stockSlack: 1,
-    ore: { layout: 4 }
+    seams: 4, quotaShare: 0.9, sunSlack: 1.3, stockSlack: 1
   }
 ];
 
@@ -92,8 +79,7 @@ export function levelSpec(index: number): LevelSpec {
     teaches: 'Tighter again. Same moon, less daylight.',
     seams: Math.min(6, base.seams + Math.floor(extra / 3)),
     sunSlack: Math.max(1.1, base.sunSlack - 0.03 * extra),
-    stockSlack: Math.max(0.85, base.stockSlack - 0.02 * extra),
-    ore: {}
+    stockSlack: Math.max(0.85, base.stockSlack - 0.02 * extra)
   };
 }
 

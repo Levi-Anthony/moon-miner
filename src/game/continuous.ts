@@ -327,6 +327,7 @@ export interface ContinuousTuning {
   // defaults, so self-play / tests are byte-for-byte; only the 3D app moves them.
   oreSpread: number; // scatter multiplier around the map centre (1 = current)
   oreLayout: number; // 0 = auto (seeded) | 1 scatter | 2 ridge | 3 clusters | 4 belt
+  oreGenerator: number; // 4 = shipped; 3 = frozen calibration map for the self-play rig only
   oreCount: number; // multiplier on the number of pools (1 = the authored count)
   oreAmount: number; // scale on each pool's richness + remaining (1 = current)
   orePoolSize: number; // scale on each pool's radius + vein footprint (1 = current)
@@ -402,8 +403,9 @@ export interface ContinuousWorldState {
   // against ending the day at t=0 (and lets you return under quota as a soft
   // fail rather than being unable to end the day at all).
   leftExtraction: boolean;
-  // True on a winning return that came in UNDER quota -- the scene reads this to
-  // charge the under-quota processing fee. Meaningless while playing.
+  // Legacy: true on a return that came in UNDER quota. The depot no longer ends
+  // the day under quota, so the sim always leaves this false; kept so older
+  // callers (Sandbox's fee path) still type-check and read a sane value.
   returnedUnderQuota: boolean;
 }
 
@@ -577,6 +579,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   ribbonEconomy: false,
   oreSpread: 1,
   oreLayout: 0,
+  oreGenerator: 4,
   oreCount: 1,
   oreAmount: 1,
   orePoolSize: 1,
@@ -788,7 +791,8 @@ export function createContinuousWorld(
         layout: resolvedTuning.oreLayout,
         count: resolvedTuning.oreCount,
         amount: resolvedTuning.oreAmount,
-        poolSize: resolvedTuning.orePoolSize
+        poolSize: resolvedTuning.orePoolSize,
+        version: resolvedTuning.oreGenerator === 3 ? 3 : 4
       }),
       carriedDepletion
     ),
@@ -2259,25 +2263,18 @@ function applyContinuousWinLoss(state: ContinuousWorldState): void {
     // instantly ending, and why "made it back" means made it back.
     if (!atExtraction) state.leftExtraction = true;
 
-    if (atExtraction && state.leftExtraction) {
-      // Returning to the depot ends the day whether or not you made quota.
-      // Over quota is a clean win; under quota still delivers, but the scene
-      // charges the company's processing fee (returnedUnderQuota tells it to).
+    // Home WITH the quota ends the day as a win. Home under quota does nothing:
+    // the depot is a place you pass through, not an exit, so a wobble back past
+    // it (or a quick early slurp) can't end the level by accident. Only sunset
+    // ends a day short.
+    if (atExtraction && state.leftExtraction && state.rover.ore >= required) {
       state.phase = 'won';
+      state.returnedUnderQuota = false;
       const margin = state.solarSeconds;
-      if (state.rover.ore >= required) {
-        state.returnedUnderQuota = false;
-        const surplus = state.rover.ore - required;
-        state.message =
-          `${state.rover.ore.toFixed(1)} ore delivered, ${surplus.toFixed(1)} over quota, ` +
-          `${margin.toFixed(1)}s of light left. ${describeRun(surplus / Math.max(1, required), margin)}`;
-      } else {
-        state.returnedUnderQuota = true;
-        const short = required - state.rover.ore;
-        state.message =
-          `Back under quota: ${state.rover.ore.toFixed(1)} of ${required} ore, ${short.toFixed(1)} short. ` +
-          `The company takes its processing fee on what you did bring.`;
-      }
+      const surplus = state.rover.ore - required;
+      state.message =
+        `${state.rover.ore.toFixed(1)} ore delivered, ${surplus.toFixed(1)} over quota, ` +
+        `${margin.toFixed(1)}s of light left. ${describeRun(surplus / Math.max(1, required), margin)}`;
       return;
     }
 
@@ -2285,7 +2282,7 @@ function applyContinuousWinLoss(state: ContinuousWorldState): void {
       state.phase = 'lost';
       state.message =
         state.rover.ore < required
-          ? `Sunset. Only ${state.rover.ore.toFixed(1)} of ${required} ore mined, and you never made it back.`
+          ? `Sunset with ${state.rover.ore.toFixed(1)} of ${required} ore. The depot only takes a full quota.`
           : 'Sunset closed the extraction window before the rover got home.';
     }
     return;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ARENA_LAYOUT_ARCHETYPES,
+  DEFAULT_ORE_GEN,
   createArenaFertileZones,
   getContinuousArena
 } from './continuousArena';
@@ -39,12 +40,15 @@ describe('createArenaFertileZones layout', () => {
           // Hard floor: seams are never stacked. Relaxation always opens a real
           // gap even when a crowded arena can't reach the full spread.
           expect(d).toBeGreaterThanOrEqual(40 - 1e-6);
-          if (d < 155 - 1e-6) fullySpread = false;
+          // v4 (2026-09-27): each layout has its own spacing (a clump is close
+          // work, a scatter is far apart), so "fully spread" is the tightest
+          // archetype's gap, not the scatter's 155.
+          if (d < 70 - 1e-6) fullySpread = false;
         }
       }
       if (fullySpread) seedsFullySpread += 1;
     }
-    // Relaxation gets the full 155 spread on the large majority of seeds.
+    // Relaxation opens every layout's own gap on the large majority of seeds.
     expect(seedsFullySpread / seeds.length).toBeGreaterThan(0.75);
   });
 
@@ -70,6 +74,33 @@ describe('createArenaFertileZones layout', () => {
     const b = createArenaFertileZones(arena, 'apollo-99');
     const moved = a1.some((z, i) => dist(z.x, z.y, b[i].x, b[i].y) > 1);
     expect(moved).toBe(true);
+  });
+
+  it('scales the shape with the moon: a big moon is the same map, bigger (no ruled line)', () => {
+    // v3 grew only the box, so at Level size 5.4 a ridge was ~3000 long and 150
+    // wide (minor/major axis ratio 0.05). v4 scales the shape with it.
+    const aspect = (zs: { x: number; y: number }[]) => {
+      const mx = zs.reduce((s, p) => s + p.x, 0) / zs.length;
+      const my = zs.reduce((s, p) => s + p.y, 0) / zs.length;
+      let sxx = 0; let syy = 0; let sxy = 0;
+      for (const p of zs) { sxx += (p.x - mx) ** 2; syy += (p.y - my) ** 2; sxy += (p.x - mx) * (p.y - my); }
+      const tr = sxx + syy; const det = sxx * syy - sxy * sxy; const q = Math.sqrt(Math.max(0, tr * tr / 4 - det));
+      return Math.sqrt(Math.max(0, tr / 2 - q) / (tr / 2 + q));
+    };
+    let total = 0;
+    for (const seed of seeds.slice(0, 30)) total += aspect(createArenaFertileZones(arena, seed, 5.4, { ...DEFAULT_ORE_GEN, layout: 2 }));
+    expect(total / 30).toBeGreaterThan(0.25);
+  });
+
+  it('a huge Ore spread never pins pools onto the map border', () => {
+    let onBorder = 0;
+    let all = 0;
+    for (const seed of seeds.slice(0, 30)) {
+      const zs = createArenaFertileZones(arena, seed, 2, { ...DEFAULT_ORE_GEN, spread: 8 });
+      all += zs.length;
+      onBorder += zs.filter((p) => Math.abs(p.x - 180) < 1 || Math.abs(p.x - 1810) < 1 || Math.abs(p.y - 300) < 1 || Math.abs(p.y - 1350) < 1).length;
+    }
+    expect(onBorder / all).toBeLessThan(0.1);
   });
 
   it('exposes the archetype list used to vary layouts', () => {

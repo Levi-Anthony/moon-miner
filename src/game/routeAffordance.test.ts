@@ -52,7 +52,7 @@ const ROUTES_HOME: RouteHome[] = [
 // amount of light left -- none of it constructed by hand, because a
 // hand-built state would only prove the routes behave as I imagined.
 function driveOutboundTo(target: Vec2, untilSeconds: number): ContinuousWorldState {
-  let world = createContinuousWorld('route-affordance', undefined, 'last-light-return');
+  let world = createContinuousWorld('route-affordance', { oreGenerator: 3 }, 'last-light-return') // frozen calibration map;
   while (world.phase === 'playing' && world.elapsedSeconds < untilSeconds) {
     world = tickContinuousWorld(world, getContinuousSelfPlayInput(world, target), 0.05);
   }

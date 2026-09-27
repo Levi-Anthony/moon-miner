@@ -30,7 +30,7 @@ import { START_BEARING, sunState } from './sun';
 import { appendRun, buildRunRecord, createRunStats, accumulateRunStats, diffKnobs, loadRunHistory, runIssueUrl, saveRunHistory, unsentRuns, type RunRecord, type RunStats } from './runRecord';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_CONTROLS_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type ControlsConfig, type TerrainConfig } from './panel';
 import { stickToInput } from './stick';
-import { LEVELS, levelSpec } from '../game/level';
+import { levelSpec } from '../game/level';
 
 // --- Persisted config (loop + road + sim-tuning overrides + camera + look + controls)
 const CONFIG_KEY = 'mm3d-config-v1';
@@ -115,6 +115,7 @@ const APP_TUNING: Partial<ContinuousTuning> = {
   startingSolarSeconds: 75
 };
 campaign.tuningOverrides = { ...APP_TUNING, ...savedConfig.tuning };
+campaign.baseTuning = APP_TUNING; // level budgets derive from the shipped tuning, so knobs bite
 let state!: ContinuousWorldState;
 let runEnded = false; // guards the once-per-run bank/persist
 // Bonus (mastery acknowledgement, never the win): distance ridden on cured rail
@@ -123,6 +124,7 @@ let runEnded = false; // guards the once-per-run bank/persist
 let slideDistance = 0;
 // Per-run stats for the run record (src/three/runRecord.ts, DEV-61).
 let runStats: RunStats = createRunStats(0);
+let runStartStock = 0; // what the day actually began with (Levels: a full tank)
 const RUN_REPO = 'Levi-Anthony/moon-miner';
 function storage(): Storage | undefined {
   try {
@@ -806,7 +808,8 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
     state.solarSeconds = state.tuning.startingSolarSeconds;
   } else {
     const lv = campaign.level;
-    flash = { text: `Level ${lv.index + 1} · ${lv.spec.name} — ${lv.spec.teaches}`, until: performance.now() + 9000 };
+    const newMap = lv.dayInShift === 1 ? ' New map.' : ' Same moon: your road is still there.';
+    flash = { text: `Level ${lv.index + 1} · shift ${lv.shift}, day ${lv.dayInShift}/${lv.daysPerShift} · ${lv.spec.name} —${newMap} ${lv.spec.teaches}`, until: performance.now() + 9000 };
   }
   road.seed(built.road);
   road.boost = 0;
@@ -818,6 +821,7 @@ function applyWorld(built: { state: ContinuousWorldState; road: RoadEdgeQuad[] }
   runEnded = false;
   slideDistance = 0;
   runStats = createRunStats(state.nanobots);
+  runStartStock = state.nanobots;
 }
 
 // --- Rover --------------------------------------------------------------------
@@ -1113,7 +1117,7 @@ function updateHud(): void {
   hud.sunBar.style.background = state.solarSeconds / state.solarWindowSeconds < 0.25 ? '#ffb066' : '#8fb2ff';
   (hud.day.previousElementSibling as HTMLElement).textContent = campaign.level ? 'LEVEL' : 'SHIFT';
   hud.day.textContent = campaign.level
-    ? (campaign.level.index < LEVELS.length ? `${campaign.level.index + 1}/${LEVELS.length}` : `${campaign.level.index + 1}`) // the name is in the start line + banner
+    ? `${campaign.level.index + 1} · D${campaign.level.dayInShift}/${campaign.level.daysPerShift}` // the name is in the start line + banner
     : `D${campaign.dayInShiftOf()}/${campaign.config.daysPerShift} · S${campaign.shiftOfDay()}/${campaign.config.shiftsPerGame}`;
   hud.bonus.textContent = `+${Math.floor(bonusScore())}`;
   const onRoad = road.locked;
@@ -1148,7 +1152,10 @@ function showBanner(): void {
     const bonus = cleared ? `  ·  bonus +${Math.floor(bonusScore())} (${surplusOre().toFixed(1)} surplus ore, ${Math.round(slideDistance)} hands-off rail)` : '';
     hud.bannerBody.textContent = `${state.message}  ·  ${par}${bonus}`;
     const next = levelSpec(campaign.levelIndex);
-    cta.textContent = cleared ? `Tap for level ${campaign.levelIndex + 1}: ${next.name}` : `Tap to retry level ${lv.index + 1}`;
+    const nextIsNewMap = cleared && lv.dayInShift === lv.daysPerShift;
+    cta.textContent = cleared
+      ? `Tap for level ${campaign.levelIndex + 1}: ${next.name}${nextIsNewMap ? ' (new shift, new map)' : ''}`
+      : `Tap to retry level ${lv.index + 1} (from this morning's road)`;
     return;
   }
   const bonusLine = won
@@ -1182,10 +1189,10 @@ function recordRun(levelRun: typeof campaign.level): void {
     build: __BUILD_SHA__,
     mode: levelRun ? 'levels' : 'sandbox',
     level: levelRun
-      ? { index: levelRun.index, name: levelRun.spec.name, startStock: levelRun.budget.startStock, parSeconds: levelRun.budget.parSeconds, parSeams: levelRun.budget.par.seams.length }
+      ? { index: levelRun.index, name: levelRun.spec.name, startStock: runStartStock, parSeconds: levelRun.budget.parSeconds, parSeams: levelRun.budget.par.seams.length }
       : null,
     cleared: campaign.lastLevelCleared,
-    day: campaign.dayNumber,
+    day: levelRun ? levelRun.dayInShift : campaign.dayNumber,
     bonus: bonusScore(),
     slide: slideDistance,
     device: { w: window.innerWidth, h: window.innerHeight, touch: navigator.maxTouchPoints > 0 },

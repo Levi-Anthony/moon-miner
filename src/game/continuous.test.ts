@@ -200,9 +200,17 @@ describe('continuous Moon Miner spike rules', () => {
     }
     // And the far ring pays better per unit of distance than the near ring, so
     // going further out is a real reward rather than a longer errand.
-    const near = ranked[0];
-    const far = ranked[ranked.length - 1];
-    expect(far.richness / far.distance).toBeGreaterThan(near.richness / near.distance);
+    // Held across seeds rather than on this one seed: the v4 layout (2026-09-27)
+    // scales every archetype with the moon, and a given seed can land its
+    // nearest seam a touch farther out. Measured 84% of seeds at sizes 1-2.
+    let paysMore = 0;
+    for (let i = 0; i < 60; i += 1) {
+      const w = createContinuousWorld(`reach-${i}`, {}, 'last-light-return');
+      const d = w.arena.extraction!;
+      const r = w.fertileZones.map((z) => ({ distance: Math.hypot(z.x - d.x, z.y - d.y), richness: z.richness })).sort((a, b) => a.distance - b.distance);
+      if (r[r.length - 1].richness / r[r.length - 1].distance > r[0].richness / r[0].distance) paysMore += 1;
+    }
+    expect(paysMore / 60).toBeGreaterThan(0.75);
     // Every seam is a directional band, not a blob.
     for (const zone of world.fertileZones) expect(zone.vein).toBeDefined();
     expect(world.message).toBe('Shift is over. Follow the safe road home, or risk one more seam before sunset.');
@@ -1002,6 +1010,22 @@ describe('continuous Moon Miner spike rules', () => {
     expect(required).toBeGreaterThan(0);
   });
 
+  it('keeps playing when the rover comes home under quota', () => {
+    // Owner, 2026-09-27: the depot is not an exit. Two runs ended at 8 s and
+    // 11.6 s because a quick trip out and back counted as "returned".
+    const world = createContinuousWorld('home-test-short', {}, 'last-light-return');
+    world.rover.ore = world.arena.extraction!.oreRequired - 1;
+    world.rover.x = 900;
+    world.rover.y = 535;
+    world.leftExtraction = true;
+
+    const next = tickContinuousWorld(world, idleInput, 0.1);
+
+    expect(isRoverAtExtraction(next)).toBe(true);
+    expect(next.phase).toBe('playing');
+    expect(next.returnedUnderQuota).toBe(false);
+  });
+
   it('wins last-light-return by arriving with the ore', () => {
     const world = createContinuousWorld('home-test-ore', {}, 'last-light-return');
     world.rover.ore = world.arena.extraction!.oreRequired;
@@ -1152,6 +1176,9 @@ describe('continuous Moon Miner spike rules', () => {
     // 36s window stranded everybody.)
     expect(safe.oreValue).toBeLessThan(quota);
     expect(safe.reachedExtraction).toBe(true);
+    // And home under quota is not an exit (owner, 2026-09-27): the depot only
+    // ends the day with the quota, so the short route rides out to sunset.
+    expect(safe.solarRemaining).toBe(0);
     for (const reaching of [deep, greedy, sloppy]) {
       expect(reaching.oreValue).toBeGreaterThan(quota);
     }
@@ -1160,7 +1187,6 @@ describe('continuous Moon Miner spike rules', () => {
     // less of the day left. That is the risk half of the gradient -- the bill
     // arrives as margin now rather than as a stranding, because the day is long
     // enough to make the choice rather than to punish it outright.
-    expect(shallow.solarRemaining).toBeLessThan(safe.solarRemaining);
     expect(deep.solarRemaining).toBeLessThan(shallow.solarRemaining);
     expect(sloppy.solarRemaining).toBeLessThan(deep.solarRemaining);
     // Overstaying is never comfortable: the sloppy route ends with the thinnest

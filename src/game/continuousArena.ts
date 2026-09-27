@@ -593,10 +593,304 @@ export interface OreGenConfig {
   count: number; // multiplier on the number of pools (1 = the authored count)
   amount: number; // scale on richness + remaining (1 = current)
   poolSize: number; // scale on radius + vein footprint (1 = current)
+  // 4 = the shipped generator. 3 = the frozen 2026-09 generator, kept ONLY as
+  // the calibration map the self-play rig's hand-placed routes were driven on
+  // (continuousSelfPlay, routeAffordance, report:last-light). Not for the game.
+  version?: 3 | 4;
 }
-export const DEFAULT_ORE_GEN: OreGenConfig = { spread: 1, layout: 0, count: 1, amount: 1, poolSize: 1 };
+export const DEFAULT_ORE_GEN: OreGenConfig = { spread: 1, layout: 0, count: 1, amount: 1, poolSize: 1, version: 4 };
 
 export function createArenaFertileZones(
+  arena: ContinuousArenaDefinition,
+  seed: string,
+  layoutScale = 1,
+  ore: OreGenConfig = DEFAULT_ORE_GEN
+): FertileZone[] {
+  if (ore.version === 3) return createArenaFertileZonesV3(arena, seed, layoutScale, ore);
+  const random = seededRandom(`${seed}:${arena.id}:layout-v4`);
+  // Bigger level = the seams scatter across a wider area (reachability rules
+  // below still hold, so they stay reachable -- just farther). The world scales
+  // uniformly with layoutScale (the arena's positions and the 3D ground all
+  // multiply by the same factor via scaleArena + state.width), so the seam box
+  // is the base band times the scale.
+  const scale = Math.max(1, layoutScale);
+  // v4 (2026-09-27): every archetype's SHAPE scales with the moon too. In v3
+  // only the box grew; the ridge's width (150), the cluster box (190), the belt
+  // band (130) and the spacing (155/160) stayed fixed, so at Level size 2-5 a
+  // ridge was ~3000 units long and 150 wide -- a ruled line -- and clusters
+  // collapsed into tight square clumps (owner: "all in a ruler-straight line",
+  // "don't seem like natural features").
+  const k = scale;
+  const bounds = {
+    minX: 90 * scale,
+    maxX: 905 * scale,
+    minY: 150 * scale,
+    maxY: 675 * scale
+  };
+  const start = arena.start;
+  const extraction = arena.extraction;
+  const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
+  const clampX = (x: number) => Math.min(bounds.maxX, Math.max(bounds.minX, x));
+  const clampY = (y: number) => Math.min(bounds.maxY, Math.max(bounds.minY, y));
+  // A rounded, centre-heavy offset (sum of uniforms) instead of a flat square
+  // box: clumps read as blobs, not tiles.
+  const blob = () => (random() + random() + random() - 1.5) / 1.5;
+  // Ore spread scales the archetype's own geometry (lode length and width,
+  // clump size and reach, belt radius and band, scatter box). v3 instead moved
+  // the finished positions away from the centre and CLAMPED them, so a big
+  // spread pinned every pool onto the map's border in a ruled line.
+  const g = Math.max(0.05, ore.spread);
+  const gRoot = Math.sqrt(g);
+  // More pools = a fatter lode / bigger clumps / a wider band, so extra pools
+  // stay on the pattern instead of overflowing into a uniform carpet.
+  const crowd = Math.sqrt(Math.max(1, (arena.fertileZones.length * ore.count) / arena.fertileZones.length));
+
+  // Reach is measured from the extraction if there is one, else the start.
+  const focus = extraction ? { x: extraction.x, y: extraction.y } : { x: start.x, y: start.y };
+  const bcx = (bounds.minX + bounds.maxX) / 2;
+  const bcy = (bounds.minY + bounds.maxY) / 2;
+  const shortSpan = Math.min(bounds.maxY - bounds.minY, bounds.maxX - bounds.minX);
+
+  // Pick this seed's layout archetype and sample its anchors once. Always DRAW
+  // the seeded archetype (keeps the RNG stream stable), then honour a forced
+  // layout from the panel when one is set.
+  const drawnArchetype = ARENA_LAYOUT_ARCHETYPES[Math.floor(random() * ARENA_LAYOUT_ARCHETYPES.length)];
+  const archetype = ore.layout >= 1 && ore.layout <= 4 ? ARENA_LAYOUT_ARCHETYPES[Math.round(ore.layout) - 1] : drawnArchetype;
+
+  // Ridge: a curved lode (quadratic curve through an off-centre bend), not a
+  // straight segment through the middle of the map.
+  const theta = random() * Math.PI * 2;
+  const ridgeHalf = Math.min(shortSpan * 0.75, shortSpan * (0.42 + random() * 0.2) * g);
+  const ridgeMid = { x: bcx + (random() - 0.5) * shortSpan * 0.3, y: bcy + (random() - 0.5) * shortSpan * 0.3 };
+  const ridgeA = { x: ridgeMid.x - Math.cos(theta) * ridgeHalf, y: ridgeMid.y - Math.sin(theta) * ridgeHalf };
+  const ridgeB = { x: ridgeMid.x + Math.cos(theta) * ridgeHalf, y: ridgeMid.y + Math.sin(theta) * ridgeHalf };
+  const bend = (random() < 0.5 ? -1 : 1) * ridgeHalf * (0.15 + random() * 0.3);
+  const ridgeC = { x: ridgeMid.x - Math.sin(theta) * bend, y: ridgeMid.y + Math.cos(theta) * bend };
+  const ridgeAt = (t: number): { p: Vec2; tangent: number } => {
+    const u = 1 - t;
+    const p = {
+      x: u * u * ridgeA.x + 2 * u * t * ridgeC.x + t * t * ridgeB.x,
+      y: u * u * ridgeA.y + 2 * u * t * ridgeC.y + t * t * ridgeB.y
+    };
+    const dx = 2 * u * (ridgeC.x - ridgeA.x) + 2 * t * (ridgeB.x - ridgeC.x);
+    const dy = 2 * u * (ridgeC.y - ridgeA.y) + 2 * t * (ridgeB.y - ridgeC.y);
+    return { p, tangent: Math.atan2(dy, dx) };
+  };
+  const ridgeWidth = 60 * k * (0.7 + random() * 0.6) * g * crowd;
+
+  // Clusters: 2-4 rounded clumps of different sizes. The first sits near the
+  // plant (lean, close work); the rest fan out on spread-apart bearings at
+  // varied distances, so the far haul is a choice of which clump.
+  const excl = (extraction ? extraction.radius : 0) + 150 * k;
+  const clusterCount = 2 + Math.floor(random() * 3);
+  const baseAngle = random() * Math.PI * 2;
+  const clusters: { c: Vec2; r: number }[] = [];
+  for (let i = 0; i < clusterCount; i += 1) {
+    const angle = baseAngle + (i * Math.PI * 2 * (0.6 + random() * 0.5)) / clusterCount;
+    const reach = i === 0 ? excl * (1 + random() * 0.4) : shortSpan * (0.35 + random() * 0.45) * gRoot;
+    clusters.push({
+      c: { x: clampX(focus.x + Math.cos(angle) * reach), y: clampY(focus.y + Math.sin(angle) * reach) },
+      r: 75 * k * (0.7 + random() * 0.6) * g * crowd
+    });
+  }
+
+  // Belt: an ARC round the plant (120-270 degrees of it) with a wandering
+  // radius, not a full ring of even thickness.
+  const beltR = (excl + 40 * k + random() * (shortSpan * 0.28)) * gRoot;
+  // The depot sits at the map's edge, so the arc faces INTO the map (a random
+  // bearing put half of it off the edge, where every sample was rejected).
+  const beltSpan = Math.PI * (0.67 + random() * 0.5);
+  const beltFrom = Math.atan2(bcy - focus.y, bcx - focus.x) - beltSpan / 2 + (random() - 0.5) * 0.8;
+  const beltWobble = 0.12 + random() * 0.18;
+  const beltPhase = random() * Math.PI * 2;
+  const beltBand = 55 * k * (0.7 + random() * 0.6) * g * crowd;
+
+  // A seed can carry a few strays off its archetype: real deposits are never
+  // perfectly on-pattern, and one odd seam gives a route a reason to detour.
+  const strayChance = 0.04 + random() * 0.1;
+
+  const veinAngle: number[] = [];
+  function candidate(): Vec2 & { tangent?: number } {
+    if (random() < strayChance) {
+      return { x: bounds.minX + random() * (bounds.maxX - bounds.minX), y: bounds.minY + random() * (bounds.maxY - bounds.minY) };
+    }
+    switch (archetype) {
+      case 'ridge': {
+        const { p, tangent } = ridgeAt(random());
+        const perp = blob() * ridgeWidth;
+        return { x: p.x - Math.sin(tangent) * perp, y: p.y + Math.cos(tangent) * perp, tangent };
+      }
+      case 'clusters': {
+        const { c, r } = clusters[Math.floor(random() * clusters.length)];
+        return { x: c.x + blob() * r, y: c.y + blob() * r };
+      }
+      case 'belt': {
+        const a = beltFrom + random() * beltSpan;
+        const r = beltR * (1 + beltWobble * Math.sin(a * 2 + beltPhase)) + blob() * beltBand;
+        return { x: focus.x + Math.cos(a) * r, y: focus.y + Math.sin(a) * r };
+      }
+      default: {
+        const f = Math.min(1, g);
+        return { x: bcx + (random() - 0.5) * (bounds.maxX - bounds.minX) * f, y: bcy + (random() - 0.5) * (bounds.maxY - bounds.minY) * f };
+      }
+    }
+  }
+
+  // 1. Sample one spread-out, reachable position per seam from the archetype.
+  //    Positions are seam slots; which SEAM lands in which slot is step 2. The
+  //    pool COUNT scales the authored seam set: extra pools reuse the authored
+  //    templates (with fresh ids) so their richness/size profiles stay defined.
+  const authored = arena.fertileZones;
+  const poolCount = Math.max(1, Math.round(authored.length * ore.count));
+  const templates: FertileZone[] = Array.from({ length: poolCount }, (_, i) => {
+    const base = authored[i % authored.length];
+    return i < authored.length ? base : { ...base, id: `${base.id}~x${i}` };
+  });
+  // Spacing is the archetype's, not one number for all: a clump is close work,
+  // a scatter is far apart. It scales with the moon, eases with more pools (so
+  // a high Ore count keeps its shape instead of relaxing into an even grid),
+  // and loosens with spread. v3 used 155/160 everywhere, which relaxed every
+  // archetype into the same even spread -- "layouts look alike".
+  const ARCHETYPE_GAP: Record<ArenaLayoutArchetype, number> = { scatter: 150, ridge: 85, clusters: 70, belt: 80 };
+  const density = Math.min(1, Math.sqrt(authored.length / poolCount));
+  const gap = Math.max(45, ARCHETYPE_GAP[archetype] * density * Math.min(1.6, Math.max(0.6, gRoot))) * k;
+  const positions: Vec2[] = [];
+  for (const zone of templates) {
+    // Fallback if no sample lands in bounds: the map centre, not the authored
+    // (unscaled) position, which sat in the wrong place on a scaled moon.
+    let px = bcx;
+    let py = bcy;
+    // Best reachable candidate so far, ranked by how far it sits from its
+    // nearest neighbour. If no attempt clears the full 155 spacing (a tight
+    // belt/cluster can run out of room), we still take the most-spread
+    // reachable spot instead of snapping back onto another seam.
+    let bestGap = -1;
+    let bestTangent: number | undefined;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const { x, y, tangent } = candidate();
+      if (x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY) continue;
+      // Clearances scale with the moon too, so the nearest seam keeps its
+      // place relative to the far ones and reach still pays per unit distance.
+      if (dist(x, y, start.x, start.y) < 180 * k) continue;
+      if (extraction && dist(x, y, extraction.x, extraction.y) < extraction.radius + 110 * k) continue;
+      const gapHere = positions.reduce((m, p) => Math.min(m, dist(x, y, p.x, p.y)), Infinity);
+      if (gapHere >= gap) {
+        px = x;
+        py = y;
+        bestGap = gapHere;
+        bestTangent = tangent;
+        break;
+      }
+      if (gapHere > bestGap) {
+        bestGap = gapHere;
+        px = x;
+        py = y;
+        bestTangent = tangent;
+      }
+    }
+    positions.push({ x: px, y: py });
+    veinAngle.push(bestTangent ?? random() * Math.PI * 2);
+  }
+
+  // Ore spread: widen/tighten the whole scatter around the map centre before
+  // relaxation (identity at 1). Relaxation + enforce() still keep spacing/bounds.
+  // 1b. Relaxation. The archetype gives the readable SHAPE; a few
+  //     spring-separation passes spread any crowded seams to a legal gap while
+  //     keeping the gestalt, then snap each back inside bounds and clear of the
+  //     start/extraction. Tight belts and clusters converge to a clean spread.
+  const enforce = (p: Vec2): void => {
+    p.x = clampX(p.x);
+    p.y = clampY(p.y);
+    const ds = dist(p.x, p.y, start.x, start.y);
+    if (ds < 186 * k) {
+      const u = ds || 1;
+      p.x = clampX(start.x + ((p.x - start.x) / u) * 186 * k);
+      p.y = clampY(start.y + ((p.y - start.y) / u) * 186 * k);
+    }
+    if (extraction) {
+      const de = dist(p.x, p.y, extraction.x, extraction.y);
+      const need = extraction.radius + 116 * k;
+      if (de < need) {
+        const u = de || 1;
+        p.x = clampX(extraction.x + ((p.x - extraction.x) / u) * need);
+        p.y = clampY(extraction.y + ((p.y - extraction.y) / u) * need);
+      }
+    }
+  };
+  const SPREAD = gap;
+  for (let iter = 0; iter < 80; iter += 1) {
+    let moved = false;
+    for (let i = 0; i < positions.length; i += 1) {
+      for (let j = i + 1; j < positions.length; j += 1) {
+        const dx = positions[j].x - positions[i].x;
+        const dy = positions[j].y - positions[i].y;
+        const d = Math.hypot(dx, dy) || 0.01;
+        if (d < SPREAD) {
+          const push = (SPREAD - d) / 2;
+          const ux = dx / d;
+          const uy = dy / d;
+          positions[i].x -= ux * push;
+          positions[i].y -= uy * push;
+          positions[j].x += ux * push;
+          positions[j].y += uy * push;
+          moved = true;
+        }
+      }
+    }
+    for (const p of positions) enforce(p);
+    if (!moved) break;
+  }
+
+  // 2. Assign seams to slots so reach stays rewarded: the richest seam lands at
+  //    the slot FARTHEST from the extraction, the leanest nearest. Without an
+  //    extraction, keep the sampled order. Same property across every archetype:
+  //    the far end of a ridge, the far cluster, the outer belt all read as "the
+  //    rich haul is the long haul."
+  const slotOrder = positions.map((_, index) => index);
+  const zoneOrder = templates.map((_, index) => index);
+  if (extraction) {
+    slotOrder.sort((a, b) => dist(positions[a].x, positions[a].y, extraction.x, extraction.y) - dist(positions[b].x, positions[b].y, extraction.x, extraction.y));
+    zoneOrder.sort((a, b) => templates[a].richness - templates[b].richness);
+  }
+
+  const result: FertileZone[] = templates.map((zone) => ({ ...zone }));
+  slotOrder.forEach((slotIndex, rank) => {
+    const zone = templates[zoneOrder[rank]];
+    const at = positions[slotIndex];
+    let vein = zone.vein;
+    if (zone.vein) {
+      // Pool size scales the vein footprint too, so a bigger pool is a bigger lode.
+      const length = Math.hypot(zone.vein.to.x - zone.vein.from.x, zone.vein.to.y - zone.vein.from.y) * ore.poolSize;
+      // On a ridge a vein follows the lode's LOCAL direction (the curve's
+      // tangent where it was sampled) with some play; elsewhere a random angle.
+      const angle = veinAngle[slotIndex] + (random() - 0.5) * 0.9;
+      const hx = (Math.cos(angle) * length) / 2;
+      const hy = (Math.sin(angle) * length) / 2;
+      vein = {
+        from: { x: at.x - hx, y: at.y - hy },
+        to: { x: at.x + hx, y: at.y + hy },
+        width: zone.vein.width * ore.poolSize
+      };
+    }
+    // Keep the seam's identity/order in the array so the ids/count stay stable;
+    // only its position, footprint and amount are shaped. Amount/pool-size are
+    // identity at 1, so the default map is byte-for-byte unchanged.
+    result[zoneOrder[rank]] = {
+      ...zone,
+      x: at.x,
+      y: at.y,
+      radius: zone.radius * ore.poolSize,
+      richness: zone.richness * ore.amount,
+      remaining: zone.remaining * ore.amount,
+      vein
+    };
+  });
+
+  return result;
+}
+
+// The frozen v3 generator (calibration map only; see OreGenConfig.version).
+function createArenaFertileZonesV3(
   arena: ContinuousArenaDefinition,
   seed: string,
   layoutScale = 1,
