@@ -442,7 +442,11 @@ export function runContinuousSelfPlay(options: {
 
     const target = route.seams ? getContinuousSelfPlayPolicyTarget(route, world) : getContinuousSelfPlayTarget(route, world.elapsedSeconds, world);
     const previous = world;
-    world = tickContinuousWorld(world, getContinuousSelfPlayInput(world, target), deltaSeconds);
+    // Home again: park and let the portal charge (portalChargeSeconds), as a
+    // player would. Driving on would keep resetting the charge.
+    const parkedHome = world.leftExtraction && isRoverAtExtraction(world);
+    const input = parkedHome ? { steer: 0, throttle: 0, driveIntent: false } : getContinuousSelfPlayInput(world, target);
+    world = tickContinuousWorld(world, input, deltaSeconds);
     recordContinuousLoopTick(trace, previous, world, deltaSeconds);
     maxDroneEta = Math.max(maxDroneEta, world.drone.etaSeconds);
     maxSafeCorridorDistance = Math.max(maxSafeCorridorDistance, getSafeCorridorDistance(world));
@@ -519,7 +523,7 @@ export function formatLastLightRouteOutcomeTable(deltaSeconds = 0.05): string {
 }
 
 function getLastLightRouteNote(routeId: ContinuousSelfPlayRouteId, metrics: ContinuousSelfPlayMetrics): string {
-  if (routeId === 'safeReturn') return 'safe road, low reward: short of quota, so it rides out to sunset';
+  if (routeId === 'safeReturn') return 'safe road, low reward, wide sunset margin';
   if (routeId === 'shallowLobe') return 'first off-route lobe, still controlled';
   if (routeId === 'deepLobe') return 'rich northern value with crawl pressure';
   if (routeId === 'greedyLatePocket') return 'high value, tight successful return';

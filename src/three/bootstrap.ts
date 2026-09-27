@@ -1121,7 +1121,9 @@ function updateHud(): void {
     : `D${campaign.dayInShiftOf()}/${campaign.config.daysPerShift} · S${campaign.shiftOfDay()}/${campaign.config.shiftsPerGame}`;
   hud.bonus.textContent = `+${Math.floor(bonusScore())}`;
   const onRoad = road.locked;
-  hud.mode.textContent = state.arms.mining > 0
+  hud.mode.textContent = state.phase === 'playing' && state.portalCharge > 0
+    ? `Portal ${Math.max(0, state.tuning.portalChargeSeconds - state.portalCharge).toFixed(1)}s`
+    : state.arms.mining > 0
     ? 'Mining'
     : emergencyActive
       ? 'Emergency ⚠'
