@@ -39,7 +39,7 @@ Drive a nanobot-laying rover across a lunar field before sunset. Driving on new 
   - Tapped while driving, or just after stopping, it does the usual end-of-road reclaim.
   - Stopped for the Eraser aim delay (0.8 s; pivoting in place is fine), a red ring marks the road straight ahead and Launch reads **Erase**. The drone erases that patch (PRs #38/#39).
 - **Continue:** R or tap the banner, only after a level ends. It does nothing while playing.
-- **⚙ panel:** live knobs grouped into collapsible sections (Controls, World, Ore pools, Rover & rail, Economy, Rail growth, Network & campaign, Slurp, Drone, Light & sky, and more). Wide ranges use curved sliders centred on the default (PR #39). Settings persist in `mm3d-*` localStorage keys.
+- **⚙ panel:** live knobs grouped into collapsible sections (Controls, World, Ore pools, Rover & rail, Economy, Rail growth, Network & campaign, Slurp, Drone, Light & sky, and more). Wide ranges use curved sliders centred on the default (PR #39). Settings persist in `mm3d-*` localStorage keys. Buttons: **Reset Day** replays the current day from its morning (same map, the road it began with, nothing banked; works mid-run or on the result banner), **New Game** starts a fresh seed at day 1 / level 1 and keeps settings, **Full Reset** returns every setting to its default plus a new game and keeps saved runs (`mm3d-runs-v1`).
 
 ## 2. How we work here (process doctrine — follow this)
 

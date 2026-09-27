@@ -27,7 +27,7 @@ import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type Ro
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
 import { pushOutOfCraters } from './craters';
 import { START_BEARING, sunState } from './sun';
-import { appendRun, buildRunRecord, createRunStats, accumulateRunStats, diffKnobs, loadRunHistory, runIssueUrl, saveRunHistory, unsentRuns, type RunRecord, type RunStats } from './runRecord';
+import { RUN_HISTORY_KEY, appendRun, buildRunRecord, createRunStats, accumulateRunStats, diffKnobs, loadRunHistory, runIssueUrl, saveRunHistory, unsentRuns, type RunRecord, type RunStats } from './runRecord';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_CONTROLS_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type ControlsConfig, type TerrainConfig } from './panel';
 import { stickToInput } from './stick';
 import { levelSpec } from '../game/level';
@@ -1168,10 +1168,15 @@ function showBanner(): void {
 }
 
 function onContinue(): void {
-  if (state.phase === 'playing') return;
+  // A banner over a live world is stale (a rebuild used to leave it up): just
+  // clear it rather than ignore the tap -- that was the "next day does
+  // nothing" stuck state.
+  if (state.phase === 'playing') {
+    hud.banner.style.display = 'none';
+    return;
+  }
   campaign.advance();
-  applyWorld(campaign.buildWorld());
-  hud.banner.style.display = 'none';
+  startDay();
 }
 window.addEventListener('keydown', (e) => { if (e.key.toLowerCase() === 'r') onContinue(); });
 hud.banner.addEventListener('pointerdown', onContinue);
@@ -1353,6 +1358,9 @@ window.addEventListener('keydown', (e) => { if (e.key === ' ') { e.preventDefaul
 let last = performance.now();
 
 function frame(now: number): void {
+  // Re-arm first: an exception anywhere below used to stop the loop for good,
+  // freezing the game with nothing (not even the next-day button) responding.
+  requestAnimationFrame(frame);
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
 
@@ -1466,8 +1474,18 @@ function frame(now: number): void {
   if (state.phase !== 'playing' && !runEnded) {
     runEnded = true;
     const levelRun = campaign.level; // the level just played, before endRun moves on
-    campaign.endRun(state, road.serialize(), bonusScore());
-    recordRun(levelRun);
+    // Each step guarded on its own, and the banner always shows: a failure in
+    // banking or recording must never leave a finished day with no way on.
+    try {
+      campaign.endRun(state, road.serialize(), bonusScore());
+    } catch (err) {
+      console.error('endRun failed', err);
+    }
+    try {
+      recordRun(levelRun);
+    } catch (err) {
+      console.error('recordRun failed', err);
+    }
     showBanner();
   }
 
@@ -1478,7 +1496,6 @@ function frame(now: number): void {
   stars.position.copy(camera.position); // at infinity: rides with the camera
   stars.rotation.y += dt * 0.005; // a barely-there drift so the dark feels alive
   composer.render();
-  requestAnimationFrame(frame);
 }
 
 // Apply a sim-tuning change from the panel: to the live world now, and to the
@@ -1496,8 +1513,46 @@ function applyTuning(patch: Partial<ContinuousTuning>): void {
   state.solarSeconds = Math.min(state.solarSeconds, state.solarWindowSeconds);
 }
 
+// Every day starts here: remember the campaign's morning (what Reset Day goes
+// back to), build the world, and clear any result banner. Rebuilds used to call
+// applyWorld directly and left the previous day's banner over a live world.
+let morning = campaign.snapshot();
+function startDay(): void {
+  morning = campaign.snapshot();
+  applyWorld(campaign.buildWorld());
+  hud.banner.style.display = 'none';
+}
+// Reset Day: this day again, from its morning -- the same whether pressed
+// mid-run or on the result banner (the day's result is not banked, and a
+// cleared level is not skipped).
+function resetDay(): void {
+  campaign.restore(morning);
+  startDay();
+}
+function newGame(): void {
+  campaign.newGame();
+  startDay();
+}
+// Full Reset: every setting back to the shipped defaults and a new game. Keeps
+// the run history (mm3d-runs-v1) so unsent runs survive. Reloads the page so no
+// in-memory config outlives it.
+function fullReset(): void {
+  try {
+    const keep = new Set([RUN_HISTORY_KEY]);
+    const drop: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith('mm3d-') && !keep.has(k)) drop.push(k);
+    }
+    for (const k of drop) window.localStorage.removeItem(k);
+  } catch {
+    /* storage may be unavailable: the reload still resets in-memory state */
+  }
+  window.location.reload();
+}
+
 // Install the first day's world, mount the control panel, then start the loop.
-applyWorld(campaign.buildWorld());
+startDay();
 // Terrain-knob change: regenerate this world's features and redraw the ground
 // (relief + painted craters), keeping the current road lattice.
 function applyTerrain(): void {
@@ -1533,8 +1588,10 @@ createPanel({
   tuningDefaults: resolveContinuousTuning(APP_TUNING),
   getState: () => state,
   applyTuning,
-  rebuildDay: () => applyWorld(campaign.buildWorld()),
-  newGame: () => { campaign.newGame(); applyWorld(campaign.buildWorld()); },
+  rebuildDay: resetDay,
+  startDay,
+  newGame,
+  fullReset,
   sendAllRuns: () => {
     const all = loadRunHistory(storage());
     if (!all.length) return 0;
