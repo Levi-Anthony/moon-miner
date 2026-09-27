@@ -10,21 +10,36 @@
 //   node scripts/ingest-run.mjs --body file.md  # or from a file, for local testing
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { inflateRawSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 export const RUNS_FILE = path.join(PROJECT_ROOT, 'data', 'runs', 'runs.jsonl');
 // Must match RUN_JSON_MARKER in src/three/runRecord.ts.
 const MARKER = 'moon-miner-runs';
+// Must match RUN_PACKED_MARKER: the same JSON, deflate-raw + base64url.
+const PACKED_MARKER = 'moon-miner-runs-z';
 const REQUIRED = { v: 'number', id: 'string', at: 'string', seed: 'string', mode: 'string', result: 'string', ore: 'number', quota: 'number' };
 
 export function parseRunIssueBody(body) {
+  const text = String(body ?? '');
+  const packed = text.match(new RegExp('```' + PACKED_MARKER + '\\s*\\n([A-Za-z0-9_-]+)\\s*\\n```'));
   const fence = new RegExp('```json ' + MARKER + '\\s*\\n([\\s\\S]*?)\\n```');
-  const hit = String(body ?? '').match(fence);
-  if (!hit) throw new Error(`no \`\`\`json ${MARKER} block found in the issue body`);
+  const hit = packed ? null : text.match(fence);
+  if (!packed && !hit) throw new Error(`no \`\`\`json ${MARKER} or \`\`\`${PACKED_MARKER} block found in the issue body`);
+  let json;
+  if (packed) {
+    try {
+      json = inflateRawSync(Buffer.from(packed[1], 'base64url'), { maxOutputLength: 4 * 1024 * 1024 }).toString('utf8');
+    } catch (e) {
+      throw new Error(`packed run data could not be decompressed: ${e.message}`);
+    }
+  } else {
+    json = hit[1];
+  }
   let parsed;
   try {
-    parsed = JSON.parse(hit[1]);
+    parsed = JSON.parse(json);
   } catch (e) {
     throw new Error(`run data is not valid JSON: ${e.message}`);
   }

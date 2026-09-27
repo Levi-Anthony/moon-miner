@@ -14,6 +14,15 @@ export const RUN_RECORD_VERSION = 1;
 export const RUN_ISSUE_TITLE_PREFIX = '[run-data]';
 // Fences the JSON in the issue body; the ingest script looks for exactly this.
 export const RUN_JSON_MARKER = 'moon-miner-runs';
+// The same records, deflate-raw compressed and base64url-encoded. Plain JSON of
+// one run is ~2 KB once URL-encoded (its knobs diff is most of it), so a
+// 7.5 KB issue link held about 3 runs while the button said "Send 30 runs".
+// Packed, real runs cost ~180-440 characters each. The ingest script accepts
+// both fences.
+export const RUN_PACKED_MARKER = 'moon-miner-runs-z';
+// Summary lines kept in the issue body; the rest are counted, not listed, so
+// the readable part doesn't eat the link's budget.
+const SUMMARY_LINES = 8;
 export const RUN_HISTORY_KEY = 'mm3d-runs-v1';
 export const RUN_HISTORY_MAX = 50;
 // GitHub rejects very long new-issue URLs; stay well under the practical limit.
@@ -182,12 +191,27 @@ export function unsentRuns(runs: RunRecord[]): RunRecord[] {
 
 // The issue body: a short human line, then the records as fenced JSON the
 // ingest script parses. `sent` is local bookkeeping and stays out of it.
-export function runIssueBody(records: RunRecord[]): string {
+export function runIssueBody(records: RunRecord[], packed?: string): string {
   const clean = records.map(({ sent: _sent, ...rest }) => rest);
-  const summary = records
-    .map((r) => `- ${r.at.slice(0, 16).replace('T', ' ')} · ${r.mode === 'levels' ? `L${r.level} ${r.levelName}` : `day ${r.day}`} · ${r.result} · ${r.ore}/${r.quota} ore · ${r.sunLeft}s sun left`)
-    .join('\n');
-  return `${summary}\n\n\`\`\`json ${RUN_JSON_MARKER}\n${JSON.stringify(clean)}\n\`\`\`\n`;
+  const shown = records.slice(-SUMMARY_LINES);
+  const lines = shown.map((r) => `- ${r.at.slice(0, 16).replace('T', ' ')} · ${r.mode === 'levels' ? `L${r.level} ${r.levelName}` : `day ${r.day}`} · ${r.result} · ${r.ore}/${r.quota} ore · ${r.sunLeft}s sun left`);
+  if (records.length > shown.length) lines.unshift(`- …and ${records.length - shown.length} earlier run${records.length - shown.length === 1 ? '' : 's'}`);
+  const summary = lines.join('\n');
+  const block = packed !== undefined
+    ? `\`\`\`${RUN_PACKED_MARKER}\n${packed}\n\`\`\``
+    : `\`\`\`json ${RUN_JSON_MARKER}\n${JSON.stringify(clean)}\n\`\`\``;
+  return `${summary}\n\n${block}\n`;
+}
+
+// deflate-raw + base64url of the records' JSON (local bookkeeping stripped).
+// CompressionStream is in every current browser and in Node 18+.
+export async function packRuns(records: RunRecord[]): Promise<string> {
+  const json = JSON.stringify(records.map(({ sent: _sent, ...rest }) => rest));
+  const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 export function runIssueTitle(records: RunRecord[]): string {
@@ -200,6 +224,22 @@ export function runIssueTitle(records: RunRecord[]): string {
 
 // Build the new-issue URL, dropping the oldest records until it fits. Returns
 // the URL and how many records made it in (the newest ones).
+// Packed variant: the same newest-first trimming, over compressed records. Async
+// (compression is), so the scene prepares it ahead of the tap that opens it.
+export async function runIssueUrlPacked(repo: string, records: RunRecord[]): Promise<{ url: string; count: number }> {
+  const build = async (batch: RunRecord[]) =>
+    `https://github.com/${repo}/issues/new?title=${encodeURIComponent(runIssueTitle(batch))}&body=${encodeURIComponent(runIssueBody(batch, await packRuns(batch)))}`;
+  let n = records.length;
+  for (;;) {
+    const batch = records.slice(-n);
+    const url = await build(batch);
+    if (url.length <= RUN_ISSUE_URL_MAX || n <= 1) return { url, count: n };
+    // One at a time: compression gets better per run as the batch grows, so a
+    // size-ratio jump undershoots. At most 50 runs, each pack takes ~1 ms.
+    n -= 1;
+  }
+}
+
 export function runIssueUrl(repo: string, records: RunRecord[]): { url: string; count: number } {
   let batch = records.slice();
   for (;;) {

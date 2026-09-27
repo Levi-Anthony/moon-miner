@@ -131,6 +131,11 @@ try {
   });
   await page.waitForFunction(() => window.__mm3d.getState().phase !== 'playing', null, { timeout: 15000 });
   await delay(300);
+  // The packed link (compressed runs; issue #55 carried 3 of 30 as plain JSON)
+  // is prepared asynchronously right after the run is saved.
+  await page
+    .waitForFunction(() => decodeURIComponent(window.__mm3d.runIssue?.()?.url ?? '').includes('```moon-miner-runs-z'), null, { timeout: 5000 })
+    .catch(() => {});
   const capture = await page.evaluate(() => {
     const runs = window.__mm3d.runs?.() ?? [];
     const btn = document.getElementById('send-runs');
@@ -146,8 +151,8 @@ try {
   if (!capture.saved) fail('run capture: no run record saved after the run ended');
   if (capture.seed !== capture.worldSeed) fail(`run capture: saved record is for ${capture.seed}, not this run (${capture.worldSeed})`);
   if (!capture.button) fail('run capture: the Send run data button is not shown on the end banner');
-  if (!capture.url.startsWith('https://github.com/') || !decodeURIComponent(capture.url).includes('```json moon-miner-runs')) {
-    fail('run capture: the GitHub issue URL is missing or has no run data block');
+  if (!capture.url.startsWith('https://github.com/') || !decodeURIComponent(capture.url).includes('```moon-miner-runs-z')) {
+    fail('run capture: the GitHub issue URL is missing or has no packed run data block');
   }
 
   if (errors.length) fail(`page errors:\n${errors.join('\n')}`);
