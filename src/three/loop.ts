@@ -100,6 +100,23 @@ interface Save {
   bonus?: number;
 }
 
+export interface CampaignSnapshot {
+  gameSeed: string;
+  dayNumber: number;
+  bankedOre: number;
+  bankedBonus: number;
+  carriedFields: FieldPatch[];
+  carriedDepletion: Record<string, number>;
+  carriedRoad: RoadEdgeQuad[];
+  carriedRailGrowth: number;
+  levelIndex: number;
+  levelCarry: LevelCarry | null;
+}
+
+function structuredCloneSafe<T>(v: T): T {
+  return JSON.parse(JSON.stringify(v)) as T;
+}
+
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
@@ -139,6 +156,43 @@ export class Campaign {
     this.loadSave();
     this.levelIndex = this.loadLevel();
     this.levelCarry = this.loadLevelCarry();
+  }
+
+  // The campaign as it stood when the current day was built: what Reset Day
+  // returns to. endRun banks the haul and stores tomorrow's carry the moment a
+  // day ends, so without this a Reset Day pressed on the result banner replayed
+  // the day with tomorrow's road and banked it twice (Sandbox), or quietly
+  // skipped to the next level (Levels, after a clear).
+  snapshot(): CampaignSnapshot {
+    return structuredCloneSafe({
+      gameSeed: this.gameSeed,
+      dayNumber: this.dayNumber,
+      bankedOre: this.bankedOre,
+      bankedBonus: this.bankedBonus,
+      carriedFields: this.carriedFields,
+      carriedDepletion: this.carriedDepletion,
+      carriedRoad: this.carriedRoad,
+      carriedRailGrowth: this.carriedRailGrowth,
+      levelIndex: this.levelIndex,
+      levelCarry: this.levelCarry
+    });
+  }
+  restore(snap: CampaignSnapshot): void {
+    const s = structuredCloneSafe(snap);
+    this.gameSeed = s.gameSeed;
+    this.dayNumber = s.dayNumber;
+    this.bankedOre = s.bankedOre;
+    this.bankedBonus = s.bankedBonus;
+    this.carriedRailGrowth = s.carriedRailGrowth;
+    this.lastLevelCleared = false;
+    this.setLevel(s.levelIndex);
+    this.saveLevelCarry(s.levelCarry);
+    this.persist(s.dayNumber, s.carriedFields, s.carriedDepletion, s.carriedRoad);
+    try {
+      window.localStorage.setItem(SEED_KEY, this.gameSeed);
+    } catch {
+      /* storage may be unavailable */
+    }
   }
 
   levelsMode(): boolean {

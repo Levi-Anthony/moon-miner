@@ -1010,20 +1010,49 @@ describe('continuous Moon Miner spike rules', () => {
     expect(required).toBeGreaterThan(0);
   });
 
-  it('keeps playing when the rover comes home under quota', () => {
-    // Owner, 2026-09-27: the depot is not an exit. Two runs ended at 8 s and
-    // 11.6 s because a quick trip out and back counted as "returned".
-    const world = createContinuousWorld('home-test-short', {}, 'last-light-return');
-    world.rover.ore = world.arena.extraction!.oreRequired - 1;
-    world.rover.x = 900;
-    world.rover.y = 535;
-    world.leftExtraction = true;
+  describe('portal charge-up at the depot (owner, 2026-09-27)', () => {
+    const atDepot = (seed: string, ore: number) => {
+      const world = createContinuousWorld(seed, {}, 'last-light-return');
+      world.rover.ore = ore;
+      world.rover.x = 900;
+      world.rover.y = 535;
+      world.leftExtraction = true;
+      return world;
+    };
+    const hold = (world: ReturnType<typeof createContinuousWorld>, seconds: number) => {
+      let w = world;
+      for (let t = 0; t < seconds - 1e-9 && w.phase === 'playing'; t += 0.1) w = tickContinuousWorld(w, idleInput, 0.1);
+      return w;
+    };
 
-    const next = tickContinuousWorld(world, idleInput, 0.1);
+    it('does not end the day until the portal has charged for 5 s', () => {
+      const world = atDepot('portal-a', 0);
+      expect(hold(world, 4.8).phase).toBe('playing');
+      expect(getContinuousGuidance(hold(world, 2)).objective).toContain('Portal charging');
+    });
 
-    expect(isRoverAtExtraction(next)).toBe(true);
-    expect(next.phase).toBe('playing');
-    expect(next.returnedUnderQuota).toBe(false);
+    it('home under quota is a soft loss once the portal charges', () => {
+      const end = hold(atDepot('portal-b', 1), 5.3);
+      expect(end.phase).toBe('won');
+      expect(end.returnedUnderQuota).toBe(true);
+    });
+
+    it('leaving the depot resets the charge', () => {
+      const world = hold(atDepot('portal-c', 0), 3);
+      expect(world.portalCharge).toBeGreaterThan(2.5);
+      world.rover.x = 600;
+      world.rover.y = 500;
+      const away = tickContinuousWorld(world, idleInput, 0.1);
+      expect(away.portalCharge).toBe(0);
+    });
+
+    it('ends on arrival when less sun is left than the charge takes', () => {
+      const world = atDepot('portal-d', 0);
+      world.solarSeconds = 4;
+      const next = tickContinuousWorld(world, idleInput, 0.1);
+      expect(next.phase).toBe('won');
+      expect(next.returnedUnderQuota).toBe(true);
+    });
   });
 
   it('wins last-light-return by arriving with the ore', () => {
@@ -1034,7 +1063,11 @@ describe('continuous Moon Miner spike rules', () => {
     // A day ends by RETURNING to the depot, so the rover must have left it once.
     world.leftExtraction = true;
 
-    const next = tickContinuousWorld(world, idleInput, 0.1);
+    // The portal charges first (portalChargeSeconds, default 5).
+    const charging = tickContinuousWorld(world, idleInput, 0.1);
+    expect(charging.phase).toBe('playing');
+    let next = charging;
+    for (let i = 0; i < 50 && next.phase === 'playing'; i += 1) next = tickContinuousWorld(next, idleInput, 0.1);
 
     expect(next.phase).toBe('won');
     // The win line now reports the shape of the run -- load, surplus and margin
@@ -1176,9 +1209,6 @@ describe('continuous Moon Miner spike rules', () => {
     // 36s window stranded everybody.)
     expect(safe.oreValue).toBeLessThan(quota);
     expect(safe.reachedExtraction).toBe(true);
-    // And home under quota is not an exit (owner, 2026-09-27): the depot only
-    // ends the day with the quota, so the short route rides out to sunset.
-    expect(safe.solarRemaining).toBe(0);
     for (const reaching of [deep, greedy, sloppy]) {
       expect(reaching.oreValue).toBeGreaterThan(quota);
     }
@@ -1187,6 +1217,7 @@ describe('continuous Moon Miner spike rules', () => {
     // less of the day left. That is the risk half of the gradient -- the bill
     // arrives as margin now rather than as a stranding, because the day is long
     // enough to make the choice rather than to punish it outright.
+    expect(shallow.solarRemaining).toBeLessThan(safe.solarRemaining);
     expect(deep.solarRemaining).toBeLessThan(shallow.solarRemaining);
     expect(sloppy.solarRemaining).toBeLessThan(deep.solarRemaining);
     // Overstaying is never comfortable: the sloppy route ends with the thinnest

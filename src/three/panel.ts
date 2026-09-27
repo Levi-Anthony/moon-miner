@@ -65,8 +65,10 @@ export interface PanelCtx {
   controls: ControlsConfig;
   getState: () => ContinuousWorldState;
   applyTuning: (patch: Partial<ContinuousTuning>) => void;
-  rebuildDay: () => void;
-  newGame: () => void;
+  rebuildDay: () => void; // this day again, from its morning (Reset Day, knob rebuilds)
+  startDay: () => void; // build whatever day the campaign now points at (Level jump)
+  newGame: () => void; // new seed, day 1 / level 1; keeps your settings
+  fullReset: () => void; // every setting to defaults + new game; keeps saved runs
   // Re-send every saved run record to GitHub (duplicates are skipped on ingest).
   sendAllRuns: () => number;
   applyTerrain: () => void; // regenerate/redraw the ground for terrain-knob changes
@@ -240,7 +242,7 @@ export function createPanel(ctx: PanelCtx): void {
 
   section('Levels', 'Levels pose one route question each; quota, sun and starting stock come from a par route on the map, so Level size and every speed knob keep them fair. Sandbox is the open day/shift loop.');
   addRow({ label: 'Mode', min: 0, max: 1, step: 1, fmt: (v) => LOOP_MODES[Math.round(v)] ?? 'Levels', hint: 'Levels: clear a level (home with the quota) to go on; miss and you retry the day from that morning\'s road. Levels are the days of a shift: same map, road carries. Sandbox: the open day → shift → game loop where every number is a knob. Switching rebuilds the day.', get: () => cfg.mode, set: (v) => (cfg.mode = Math.round(v)), commit: () => { ctx.rebuildDay(); sync(); } });
-  addRow({ label: 'Level', min: 1, max: 30, step: 1, fmt: (v) => `${Math.round(v)} · ${levelSpec(Math.round(v) - 1).name}`, hint: 'Jump to a level (Levels mode). Past the authored set, levels keep tightening.', get: () => ctx.campaign.levelIndex + 1, set: (v) => ctx.campaign.setLevel(Math.round(v) - 1), commit: () => { if (ctx.campaign.levelsMode()) ctx.rebuildDay(); } });
+  addRow({ label: 'Level', min: 1, max: 30, step: 1, fmt: (v) => `${Math.round(v)} · ${levelSpec(Math.round(v) - 1).name}`, hint: 'Jump to a level (Levels mode). Past the authored set, levels keep tightening.', get: () => ctx.campaign.levelIndex + 1, set: (v) => ctx.campaign.setLevel(Math.round(v) - 1), commit: () => { if (ctx.campaign.levelsMode()) ctx.startDay(); } });
   addRow({ mid: DEFAULT_LOOP_CONFIG.levelSunSlack, label: 'Sun slack', min: 0.3, max: 5, step: 0.05, fmt: (v) => `${v.toFixed(2)}×`, hint: 'Multiplies every level\'s daylight (which is already derived from its par route). Above 1 = more time; below 1 = harder than authored. Applies on the next level build.', get: () => cfg.levelSunSlack, set: (v) => (cfg.levelSunSlack = v), commit: () => { if (ctx.campaign.levelsMode()) ctx.rebuildDay(); } });
   addRow({ mid: DEFAULT_LOOP_CONFIG.levelStockSlack, label: 'Stock slack', min: 0.3, max: 5, step: 0.05, fmt: (v) => `${v.toFixed(2)}×`, hint: 'Multiplies every level\'s starting nanobots (derived from the road its par route needs).', get: () => cfg.levelStockSlack, set: (v) => (cfg.levelStockSlack = v), commit: () => { if (ctx.campaign.levelsMode()) ctx.rebuildDay(); } });
   addRow({ mid: DEFAULT_LOOP_CONFIG.levelQuotaShare, label: 'Quota share', min: 0.1, max: 1.5, step: 0.05, fmt: (v) => `${v.toFixed(2)}×`, hint: 'Multiplies every level\'s quota (a share of the ore on its par seams; capped at all of it).', get: () => cfg.levelQuotaShare, set: (v) => (cfg.levelQuotaShare = v), commit: () => { if (ctx.campaign.levelsMode()) ctx.rebuildDay(); } });
@@ -298,6 +300,8 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ mid: ctx.tuningDefaults.startingNanobots, label: 'Start stock', min: 0, max: 600, step: 1, fmt: int, hint: 'Sandbox: nanobots you begin each day with. Levels start every day with a full tank, so use Base max stock there. Applies next day.', get: tget('startingNanobots'), set: tset('startingNanobots') });
   addRow({ mid: ctx.tuningDefaults.startingSolarSeconds, label: 'Sun window', min: 5, max: 3000, step: 5, fmt: int, hint: 'Seconds of daylight per day. In Levels it scales each level\'s derived sun (default = as authored). Applies next day.', get: tget('startingSolarSeconds'), set: tset('startingSolarSeconds') });
   addRow({ mid: DEFAULT_LOOP_CONFIG.quota, label: 'Daily quota', min: 1, max: 600, step: 1, fmt: int, hint: 'Sandbox (levels derive their own). Ore you must bank per day. Return under it and you pay the fee below.', get: () => cfg.quota, set: (v) => { cfg.quota = Math.round(v); const ex = ctx.getState().arena.extraction; if (ex && !ctx.campaign.levelsMode()) ex.oreRequired = cfg.quota; } });
+  addRow({ mid: ctx.tuningDefaults.portalChargeSeconds, label: 'Portal charge', min: 0, max: 20, step: 0.5, fmt: (v) => `${v.toFixed(1)}s`, hint: 'Seconds you must hold on the depot before the day ends (with or without the quota). Leaving resets it. With less sun left than this, the day ends on arrival. 0 = instant.', get: tget('portalChargeSeconds'), set: tset('portalChargeSeconds') });
+  addRow({ mid: DEFAULT_LOOP_CONFIG.underQuotaFeePct, label: 'Under-quota fee', min: 0, max: 1, step: 0.05, fmt: p2, hint: 'Fraction of the haul skimmed when you return under quota.', get: () => cfg.underQuotaFeePct, set: (v) => (cfg.underQuotaFeePct = v) });
 
   section('Rail growth (independent of ore)', 'Background reach growth. Never reads ore amount.');
   addRow({ mid: ctx.tuningDefaults.railTricklePerSecond, label: 'Mining trickle /s', min: 0, max: 10, step: 0.05, fmt: p2, hint: 'Flat nanobots per second while actively mining. Never scaled by how much ore you pull. 0 = off.', get: tget('railTricklePerSecond'), set: tset('railTricklePerSecond') });
@@ -352,9 +356,10 @@ export function createPanel(ctx: PanelCtx): void {
   addRow({ mid: DEFAULT_CAMERA_CONFIG.lag, label: 'Follow lag', min: 0, max: 1, step: 0.01, fmt: (v) => `${v.toFixed(2)}s`, hint: 'How long the chase camera takes to catch up with the rover. 0 = rigidly locked; higher = a floatier, cinematic follow that shows speed.', get: () => cam.lag, set: (v) => (cam.lag = v) });
   const btns = document.createElement('div');
   btns.className = 'btns';
-  const mk = (text: string, fn: () => void) => {
+  const mk = (text: string, fn: () => void, title = '') => {
     const b = document.createElement('button');
     b.textContent = text;
+    if (title) b.title = title;
     b.addEventListener('click', fn);
     return b;
   };
@@ -366,8 +371,11 @@ export function createPanel(ctx: PanelCtx): void {
   viewBtn.textContent = cam.overhead ? 'View: Overhead' : 'View: Chase';
   btns.append(
     viewBtn,
-    mk('New Game', () => { ctx.newGame(); sync(); }),
-    mk('Reset Day', () => { ctx.rebuildDay(); sync(); }),
+    mk('Reset Day', () => { ctx.rebuildDay(); sync(); }, 'Replay this day from its start: same map, the road you began it with, nothing banked. Works mid-run or on the result banner.'),
+    mk('New Game', () => { ctx.newGame(); sync(); }, 'Fresh seed, day 1 / level 1, no road, nothing banked. Keeps your settings.'),
+    mk('Full Reset', () => {
+      if (window.confirm('Full Reset: every setting back to its default and a new game. Your saved runs are kept. Continue?')) ctx.fullReset();
+    }, 'Every setting back to the shipped defaults, plus a New Game. Saved runs are kept.'),
     mk('Send saved runs', () => { if (!ctx.sendAllRuns()) alert('No runs saved in this browser yet.'); }),
     mk('Close', () => { panel.style.display = 'none'; })
   );

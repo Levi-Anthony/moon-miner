@@ -3,6 +3,8 @@ import { createContinuousWorld, resolveContinuousTuning } from '../game/continuo
 import { Campaign, DEFAULT_LOOP_CONFIG } from './loop';
 import type { RoadEdgeQuad } from './road';
 
+const roadOf = (n: number) => Array.from({ length: n }, (_, i) => [i, 0, i + 1, 0] as unknown as RoadEdgeQuad);
+
 // Campaign uses window.localStorage inside try/catch, so under node it simply
 // runs without persistence -- fine for testing the pure loop/economy math.
 function fresh(): Campaign {
@@ -147,7 +149,6 @@ describe('Levels mode', () => {
 
   // Owner, 2026-09-27: levels are the days of a shift. Same map all shift, the
   // road carries day to day, stock resets each day, a new shift is a new map.
-  const roadOf = (n: number) => Array.from({ length: n }, (_, i) => [i, 0, i + 1, 0] as unknown as RoadEdgeQuad);
   const clear = (c: Campaign, road: RoadEdgeQuad[]) => {
     const s = c.buildWorld().state;
     c.endRun({ ...s, phase: 'won', returnedUnderQuota: false, rover: { ...s.rover, ore: 999 } } as typeof s, road);
@@ -201,9 +202,35 @@ describe('Levels mode', () => {
     expect(rich.level!.budget.quota).toBe(b0.quota);
   });
 
+  it('Reset Day after a clear replays the same level from its morning (no skip, no double bank)', () => {
+    const c = levels();
+    clear(c, roadOf(3)); // day 1 cleared: now on day 2 with 3 road edges
+    const morning = c.snapshot();
+    clear(c, roadOf(9)); // day 2 cleared on the banner...
+    expect(c.levelIndex).toBe(2);
+    c.restore(morning); // ...then Reset Day
+    expect(c.levelIndex).toBe(1);
+    expect(c.bankedOre).toBe(morning.bankedOre);
+    expect(c.buildWorld().road.length).toBe(3);
+  });
+
   it('Sandbox mode builds with no level (the old day loop)', () => {
     const c = new Campaign({ ...DEFAULT_LOOP_CONFIG, mode: 1 });
     c.buildWorld();
     expect(c.level).toBeNull();
+  });
+});
+
+describe('Reset Day in Sandbox', () => {
+  it('returns to the morning: same day, nothing banked, the road it began with', () => {
+    const c = fresh();
+    const world = c.buildWorld().state;
+    const morning = c.snapshot();
+    c.endRun({ ...world, phase: 'won', returnedUnderQuota: false, rover: { ...world.rover, ore: 30 } } as typeof world, roadOf(6));
+    expect(c.bankedOre).toBe(30);
+    c.restore(morning);
+    expect(c.dayNumber).toBe(morning.dayNumber);
+    expect(c.bankedOre).toBe(0);
+    expect(c.buildWorld().road.length).toBe(0);
   });
 });
