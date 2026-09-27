@@ -400,7 +400,9 @@ export function runContinuousSelfPlay(options: {
   const launchBelowStock = options.droneLaunchSeconds === undefined ? route.launchBelowStock : undefined;
   const policyRoute = { ...route, launchBelowStock };
   const deltaSeconds = options.deltaSeconds ?? 0.1;
-  let world = createContinuousWorld(options.seed, options.tuning, options.arenaId ?? route.arenaId, options.carriedFields, options.carriedDepletion);
+  // The routes are hand-placed waypoints driven on the frozen v3 ore map, so
+  // the rig plays that map unless a caller asks otherwise.
+  let world = createContinuousWorld(options.seed, { oreGenerator: 3, ...options.tuning }, options.arenaId ?? route.arenaId, options.carriedFields, options.carriedDepletion);
   const solarWindow = options.solarWindowSeconds ?? route.solarWindowSeconds;
   if (solarWindow !== undefined) {
     world.solarWindowSeconds = solarWindow;
@@ -517,7 +519,7 @@ export function formatLastLightRouteOutcomeTable(deltaSeconds = 0.05): string {
 }
 
 function getLastLightRouteNote(routeId: ContinuousSelfPlayRouteId, metrics: ContinuousSelfPlayMetrics): string {
-  if (routeId === 'safeReturn') return 'safe road, low reward, wide sunset margin';
+  if (routeId === 'safeReturn') return 'safe road, low reward: short of quota, so it rides out to sunset';
   if (routeId === 'shallowLobe') return 'first off-route lobe, still controlled';
   if (routeId === 'deepLobe') return 'rich northern value with crawl pressure';
   if (routeId === 'greedyLatePocket') return 'high value, tight successful return';

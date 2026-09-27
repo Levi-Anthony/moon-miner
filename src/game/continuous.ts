@@ -327,6 +327,7 @@ export interface ContinuousTuning {
   // defaults, so self-play / tests are byte-for-byte; only the 3D app moves them.
   oreSpread: number; // scatter multiplier around the map centre (1 = current)
   oreLayout: number; // 0 = auto (seeded) | 1 scatter | 2 ridge | 3 clusters | 4 belt
+  oreGenerator: number; // 4 = shipped; 3 = frozen calibration map for the self-play rig only
   oreCount: number; // multiplier on the number of pools (1 = the authored count)
   oreAmount: number; // scale on each pool's richness + remaining (1 = current)
   orePoolSize: number; // scale on each pool's radius + vein footprint (1 = current)
@@ -578,6 +579,7 @@ export const CURRENT_CLASSIC_CONTINUOUS_TUNING: ContinuousTuning = {
   ribbonEconomy: false,
   oreSpread: 1,
   oreLayout: 0,
+  oreGenerator: 4,
   oreCount: 1,
   oreAmount: 1,
   orePoolSize: 1,
@@ -789,7 +791,8 @@ export function createContinuousWorld(
         layout: resolvedTuning.oreLayout,
         count: resolvedTuning.oreCount,
         amount: resolvedTuning.oreAmount,
-        poolSize: resolvedTuning.orePoolSize
+        poolSize: resolvedTuning.orePoolSize,
+        version: resolvedTuning.oreGenerator === 3 ? 3 : 4
       }),
       carriedDepletion
     ),
