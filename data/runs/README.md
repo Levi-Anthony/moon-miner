@@ -5,7 +5,7 @@
 ## How records get here
 
 1. Every finished level in the live build saves a run record in the browser (`src/three/runRecord.ts`, localStorage key `mm3d-runs-v1`, last 50 runs).
-2. The end-of-level banner has **Send run data**. The ⚙ panel has **Send saved runs**, which re-sends everything saved in that browser. Either one opens a GitHub issue titled `[run-data] …`, pre-filled with the records as fenced JSON. The owner presses Submit.
+2. The end-of-level banner has **Send run data**. The ⚙ panel has **Send saved runs**, which re-sends everything saved in that browser. Either one opens a GitHub issue titled `[run-data] …`, pre-filled with the records: a compressed ```` ```moon-miner-runs-z ```` block (deflate-raw + base64url, from 2026-09-27; about 30 runs fit one issue) or, as a fallback, plain ```` ```json moon-miner-runs ```` JSON. The button says how many runs the issue will carry. The owner presses Submit.
 3. `.github/workflows/ingest-run.yml` validates the records (`scripts/ingest-run.mjs`), appends new ones here (runs it already has are skipped by `id`), commits to `main`, and closes the issue with a comment. A malformed issue gets a comment saying what was wrong and stays open. Only issues from the owner or collaborators are ingested.
 
 ## Agent-played runs

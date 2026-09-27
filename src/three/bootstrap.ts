@@ -27,7 +27,7 @@ import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type Ro
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
 import { pushOutOfCraters } from './craters';
 import { START_BEARING, sunState } from './sun';
-import { RUN_HISTORY_KEY, appendRun, buildRunRecord, createRunStats, accumulateRunStats, diffKnobs, loadRunHistory, runIssueUrl, saveRunHistory, unsentRuns, type RunRecord, type RunStats } from './runRecord';
+import { RUN_HISTORY_KEY, runIssueUrlPacked, appendRun, buildRunRecord, createRunStats, accumulateRunStats, diffKnobs, loadRunHistory, runIssueUrl, saveRunHistory, unsentRuns, type RunRecord, type RunStats } from './runRecord';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_CONTROLS_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type ControlsConfig, type TerrainConfig } from './panel';
 import { stickToInput } from './stick';
 import { levelSpec } from '../game/level';
@@ -1189,6 +1189,45 @@ hud.banner.addEventListener('pointerdown', onContinue);
 const sendRunsBtn = el('send-runs') as HTMLButtonElement;
 const runsNote = el('runs-note');
 let pendingSend: RunRecord[] = [];
+// Packed issue links, built ahead of the tap: compression is async, and a
+// window.open outside the tap's own handler is blocked as a pop-up. Keyed by
+// the ids they carry so a stale one is never used; the plain-JSON link (fewer
+// runs) is the fallback when none is ready.
+interface PreparedSend { key: string; url: string; count: number }
+let preparedPending: PreparedSend | null = null;
+let preparedAll: PreparedSend | null = null;
+const sendKey = (rs: RunRecord[]) => rs.map((r) => r.id).join('|');
+async function prepareSend(rs: RunRecord[]): Promise<PreparedSend | null> {
+  if (!rs.length) return null;
+  try {
+    const { url, count } = await runIssueUrlPacked(RUN_REPO, rs);
+    return { key: sendKey(rs), url, count };
+  } catch {
+    return null; // no CompressionStream: the plain link still works
+  }
+}
+function linkFor(rs: RunRecord[], cache: PreparedSend | null): { url: string; count: number } {
+  return cache && cache.key === sendKey(rs) ? cache : runIssueUrl(RUN_REPO, rs);
+}
+// The button says exactly what the next issue will carry.
+function sendLabel(): void {
+  const n = pendingSend.length;
+  const { count } = linkFor(pendingSend, preparedPending);
+  sendRunsBtn.textContent = n <= 1 ? 'Send run data' : count >= n ? `Send ${n} runs` : `Send ${count} of ${n} runs`;
+}
+function refreshPrepared(): void {
+  const rs = pendingSend.slice();
+  void prepareSend(rs).then((p) => {
+    if (p && p.key === sendKey(pendingSend)) {
+      preparedPending = p;
+      sendLabel();
+    }
+  });
+  const all = loadRunHistory(storage());
+  void prepareSend(all).then((p) => {
+    if (p) preparedAll = p;
+  });
+}
 function recordRun(levelRun: typeof campaign.level): void {
   const record = buildRunRecord({
     state,
@@ -1219,12 +1258,13 @@ function recordRun(levelRun: typeof campaign.level): void {
   runsNote.textContent = saved
     ? `${n} run${n === 1 ? '' : 's'} not yet sent. Opens GitHub; press Submit there.`
     : 'This browser can\'t save run history; send this run now or it is lost.';
-  sendRunsBtn.textContent = n === 1 ? 'Send run data' : `Send ${n} runs`;
+  sendLabel();
   sendRunsBtn.disabled = false;
+  refreshPrepared();
 }
-function sendRuns(): void {
+function sendRuns(cache: PreparedSend | null = preparedPending): void {
   if (!pendingSend.length) return;
-  const { url, count } = runIssueUrl(RUN_REPO, pendingSend);
+  const { url, count } = linkFor(pendingSend, cache);
   const sentIds = new Set(pendingSend.slice(-count).map((r) => r.id));
   // Not 'noopener' in the features: with it, window.open returns null even on
   // success, which is indistinguishable from a blocked pop-up. Cut the link after.
@@ -1243,7 +1283,9 @@ function sendRuns(): void {
     ? `Opened GitHub with the newest ${count}; press Submit there. ${left} older run${left === 1 ? '' : 's'} still to send.`
     : 'Opened GitHub. Press Submit there to store it.';
   sendRunsBtn.disabled = left === 0;
-  sendRunsBtn.textContent = left ? `Send ${left} more` : 'Opened on GitHub';
+  if (left) sendLabel();
+  else sendRunsBtn.textContent = 'Opened on GitHub';
+  refreshPrepared();
 }
 // The banner's own tap means "continue"; the send button must not trigger it.
 sendRunsBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -1596,8 +1638,9 @@ createPanel({
     const all = loadRunHistory(storage());
     if (!all.length) return 0;
     pendingSend = all;
-    sendRuns();
-    return all.length;
+    const cache = preparedAll;
+    sendRuns(cache);
+    return Math.min(all.length, linkFor(all, cache).count);
   },
   applyTerrain,
   applyLook: () => applyLook(),
@@ -1620,5 +1663,6 @@ window.addEventListener('resize', () => {
   keys,
   runs: () => loadRunHistory(storage()),
   pendingRuns: () => pendingSend,
-  runIssue: () => runIssueUrl(RUN_REPO, pendingSend)
+  runIssue: () => linkFor(pendingSend, preparedPending)
 };
+refreshPrepared(); // the panel's Send saved runs can use a packed link from the start
