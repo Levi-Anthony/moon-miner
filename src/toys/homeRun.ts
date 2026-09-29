@@ -1,10 +1,12 @@
 // Toy 1: Home Run (keep the theme, new core). See toys/README.md.
 //
 // The hypothesis: the fun is the run home. Out: steer slowly, road lays itself
-// behind you, the sun drains. Back: your own road grips you like a rail and
-// you get faster the longer you stay on it; push off it to break away. Drive
-// through a seam at charged rail speed and the whole seam is scooped. Bank at
-// the depot; sunset strands whatever you're carrying.
+// behind you, the sun drains. Back: your own road is a roller-coaster rail
+// (owner, 2026-09-29: "a crazy straw"). On it there is zero steering: hold to
+// go, release to stop, and it carries you along exactly what you laid, faster
+// the longer you ride. Leave with a very hard turn, or slow down and turn.
+// Through a seam at charged rail speed the whole seam is scooped. Bank at the
+// depot; sunset strands whatever you're carrying.
 import { Hum, Particles, Shake, Stick, angleTo, banner, blip, hash, loadStats, loop, makeScreen, recordPlay, rng, type Vec } from './kit';
 
 const TOY = 'home-run';
@@ -17,8 +19,11 @@ const SCOOP_CHARGE = 0.5;
 const SCOOP_SPEED = 230;
 const ROAD_W = 26;
 const GRAB = 13; // how close to a road's centre it grabs you
-const HOLD = 24; // and how far off it before it lets go
-const BREAK_ANGLE = 0.95; // rad between stick and rail that breaks away
+const HARD_TURN = 2.1; // rad (~120°) between stick and travel: leaves at any speed
+const SLOW_TURN = 0.8; // rad (~45°): leaves once you've slowed right down
+const SLOW = 90; // "slowed right down"
+const BRAKE = 420; // release = stop
+const JOIN = 20; // how close a line end must be to another line to carry on
 const POINT_GAP = 14;
 const DEPOT_R = 46;
 const CELL = 64;
@@ -26,6 +31,8 @@ const CELL = 64;
 interface Seam { x: number; y: number; a: number; len: number; w: number; ore: number; max: number }
 interface Pop { x: number; y: number; text: string; t: number; color: string }
 interface SegRef { line: number; i: number }
+interface Rail { line: number; i: number; t: number; dir: 1 | -1 }
+interface Hit { d: number; tx: number; ty: number; px: number; py: number; line: number; i: number; t: number }
 
 const screen = makeScreen();
 const { ctx } = screen;
@@ -40,6 +47,7 @@ let laying = -1; // index of the polyline being laid, or -1 while on the rail
 let grid = new Map<string, SegRef[]>();
 let seams: Seam[] = [];
 let pops: Pop[] = [];
+let rail: Rail | null = null;
 let onRail = false;
 let railCooldown = 0;
 let charge = 0;
@@ -62,6 +70,7 @@ function reset(): void {
   laying = -1;
   grid = new Map();
   pops = [];
+  rail = null;
   onRail = false;
   railCooldown = 0;
   charge = 0;
@@ -107,15 +116,17 @@ function addSegment(line: number, i: number): void {
   }
 }
 
-// Nearest road segment (skipping the fresh tail you're laying right now).
-function nearestRoad(p: Vec): { d: number; tx: number; ty: number; px: number; py: number } | null {
+// Nearest road segment (skipping the fresh tail you're laying right now, and
+// anything `skip` rules out).
+function nearestRoad(p: Vec, skip?: (ref: SegRef) => boolean): Hit | null {
   const cx = Math.floor(p.x / CELL);
   const cy = Math.floor(p.y / CELL);
-  let best: { d: number; tx: number; ty: number; px: number; py: number } | null = null;
+  let best: Hit | null = null;
   for (let ox = -1; ox <= 1; ox += 1) {
     for (let oy = -1; oy <= 1; oy += 1) {
       for (const ref of grid.get(key(cx + ox, cy + oy)) ?? []) {
         if (ref.line === laying && ref.i > lines[laying].length - 10) continue;
+        if (skip?.(ref)) continue;
         const a = lines[ref.line][ref.i];
         const b = lines[ref.line][ref.i + 1];
         const dx = b.x - a.x;
@@ -127,12 +138,61 @@ function nearestRoad(p: Vec): { d: number; tx: number; ty: number; px: number; p
         const d = Math.hypot(p.x - px, p.y - py);
         if (!best || d < best.d) {
           const L = Math.sqrt(L2);
-          best = { d, tx: dx / L, ty: dy / L, px, py };
+          best = { d, tx: dx / L, ty: dy / L, px, py, line: ref.line, i: ref.i, t };
         }
       }
     }
   }
   return best;
+}
+
+// --- the rail: ride exactly along what you laid ---------------------------------
+function railPoint(r: Rail): { x: number; y: number; ang: number } {
+  const a = lines[r.line][r.i];
+  const b = lines[r.line][r.i + 1];
+  return { x: a.x + (b.x - a.x) * r.t, y: a.y + (b.y - a.y) * r.t, ang: Math.atan2((b.y - a.y) * r.dir, (b.x - a.x) * r.dir) };
+}
+
+// At the end of a line, carry on along whichever nearby road best continues the
+// way you're going (a branch back onto the line it left, say). No choice at
+// mid-line junctions: you stay on your line; leaving is how you pick a route.
+function transfer(r: Rail): Rail | null {
+  const here = railPoint(r);
+  const endIdx = r.dir > 0 ? r.i + 1 : r.i;
+  const hit = nearestRoad(here, (ref) => ref.line === r.line && Math.abs(ref.i - endIdx) < 4);
+  if (!hit || hit.d > JOIN) return null;
+  const fwd = Math.cos(here.ang) * hit.tx + Math.sin(here.ang) * hit.ty;
+  return { line: hit.line, i: hit.i, t: hit.t, dir: fwd >= 0 ? 1 : -1 };
+}
+
+// Move `dist` along the rail. Returns false at a dead end.
+function advanceRail(r: Rail, dist: number): boolean {
+  let left = dist;
+  for (let guard = 0; left > 1e-6 && guard < 400; guard += 1) {
+    const pts = lines[r.line];
+    const a = pts[r.i];
+    const b = pts[r.i + 1];
+    const L = Math.hypot(b.x - a.x, b.y - a.y) || 1e-6;
+    const room = (r.dir > 0 ? 1 - r.t : r.t) * L;
+    if (left <= room) {
+      r.t += (r.dir * left) / L;
+      return true;
+    }
+    left -= room;
+    r.t = r.dir > 0 ? 1 : 0;
+    if (r.dir > 0 && r.i + 2 < pts.length) {
+      r.i += 1;
+      r.t = 0;
+    } else if (r.dir < 0 && r.i > 0) {
+      r.i -= 1;
+      r.t = 1;
+    } else {
+      const next = transfer(r);
+      if (!next) return false;
+      Object.assign(r, next);
+    }
+  }
+  return true;
 }
 
 function pop(x: number, y: number, text: string, color = '#ffd27a'): void {
@@ -185,32 +245,42 @@ function update(dt: number): void {
   const road = nearestRoad(rover);
   const stickAng = Math.atan2(dir.y, dir.x);
 
-  if (onRail) {
-    // Which way along the road are we going?
-    const along = Math.cos(rover.h) * (road?.tx ?? 0) + Math.sin(rover.h) * (road?.ty ?? 0) >= 0 ? 1 : -1;
-    const railAng = road ? Math.atan2(road.ty * along, road.tx * along) : rover.h;
-    const breaking = mag > 0.5 && Math.abs(angleTo(railAng, stickAng)) > BREAK_ANGLE;
-    if (!road || road.d > HOLD || breaking) {
-      onRail = false;
+  if (rail) {
+    const here = railPoint(rail);
+    const off = Math.abs(angleTo(here.ang, stickAng));
+    const hard = mag > 0.8 && off > HARD_TURN;
+    const slow = mag > 0.5 && rover.v < SLOW && off > SLOW_TURN;
+    if (hard || slow) {
+      // Off the rail: keep your speed, start laying a new branch from here.
+      rail = null;
       railCooldown = 0.45;
       chain = 0;
+      rover.h = here.ang;
       startLine();
-      if (breaking) blip(240, 0.08, 'triangle', 0.15, 160);
+      if (hard) shake.kick(6);
+      blip(hard ? 200 : 260, 0.1, 'triangle', 0.18, 140);
     } else {
-      // Grip: heading snaps to the road, a gentle pull to its centre line.
-      const toCentre = Math.atan2(road.py - rover.y, road.px - rover.x);
-      const pull = Math.min(0.6, road.d / 30);
-      const want = railAng + angleTo(railAng, toCentre) * pull;
-      rover.h += angleTo(rover.h, want) * Math.min(1, 12 * dt);
-      charge = Math.min(1, charge + CHARGE_RATE * dt);
-      // Push along it to go; hands off and you slide, barely losing speed.
+      // Zero steering: hold to go, release to stop.
       const target = RAIL_BASE + RAIL_BONUS * charge;
       if (mag > 0) rover.v += Math.sign(target - rover.v) * Math.min(Math.abs(target - rover.v), 260 * dt);
-      else rover.v *= 1 - 0.08 * dt;
+      else rover.v = Math.max(0, rover.v - BRAKE * dt);
+      if (rover.v > 100) charge = Math.min(1, charge + CHARGE_RATE * dt);
+      else if (rover.v < 20) charge = Math.max(0, charge - 0.25 * dt);
+      if (!advanceRail(rail, rover.v * dt)) {
+        if (rover.v > 150) {
+          shake.kick(9);
+          blip(110, 0.18, 'sawtooth', 0.25, 60);
+        }
+        rover.v = 0;
+      }
+      const at = railPoint(rail);
+      rover.x = at.x;
+      rover.y = at.y;
+      rover.h += angleTo(rover.h, at.ang) * Math.min(1, 18 * dt); // drawn heading eases round corners
     }
   }
 
-  if (!onRail) {
+  if (!rail) {
     charge = Math.max(0, charge - 1.5 * dt);
     const turn = 4.6 - Math.min(2.4, rover.v / 70);
     if (mag > 0) rover.h += Math.max(-turn * dt, Math.min(turn * dt, angleTo(rover.h, stickAng)));
@@ -219,17 +289,21 @@ function update(dt: number): void {
     rover.v += Math.sign(target - rover.v) * Math.min(Math.abs(target - rover.v), accel * dt);
     // Grab the rail if you're on your road and roughly lined up with it.
     if (road && road.d < GRAB && railCooldown <= 0 && rover.v > 20) {
-      const align = Math.abs(Math.cos(rover.h) * road.tx + Math.sin(rover.h) * road.ty);
-      if (align > 0.55) {
-        onRail = true;
+      const along = Math.cos(rover.h) * road.tx + Math.sin(rover.h) * road.ty;
+      if (Math.abs(along) > 0.55) {
+        rail = { line: road.line, i: road.i, t: road.t, dir: along >= 0 ? 1 : -1 };
         laying = -1;
+        rover.x = road.px;
+        rover.y = road.py;
         blip(520, 0.07, 'triangle', 0.18, 780);
       }
     }
+    if (!rail) {
+      rover.x += Math.cos(rover.h) * rover.v * dt;
+      rover.y += Math.sin(rover.h) * rover.v * dt;
+    }
   }
-
-  rover.x += Math.cos(rover.h) * rover.v * dt;
-  rover.y += Math.sin(rover.h) * rover.v * dt;
+  onRail = rail !== null;
 
   // Lay road behind you while you're off the rail.
   if (!onRail && laying >= 0) {
@@ -472,7 +546,8 @@ function draw(dt: number): void {
   if (!started && !over) {
     banner(ctx, w, h, 'HOME RUN', [
       'Drag to drive. Road lays behind you.',
-      'Ride your own road back: it grips and speeds up.',
+      'Back on your road it\'s a rail: hold to ride,',
+      'release to stop. Hard turn (or slow + turn) to leave.',
       'Fast on the rail through ore = scoop it all.',
       `Bank at the ring before sunset.  best ${stats.best}`
     ]);
@@ -488,7 +563,7 @@ function draw(dt: number): void {
 }
 
 // Read-only hook for headless checks.
-(window as unknown as { __toy?: () => unknown }).__toy = () => ({ started, over, onRail, charge, carry, banked, sun, v: rover.v, x: rover.x, y: rover.y, roadPoints: lines.reduce((n, l) => n + l.length, 0), plays: stats.plays, seams: seams.map((s) => ({ x: s.x, y: s.y, ore: s.ore })) });
+(window as unknown as { __toy?: () => unknown }).__toy = () => ({ started, over, onRail, rail: rail ? { ...rail, ang: railPoint(rail).ang } : null, lineCount: lines.length, offCentre: rail ? Math.hypot(rover.x - railPoint(rail).x, rover.y - railPoint(rail).y) : null, h: rover.h, charge, carry, banked, sun, v: rover.v, x: rover.x, y: rover.y, roadPoints: lines.reduce((n, l) => n + l.length, 0), plays: stats.plays, seams: seams.map((s) => ({ x: s.x, y: s.y, ore: s.ore })) });
 
 reset();
 loop((dt) => {

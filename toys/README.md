@@ -24,7 +24,7 @@ So the fun is plausibly **the run home**: go out, get greedy, turn back, fly hom
 
 | Toy | Angle | Tests |
 |---|---|---|
-| **Home Run** (`home-run.html`, `src/toys/homeRun.ts`) | Keep the theme, new core | Do the three "felt good" moments carry a game on their own? You steer the whole way. Road lays behind you off the rail; your own road grips like a magnetic rail and charges you up; push off it to break away. Charged rail speed through a seam scoops the whole seam, and chains multiply. Bank at the ring; sunset strands what you carry. |
+| **Home Run** (`home-run.html`, `src/toys/homeRun.ts`) | Keep the theme, new core | Do the three "felt good" moments carry a game on their own? Off the road you steer, and road lays behind you. Back on your own road it's a roller-coaster rail (owner: "a crazy straw") with **zero steering**: hold to ride, release to stop, and it carries you along exactly what you laid, faster the longer you ride. Leave with a very hard turn, or slow down and turn. A line end carries on onto the road it branched from. Charged rail speed through a seam scoops the whole seam, and chains multiply. Bank at the ring; sunset strands what you carry. |
 | **Terminator** (`terminator.html`, `src/toys/terminator.ts`) | Keep only the mood | Is racing the light the fun, with nothing to build? A solar rover runs fast in sunlight and fades in shadow while night sweeps in from the west, faster and faster. Ore in the dark (crater floors, or behind the line) is worth double. |
 
 A third idea, drawing the road with your finger ahead of an always-moving rover, was dropped at the owner's call.
