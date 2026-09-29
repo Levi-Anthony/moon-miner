@@ -7,6 +7,15 @@ export default defineConfig({
     __BUILD_SHA__: JSON.stringify((process.env.GITHUB_SHA ?? 'dev').slice(0, 7))
   },
   build: {
-    chunkSizeWarningLimit: 1600
+    chunkSizeWarningLimit: 1600,
+    // The main game plus the throwaway "find the fun" toys (toys/README.md).
+    rollupOptions: {
+      input: {
+        main: 'index.html',
+        toys: 'toys/index.html',
+        homeRun: 'toys/home-run.html',
+        terminator: 'toys/terminator.html'
+      }
+    }
   }
 });

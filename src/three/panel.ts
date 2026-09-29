@@ -377,6 +377,7 @@ export function createPanel(ctx: PanelCtx): void {
       if (window.confirm('Full Reset: every setting back to its default and a new game. Your saved runs are kept. Continue?')) ctx.fullReset();
     }, 'Every setting back to the shipped defaults, plus a New Game. Saved runs are kept.'),
     mk('Send saved runs', () => { if (!ctx.sendAllRuns()) alert('No runs saved in this browser yet.'); }),
+    mk('Toys', () => { window.location.href = './toys/'; }, 'Throwaway prototypes testing other core ideas (toys/README.md).'),
     mk('Close', () => { panel.style.display = 'none'; })
   );
   panel.appendChild(btns);
