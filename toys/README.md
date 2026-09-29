@@ -16,7 +16,7 @@ So the fun is plausibly **the run home**: go out, get greedy, turn back, fly hom
 
 - **Throwaway.** 2D canvas, one file, no settings panel, no levels, no save.
 - **Isolated.** It imports nothing from `src/game` or `src/three`. That keeps out the main build's hidden assumptions: stock economy, drone, hex fields, par budgets, 3D chase camera, knob sprawl.
-- **Phone first.** Portrait, one thumb (drag anywhere to steer, where you push is where you go). Runs of 30–90 s, tap to retry.
+- **Phone first.** Portrait, one thumb. Up is always forward: the view turns with the rover, stick up = throttle, left/right = steer. Runs of 30–90 s, tap to retry.
 - **Has feel.** Screen shake, particles and sound. A toy with no feedback reads as unfun whatever the idea.
 - **Counts plays.** `localStorage` key `mm-toy-<name>`; the index shows it. Choosing to play again is the signal.
 
@@ -24,7 +24,7 @@ So the fun is plausibly **the run home**: go out, get greedy, turn back, fly hom
 
 | Toy | Angle | Tests |
 |---|---|---|
-| **Home Run** (`home-run.html`, `src/toys/homeRun.ts`) | Keep the theme, new core | Do the three "felt good" moments carry a game on their own? Off the road you steer, and road lays behind you. Back on your own road it's a roller-coaster rail (owner: "a crazy straw") with **zero steering**: hold to ride, release to stop, and it carries you along exactly what you laid, faster the longer you ride. Leave with a very hard turn, or slow down and turn. A line end carries on onto the road it branched from. Charged rail speed through a seam scoops the whole seam, and chains multiply. Bank at the ring; sunset strands what you carry. |
+| **Home Run** (`home-run.html`, `src/toys/homeRun.ts`) | Keep the theme, new core | Do the three "felt good" moments carry a game on their own? **v2 (2026-09-29):** up = forward (the view turns with you; stick up = throttle, left/right = steer). Road lays behind you. Drive onto your road and it's a roller-coaster rail with zero steering: hold up to ride, let go to stop, pull back while stopped to turn round, hold a full turn to hop off. The road is a tree rooted at the depot, so riding inward always ends at home. Riding outward ends at your frontier and you're laying again. Charged rail speed through a seam scoops it all, and chains multiply. **Night closes in** from the edges, uneven, swallowing the far rich ore first. Caught outside it, you lose your load and the run ends. |
 | **Terminator** (`terminator.html`, `src/toys/terminator.ts`) | Keep only the mood | Is racing the light the fun, with nothing to build? A solar rover runs fast in sunlight and fades in shadow while night sweeps in from the west, faster and faster. Ore in the dark (crater floors, or behind the line) is worth double. |
 
 A third idea, drawing the road with your finger ahead of an always-moving rover, was dropped at the owner's call.
