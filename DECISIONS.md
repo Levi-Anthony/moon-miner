@@ -1944,3 +1944,8 @@ New merges add a row here. Decisions in this range that change what older entrie
   - Process: tiny throwaway toys.
 
   Built two isolated 2D toys under `toys/`: **Home Run** (the run home as the whole game) and **Terminator** (racing the day/night line, no road). `toys/README.md` has the hypothesis, rules, play protocol and a results table. The owner corrected Home Run twice before it merged. First: no tap-to-scoop; you scoop by driving through ore at charged rail speed. Second: zero steering on the rail. It's a roller-coaster or crazy-straw ride along exactly what you laid: hold to go, release to stop, and leave with a very hard turn or by slowing and turning. Rejected: a third toy, "Lifeline" (draw the road ahead of an always-moving rover). The main game is unchanged apart from a Toys button in the ⚙ panel.
+- **Home Run v2 (2026-09-29):** the owner played it and reported the same old problems: aimless, unpressured driving, and a ride home that was hard to get on, went the wrong way, dropped you and threw you off by accident. They said the requirements are few and how to meet them is open. Changes:
+  - **Up = forward** in both toys: heading-up camera, stick as throttle/steer.
+  - **The road is a tree rooted at the depot.** Each branch records its parent, so the ride inward is a lookup to home, not a nearest-segment search.
+  - **Rail entry and exit:** generous grab; exit only by a held full steer or steer while stopped; no re-grab until you're clear of the road.
+  - **Night ring:** closes in from the edges and replaces the sun bar. The owner picked this pressure; rejected for now: one sortie per run, stock-costed road, a time-to-home marker.

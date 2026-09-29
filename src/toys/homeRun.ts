@@ -1,38 +1,52 @@
 // Toy 1: Home Run (keep the theme, new core). See toys/README.md.
 //
-// The hypothesis: the fun is the run home. Out: steer slowly, road lays itself
-// behind you, the sun drains. Back: your own road is a roller-coaster rail
-// (owner, 2026-09-29: "a crazy straw"). On it there is zero steering: hold to
-// go, release to stop, and it carries you along exactly what you laid, faster
-// the longer you ride. Leave with a very hard turn, or slow down and turn.
-// Through a seam at charged rail speed the whole seam is scooped. Bank at the
-// depot; sunset strands whatever you're carrying.
-import { Hum, Particles, Shake, Stick, angleTo, banner, blip, hash, loadStats, loop, makeScreen, recordPlay, rng, type Vec } from './kit';
+// v2 (owner, 2026-09-29). The requirements are few:
+//   drive out laying road · ride your own road home fast with zero steering ·
+//   scoop ore at speed on the ride · beat the dark home · up is always forward.
+// How:
+//   - Heading-up view: stick up = throttle, left/right = steer.
+//   - The road is a TREE rooted at the depot: every new line records where it
+//     left the road. Riding inward follows parents all the way home, so the
+//     ride home can't dead-end, wander or drop you. Riding outward ends at the
+//     line's tip, where you're driving and laying again.
+//   - Getting on is generous (drive onto your road); getting off is only
+//     deliberate (hold full steer, or steer while nearly stopped).
+//   - Night closes in from the edges toward the depot, swallowing the far,
+//     rich ore first. Caught outside it = lose what you carry, run over.
+import {
+  Hum, Particles, Shake, Stick, angleTo, applyCam, banner, blip, camToScreen, edgeArrow, followCam, hash, loadStats, loop, makeScreen, recordPlay, rng,
+  type Cam, type Vec
+} from './kit';
 
 const TOY = 'home-run';
-const DAY = 80; // seconds of sun
-const LAY_SPEED = 125; // bare-ground speed, laying road
-const RAIL_BASE = 180; // rail speed at zero charge
-const RAIL_BONUS = 300; // extra rail speed at full charge
-const CHARGE_RATE = 0.55; // charge per second on the rail
+const DAY = 75; // seconds until the night reaches the depot
+const RING0 = 1750; // the night's starting radius, outside all the ore
+const LAY_SPEED = 130;
+const REVERSE_SPEED = 55;
+const RAIL_BASE = 190;
+const RAIL_BONUS = 300;
+const CHARGE_RATE = 0.55;
 const SCOOP_CHARGE = 0.5;
 const SCOOP_SPEED = 230;
+const BRAKE = 420;
 const ROAD_W = 26;
-const GRAB = 13; // how close to a road's centre it grabs you
-const HARD_TURN = 2.1; // rad (~120°) between stick and travel: leaves at any speed
-const SLOW_TURN = 0.8; // rad (~45°): leaves once you've slowed right down
-const SLOW = 90; // "slowed right down"
-const BRAKE = 420; // release = stop
-const JOIN = 20; // how close a line end must be to another line to carry on
+const GRAB = 30; // generous: drive onto your road and you're on it
+const GRAB_ALIGN = Math.cos((70 * Math.PI) / 180);
+const FRESH = 12; // points of the line you're laying that can't grab you
+const LEAVE_STEER = 0.75; // full steer held...
+const LEAVE_HOLD = 0.2; // ...this long hops you off
+const SLOW = 60; // or steer while nearly stopped
+const SLOW_STEER = 0.4;
+const FLIP_HOLD = 0.25; // pull back while stopped on the rail to turn round
 const POINT_GAP = 14;
 const DEPOT_R = 46;
 const CELL = 64;
 
-interface Seam { x: number; y: number; a: number; len: number; w: number; ore: number; max: number }
-interface Pop { x: number; y: number; text: string; t: number; color: string }
-interface SegRef { line: number; i: number }
+interface Parent { line: number; i: number; t: number }
+interface Line { pts: Vec[]; parent: Parent | null }
 interface Rail { line: number; i: number; t: number; dir: 1 | -1 }
-interface Hit { d: number; tx: number; ty: number; px: number; py: number; line: number; i: number; t: number }
+interface Seam { x: number; y: number; a: number; len: number; w: number; ore: number; max: number; gone: number }
+interface Pop { x: number; y: number; text: string; t: number; color: string }
 
 const screen = makeScreen();
 const { ctx } = screen;
@@ -42,73 +56,99 @@ const shake = new Shake();
 const hum = new Hum();
 
 let rover = { x: 0, y: 0, h: -Math.PI / 2, v: 0 };
-let lines: Vec[][] = [];
-let laying = -1; // index of the polyline being laid, or -1 while on the rail
-let grid = new Map<string, SegRef[]>();
-let seams: Seam[] = [];
-let pops: Pop[] = [];
+let lines: Line[] = [];
+let laying = -1; // line being extended while off the rail
+let grid = new Map<string, { line: number; i: number }[]>();
 let rail: Rail | null = null;
-let onRail = false;
-let railCooldown = 0;
+let steerHeld = 0;
+// After leaving the rail you must get clear of the road before it can grab you
+// again, or a hop-off at low speed re-grabs the road you just left (a loop).
+let armed = true;
+let backHeld = 0;
 let charge = 0;
 let chain = 0;
 let carry = 0;
 let banked = 0;
-let sun = DAY;
+let dayT = 0;
+let ringPhase = [0, 0];
+let ringMinFactor = 1;
+let seams: Seam[] = [];
+let pops: Pop[] = [];
 let started = false;
 let over = false;
+let caught = false;
 let overAt = 0;
 let lost = 0;
-let stats = loadStats(TOY);
-let cam = { x: 0, y: 0, z: 1 };
 let time = 0;
+let stats = loadStats(TOY);
+const cam: Cam = { x: 0, y: 0, rot: -Math.PI / 2, z: 1 };
 
 function reset(): void {
   const r = rng((Math.random() * 1e9) | 0);
   rover = { x: 0, y: 0, h: -Math.PI / 2, v: 0 };
-  lines = [];
-  laying = -1;
+  lines = [{ pts: [{ x: 0, y: 0 }], parent: null }];
+  laying = 0;
   grid = new Map();
-  pops = [];
   rail = null;
-  onRail = false;
-  railCooldown = 0;
+  steerHeld = 0;
+  armed = true;
+  backHeld = 0;
   charge = 0;
   chain = 0;
   carry = 0;
   banked = 0;
-  sun = DAY;
+  dayT = 0;
+  pops = [];
   started = false;
   over = false;
+  caught = false;
   lost = 0;
-  // Seams: richer the farther out, never stacked, never on the depot.
+  ringPhase = [r() * Math.PI * 2, r() * Math.PI * 2];
+  ringMinFactor = Infinity;
+  for (let k = 0; k < 90; k += 1) ringMinFactor = Math.min(ringMinFactor, ringFactor((k / 90) * Math.PI * 2));
   seams = [];
   for (let tries = 0; seams.length < 16 && tries < 2000; tries += 1) {
-    const d = 220 + Math.pow(r(), 0.8) * 1300;
+    const d = 230 + Math.pow(r(), 0.8) * 1280;
     const a = r() * Math.PI * 2;
     const x = Math.cos(a) * d;
     const y = Math.sin(a) * d;
     if (seams.some((s) => Math.hypot(s.x - x, s.y - y) < 150)) continue;
     const ore = Math.round(4 + d / 55);
-    seams.push({ x, y, a: r() * Math.PI, len: 60 + d / 25 + r() * 30, w: 26 + r() * 12, ore, max: ore });
+    seams.push({ x, y, a: r() * Math.PI, len: 60 + d / 25 + r() * 30, w: 26 + r() * 12, ore, max: ore, gone: 0 });
   }
-  startLine();
+  cam.x = 0;
+  cam.y = 0;
+  cam.rot = rover.h;
 }
 
-function startLine(): void {
-  lines.push([{ x: rover.x, y: rover.y }]);
-  laying = lines.length - 1;
+// --- the night ring ------------------------------------------------------------
+function ringFactor(a: number): number {
+  return 1 + 0.13 * Math.sin(3 * a + ringPhase[0]) + 0.07 * Math.sin(5 * a + ringPhase[1]);
+}
+function ringBase(): number {
+  return RING0 * Math.max(0, 1 - dayT / DAY);
+}
+function ringAt(a: number): number {
+  return ringBase() * ringFactor(a);
+}
+function outsideRing(x: number, y: number): boolean {
+  return Math.hypot(x, y) > ringAt(Math.atan2(y, x));
 }
 
+// --- the road tree -------------------------------------------------------------
 function key(cx: number, cy: number): string {
   return `${cx},${cy}`;
 }
 
-function addSegment(line: number, i: number): void {
-  const a = lines[line][i];
-  const b = lines[line][i + 1];
+function addPoint(line: number, p: Vec): void {
+  const pts = lines[line].pts;
+  pts.push({ x: p.x, y: p.y });
+  if (pts.length < 2) return;
+  const i = pts.length - 2;
+  const a = pts[i];
+  const b = pts[i + 1];
   const cells = new Set<string>();
-  for (const p of [a, b, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }]) cells.add(key(Math.floor(p.x / CELL), Math.floor(p.y / CELL)));
+  for (const q of [a, b, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }]) cells.add(key(Math.floor(q.x / CELL), Math.floor(q.y / CELL)));
   for (const c of cells) {
     const list = grid.get(c) ?? [];
     list.push({ line, i });
@@ -116,19 +156,19 @@ function addSegment(line: number, i: number): void {
   }
 }
 
-// Nearest road segment (skipping the fresh tail you're laying right now, and
-// anything `skip` rules out).
-function nearestRoad(p: Vec, skip?: (ref: SegRef) => boolean): Hit | null {
+interface RoadHit { d: number; line: number; i: number; t: number; tx: number; ty: number; px: number; py: number }
+
+// Nearest segment of your road (not the fresh tail of the line you're laying).
+function nearestRoad(p: Vec): RoadHit | null {
   const cx = Math.floor(p.x / CELL);
   const cy = Math.floor(p.y / CELL);
-  let best: Hit | null = null;
+  let best: RoadHit | null = null;
   for (let ox = -1; ox <= 1; ox += 1) {
     for (let oy = -1; oy <= 1; oy += 1) {
       for (const ref of grid.get(key(cx + ox, cy + oy)) ?? []) {
-        if (ref.line === laying && ref.i > lines[laying].length - 10) continue;
-        if (skip?.(ref)) continue;
-        const a = lines[ref.line][ref.i];
-        const b = lines[ref.line][ref.i + 1];
+        if (ref.line === laying && ref.i >= lines[laying].pts.length - FRESH) continue;
+        const a = lines[ref.line].pts[ref.i];
+        const b = lines[ref.line].pts[ref.i + 1];
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const L2 = dx * dx + dy * dy || 1;
@@ -138,7 +178,7 @@ function nearestRoad(p: Vec, skip?: (ref: SegRef) => boolean): Hit | null {
         const d = Math.hypot(p.x - px, p.y - py);
         if (!best || d < best.d) {
           const L = Math.sqrt(L2);
-          best = { d, tx: dx / L, ty: dy / L, px, py, line: ref.line, i: ref.i, t };
+          best = { d, line: ref.line, i: ref.i, t, tx: dx / L, ty: dy / L, px, py };
         }
       }
     }
@@ -146,53 +186,65 @@ function nearestRoad(p: Vec, skip?: (ref: SegRef) => boolean): Hit | null {
   return best;
 }
 
-// --- the rail: ride exactly along what you laid ---------------------------------
 function railPoint(r: Rail): { x: number; y: number; ang: number } {
-  const a = lines[r.line][r.i];
-  const b = lines[r.line][r.i + 1];
+  const pts = lines[r.line].pts;
+  const a = pts[r.i];
+  const b = pts[r.i + 1];
   return { x: a.x + (b.x - a.x) * r.t, y: a.y + (b.y - a.y) * r.t, ang: Math.atan2((b.y - a.y) * r.dir, (b.x - a.x) * r.dir) };
 }
 
-// At the end of a line, carry on along whichever nearby road best continues the
-// way you're going (a branch back onto the line it left, say). No choice at
-// mid-line junctions: you stay on your line; leaving is how you pick a route.
-function transfer(r: Rail): Rail | null {
-  const here = railPoint(r);
-  const endIdx = r.dir > 0 ? r.i + 1 : r.i;
-  const hit = nearestRoad(here, (ref) => ref.line === r.line && Math.abs(ref.i - endIdx) < 4);
-  if (!hit || hit.d > JOIN) return null;
-  const fwd = Math.cos(here.ang) * hit.tx + Math.sin(here.ang) * hit.ty;
-  return { line: hit.line, i: hit.i, t: hit.t, dir: fwd >= 0 ? 1 : -1 };
-}
-
-// Move `dist` along the rail. Returns false at a dead end.
-function advanceRail(r: Rail, dist: number): boolean {
+// Move along the tree. Inward past a line's start continues onto its parent;
+// returns 'home' at the depot end of line 0, 'tip' at a line's outer end.
+function advanceRail(r: Rail, dist: number): 'ok' | 'home' | 'tip' {
   let left = dist;
-  for (let guard = 0; left > 1e-6 && guard < 400; guard += 1) {
-    const pts = lines[r.line];
+  for (let guard = 0; left > 1e-6 && guard < 2000; guard += 1) {
+    const pts = lines[r.line].pts;
     const a = pts[r.i];
     const b = pts[r.i + 1];
     const L = Math.hypot(b.x - a.x, b.y - a.y) || 1e-6;
     const room = (r.dir > 0 ? 1 - r.t : r.t) * L;
     if (left <= room) {
       r.t += (r.dir * left) / L;
-      return true;
+      return 'ok';
     }
     left -= room;
-    r.t = r.dir > 0 ? 1 : 0;
-    if (r.dir > 0 && r.i + 2 < pts.length) {
-      r.i += 1;
-      r.t = 0;
-    } else if (r.dir < 0 && r.i > 0) {
+    if (r.dir > 0) {
+      if (r.i + 2 < pts.length) {
+        r.i += 1;
+        r.t = 0;
+      } else {
+        r.t = 1;
+        return 'tip';
+      }
+    } else if (r.i > 0) {
       r.i -= 1;
       r.t = 1;
     } else {
-      const next = transfer(r);
-      if (!next) return false;
-      Object.assign(r, next);
+      r.t = 0;
+      const parent = lines[r.line].parent;
+      if (!parent) return 'home';
+      r.line = parent.line;
+      r.i = parent.i;
+      r.t = parent.t;
     }
   }
-  return true;
+  return 'ok';
+}
+
+// Leave the rail here: a new branch starts at this point, parent recorded.
+function hopOff(side: number): void {
+  if (!rail) return;
+  const at = railPoint(rail);
+  lines.push({ pts: [], parent: { line: rail.line, i: rail.i, t: rail.t } });
+  laying = lines.length - 1;
+  addPoint(laying, at);
+  rover.h = at.ang + side * 0.6;
+  rail = null;
+  armed = false;
+  chain = 0;
+  steerHeld = 0;
+  shake.kick(5);
+  blip(230, 0.1, 'triangle', 0.18, 150);
 }
 
 function pop(x: number, y: number, text: string, color = '#ffd27a'): void {
@@ -207,118 +259,127 @@ function inSeam(s: Seam, p: Vec): boolean {
   return (lx / (s.len / 2)) ** 2 + (ly / (s.w / 2)) ** 2 <= 1;
 }
 
-function endRun(): void {
+function endRun(wasCaught: boolean): void {
   over = true;
+  caught = wasCaught;
   overAt = time;
   hum.mute();
-  const home = Math.hypot(rover.x, rover.y) <= DEPOT_R;
-  if (!home && carry > 0) {
+  if (wasCaught && carry > 0) {
     lost = carry;
     carry = 0;
   }
   stats = recordPlay(TOY, banked);
-  blip(home ? 660 : 180, 0.5, home ? 'triangle' : 'sawtooth', 0.3, home ? 990 : 70);
+  shake.kick(wasCaught ? 14 : 6);
+  blip(wasCaught ? 170 : 660, 0.6, wasCaught ? 'sawtooth' : 'triangle', 0.3, wasCaught ? 55 : 990);
 }
 
 function update(dt: number): void {
   time += dt;
   parts.update(dt);
   pops = pops.filter((p) => (p.t -= dt) > 0);
+  for (const s of seams) if (s.gone > 0) s.gone = Math.max(0, s.gone - dt);
   if (over) {
     if (stick.consumeTap() && time - overAt > 0.8) reset();
     return;
   }
   stick.consumeTap();
-  const { dir, mag } = stick.read();
-  if (mag > 0) started = true;
+  const ax = stick.axes();
+  if (ax.x !== 0 || ax.y !== 0) started = true;
   if (!started) return;
 
-  sun -= dt;
-  if (sun <= 10 && Math.ceil(sun) !== Math.ceil(sun + dt)) blip(880, 0.05, 'square', 0.12);
-  if (sun <= 0) {
-    sun = 0;
-    endRun();
+  // Night closes in.
+  dayT += dt;
+  if (ringBase() * ringMinFactor <= DEPOT_R) {
+    endRun(!(Math.hypot(rover.x, rover.y) <= DEPOT_R));
+    return;
+  }
+  for (const s of seams) {
+    if (s.ore > 0 && outsideRing(s.x, s.y)) {
+      s.ore = 0;
+      s.gone = 0.8;
+    }
+  }
+  if (outsideRing(rover.x, rover.y)) {
+    endRun(true);
     return;
   }
 
-  railCooldown = Math.max(0, railCooldown - dt);
-  const road = nearestRoad(rover);
-  const stickAng = Math.atan2(dir.y, dir.x);
-
   if (rail) {
-    const here = railPoint(rail);
-    const off = Math.abs(angleTo(here.ang, stickAng));
-    const hard = mag > 0.8 && off > HARD_TURN;
-    const slow = mag > 0.5 && rover.v < SLOW && off > SLOW_TURN;
-    if (hard || slow) {
-      // Off the rail: keep your speed, start laying a new branch from here.
-      rail = null;
-      railCooldown = 0.45;
-      chain = 0;
-      rover.h = here.ang;
-      startLine();
-      if (hard) shake.kick(6);
-      blip(hard ? 200 : 260, 0.1, 'triangle', 0.18, 140);
+    // Deliberate exits only: full steer held, or steer while nearly stopped.
+    steerHeld = Math.abs(ax.x) >= LEAVE_STEER ? steerHeld + dt : 0;
+    if (steerHeld >= LEAVE_HOLD || (rover.v < SLOW && Math.abs(ax.x) >= SLOW_STEER)) {
+      hopOff(Math.sign(ax.x));
     } else {
-      // Zero steering: hold to go, release to stop.
+      // Zero steering: up = go, release = stop, pull back while stopped = turn round.
       const target = RAIL_BASE + RAIL_BONUS * charge;
-      if (mag > 0) rover.v += Math.sign(target - rover.v) * Math.min(Math.abs(target - rover.v), 260 * dt);
-      else rover.v = Math.max(0, rover.v - BRAKE * dt);
+      if (ax.y > 0) rover.v += Math.sign(target - rover.v) * Math.min(Math.abs(target - rover.v), 280 * ax.y * dt);
+      else rover.v = Math.max(0, rover.v - BRAKE * (ax.y < 0 ? 1.6 : 1) * dt);
+      backHeld = ax.y < -0.3 && rover.v < 5 ? backHeld + dt : 0;
+      if (backHeld >= FLIP_HOLD) {
+        rail.dir = rail.dir > 0 ? -1 : 1;
+        backHeld = 0;
+        blip(420, 0.08, 'triangle', 0.15, 300);
+      }
       if (rover.v > 100) charge = Math.min(1, charge + CHARGE_RATE * dt);
       else if (rover.v < 20) charge = Math.max(0, charge - 0.25 * dt);
-      if (!advanceRail(rail, rover.v * dt)) {
-        if (rover.v > 150) {
-          shake.kick(9);
-          blip(110, 0.18, 'sawtooth', 0.25, 60);
-        }
+      const res = advanceRail(rail, rover.v * dt);
+      const p = railPoint(rail);
+      rover.x = p.x;
+      rover.y = p.y;
+      rover.h += angleTo(rover.h, p.ang) * Math.min(1, 16 * dt);
+      if (res === 'home') {
         rover.v = 0;
+      } else if (res === 'tip') {
+        // Out at your frontier: the rail ends and you're driving and laying on.
+        laying = rail.line;
+        rail = null;
+        armed = false;
+        rover.h = p.ang;
+        rover.v = Math.min(rover.v, LAY_SPEED * 1.3);
+        chain = 0;
+        blip(300, 0.06, 'triangle', 0.12);
       }
-      const at = railPoint(rail);
-      rover.x = at.x;
-      rover.y = at.y;
-      rover.h += angleTo(rover.h, at.ang) * Math.min(1, 18 * dt); // drawn heading eases round corners
     }
   }
 
   if (!rail) {
     charge = Math.max(0, charge - 1.5 * dt);
-    const turn = 4.6 - Math.min(2.4, rover.v / 70);
-    if (mag > 0) rover.h += Math.max(-turn * dt, Math.min(turn * dt, angleTo(rover.h, stickAng)));
-    const target = LAY_SPEED * mag;
-    const accel = rover.v > target ? 320 : 240;
+    const turn = rover.v < 10 ? 1.8 : 2.9 - Math.min(1.3, rover.v / 150);
+    rover.h += ax.x * turn * dt;
+    const target = ax.y >= 0 ? LAY_SPEED * ax.y : -REVERSE_SPEED * -ax.y;
+    const accel = Math.abs(rover.v) > Math.abs(target) ? 320 : 240;
     rover.v += Math.sign(target - rover.v) * Math.min(Math.abs(target - rover.v), accel * dt);
-    // Grab the rail if you're on your road and roughly lined up with it.
-    if (road && road.d < GRAB && railCooldown <= 0 && rover.v > 20) {
-      const along = Math.cos(rover.h) * road.tx + Math.sin(rover.h) * road.ty;
-      if (Math.abs(along) > 0.55) {
-        rail = { line: road.line, i: road.i, t: road.t, dir: along >= 0 ? 1 : -1 };
-        laying = -1;
-        rover.x = road.px;
-        rover.y = road.py;
-        blip(520, 0.07, 'triangle', 0.18, 780);
+    rover.x += Math.cos(rover.h) * rover.v * dt;
+    rover.y += Math.sin(rover.h) * rover.v * dt;
+    // Lay road behind you.
+    if (laying >= 0 && rover.v > 0) {
+      const pts = lines[laying].pts;
+      const last = pts[pts.length - 1];
+      if (Math.hypot(rover.x - last.x, rover.y - last.y) >= POINT_GAP) addPoint(laying, rover);
+    }
+    // Drive onto your road (going forward, within ~70°) and you're on the rail.
+    const road = nearestRoad(rover);
+    if (!armed && (!road || road.d > GRAB + 10)) armed = true;
+    if (armed && ax.y > 0.1 && rover.v > 15) {
+      if (road && road.d < GRAB) {
+        const along = Math.cos(rover.h) * road.tx + Math.sin(rover.h) * road.ty;
+        if (Math.abs(along) >= GRAB_ALIGN) {
+          rail = { line: road.line, i: road.i, t: road.t, dir: along >= 0 ? 1 : -1 };
+          // A branch you started and never extended is just litter: drop it.
+          if (laying === lines.length - 1 && laying > 0 && lines[laying].pts.length < 2) lines.pop();
+          laying = -1;
+          rover.x = road.px;
+          rover.y = road.py;
+          blip(520, 0.07, 'triangle', 0.18, 780);
+        }
       }
-    }
-    if (!rail) {
-      rover.x += Math.cos(rover.h) * rover.v * dt;
-      rover.y += Math.sin(rover.h) * rover.v * dt;
-    }
-  }
-  onRail = rail !== null;
-
-  // Lay road behind you while you're off the rail.
-  if (!onRail && laying >= 0) {
-    const line = lines[laying];
-    const last = line[line.length - 1];
-    if (Math.hypot(rover.x - last.x, rover.y - last.y) >= POINT_GAP) {
-      line.push({ x: rover.x, y: rover.y });
-      addSegment(laying, line.length - 2);
     }
   }
 
   // Seams: scoop at charged rail speed, nibble otherwise.
   for (const s of seams) {
     if (s.ore <= 0 || !inSeam(s, rover)) continue;
-    if (onRail && charge >= SCOOP_CHARGE && rover.v >= SCOOP_SPEED) {
+    if (rail && charge >= SCOOP_CHARGE && rover.v >= SCOOP_SPEED) {
       chain += 1;
       const gain = s.ore * (1 + 0.25 * (chain - 1));
       carry += gain;
@@ -326,7 +387,7 @@ function update(dt: number): void {
       parts.burst(s.x, s.y, 40, '#ffcf5a', 320, 4, 0.8);
       shake.kick(10 + chain * 3);
       blip(440 * Math.pow(1.19, Math.min(chain, 8)), 0.18, 'square', 0.28, 1400);
-      pop(rover.x, rover.y - 30, chain > 1 ? `SCOOP x${chain}  +${gain.toFixed(0)}` : `SCOOP +${gain.toFixed(0)}`);
+      pop(rover.x, rover.y, chain > 1 ? `SCOOP x${chain}  +${gain.toFixed(0)}` : `SCOOP +${gain.toFixed(0)}`);
     } else {
       const take = Math.min(s.ore, 2.6 * dt);
       s.ore -= take;
@@ -339,56 +400,56 @@ function update(dt: number): void {
   // Bank at the depot.
   if (carry > 0.5 && Math.hypot(rover.x, rover.y) <= DEPOT_R) {
     banked += carry;
-    pop(0, -60, `BANKED +${carry.toFixed(0)}`, '#78f7df');
+    pop(0, 0, `BANKED +${carry.toFixed(0)}`, '#78f7df');
     parts.burst(0, 0, 50, '#78f7df', 260, 3, 0.9);
     shake.kick(8);
     [523, 659, 784].forEach((f, i) => setTimeout(() => blip(f, 0.12, 'triangle', 0.22), i * 70));
     carry = 0;
   }
 
-  if (onRail && rover.v > 200 && Math.random() < 0.6) parts.trail(rover.x - Math.cos(rover.h) * 14, rover.y - Math.sin(rover.h) * 14, '#78f7df', 2, 0.35);
-  hum.set(Math.min(1, rover.v / (RAIL_BASE + RAIL_BONUS)), 50, onRail ? 160 : 70);
+  // Warning ticks as the dark gets close.
+  const gap = ringAt(Math.atan2(rover.y, rover.x)) - Math.hypot(rover.x, rover.y);
+  const rate = gap < 100 ? 6 : 3;
+  if (gap < 220 && Math.floor(time * rate) !== Math.floor((time - dt) * rate)) blip(gap < 100 ? 990 : 760, 0.04, 'square', 0.1);
+
+  if (rail && rover.v > 200 && Math.random() < 0.6) parts.trail(rover.x - Math.cos(rover.h) * 14, rover.y - Math.sin(rover.h) * 14, '#78f7df', 2, 0.35);
+  hum.set(Math.min(1, Math.abs(rover.v) / (RAIL_BASE + RAIL_BONUS)), 50, rail ? 160 : 70);
 }
 
 // --- drawing ------------------------------------------------------------------
 function draw(dt: number): void {
   const { w, h } = screen;
-  const zTarget = 1 - Math.min(0.32, rover.v / 1400);
+  const zTarget = 1 - Math.min(0.3, rover.v / 1500);
   cam.z += (zTarget - cam.z) * Math.min(1, 3 * dt);
-  const lead = Math.min(140, rover.v * 0.3);
-  cam.x += (rover.x + Math.cos(rover.h) * lead - cam.x) * Math.min(1, 5 * dt);
-  cam.y += (rover.y + Math.sin(rover.h) * lead - cam.y) * Math.min(1, 5 * dt);
+  const lead = Math.min(120, Math.max(0, rover.v) * 0.25);
+  followCam(cam, rover.x + Math.cos(rover.h) * lead, rover.y + Math.sin(rover.h) * lead, rover.h, dt, 6, rail ? 8 : 5);
   const sh = shake.offset(dt);
 
-  // Sky light fades toward sunset.
-  const dusk = started ? Math.max(0, 1 - sun / 22) : 0;
-  ctx.fillStyle = `rgb(${16 - 8 * dusk},${20 - 10 * dusk},${28 - 10 * dusk})`;
+  ctx.fillStyle = '#10141c';
   ctx.fillRect(0, 0, w, h);
-
   ctx.save();
-  ctx.translate(w / 2 + sh.x, h / 2 + sh.y);
-  ctx.scale(cam.z, cam.z);
-  ctx.translate(-cam.x, -cam.y);
+  applyCam(ctx, w, h, cam, sh);
 
-  // Ground scatter: craters and pebbles, fixed per cell so it doesn't swim.
+  // Ground scatter, fixed per cell. Cover the rotated view generously.
+  const reach = Math.hypot(w, h) / cam.z;
   const g = 90;
-  const x0 = Math.floor((cam.x - w / 2 / cam.z) / g) - 1;
-  const x1 = Math.ceil((cam.x + w / 2 / cam.z) / g) + 1;
-  const y0 = Math.floor((cam.y - h / 2 / cam.z) / g) - 1;
-  const y1 = Math.ceil((cam.y + h / 2 / cam.z) / g) + 1;
+  const x0 = Math.floor((cam.x - reach) / g);
+  const x1 = Math.ceil((cam.x + reach) / g);
+  const y0 = Math.floor((cam.y - reach) / g);
+  const y1 = Math.ceil((cam.y + reach) / g);
   for (let gx = x0; gx <= x1; gx += 1) {
     for (let gy = y0; gy <= y1; gy += 1) {
       const r = hash(gx, gy, 7);
       const px = gx * g + hash(gx, gy, 1) * g;
       const py = gy * g + hash(gx, gy, 2) * g;
-      if (r < 0.12) {
+      if (r < 0.1) {
         ctx.strokeStyle = 'rgba(120,140,170,0.16)';
         ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.arc(px, py, 10 + r * 160, 0, Math.PI * 2);
         ctx.stroke();
-      } else if (r < 0.6) {
-        ctx.fillStyle = 'rgba(140,160,190,0.14)';
+      } else if (r < 0.55) {
+        ctx.fillStyle = 'rgba(140,160,190,0.15)';
         ctx.fillRect(px, py, 3, 3);
       }
     }
@@ -407,54 +468,76 @@ function draw(dt: number): void {
   // Road.
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  for (const [pass, width, color] of [
-    [0, ROAD_W, '#173d40'],
-    [1, 8, onRail ? `rgba(120,247,223,${0.45 + 0.5 * charge})` : 'rgba(120,247,223,0.35)']
-  ] as const) {
-    void pass;
+  const glow = rail ? `rgba(120,247,223,${0.45 + 0.5 * charge})` : 'rgba(120,247,223,0.35)';
+  for (const [width, color] of [[ROAD_W, '#173d40'], [8, glow]] as const) {
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
     for (const line of lines) {
-      if (line.length < 2) continue;
+      if (line.pts.length < 2) continue;
       ctx.beginPath();
-      ctx.moveTo(line[0].x, line[0].y);
-      for (let i = 1; i < line.length; i += 1) ctx.lineTo(line[i].x, line[i].y);
+      ctx.moveTo(line.pts[0].x, line.pts[0].y);
+      for (let i = 1; i < line.pts.length; i += 1) ctx.lineTo(line.pts[i].x, line.pts[i].y);
       ctx.stroke();
     }
   }
 
-  // Seams.
+  // Seams (and the flash of one the night just took).
   for (const s of seams) {
-    if (s.ore <= 0.05) continue;
-    const f = s.ore / s.max;
+    if (s.ore <= 0.05 && s.gone <= 0) continue;
+    const f = s.ore > 0 ? s.ore / s.max : s.gone;
     ctx.save();
     ctx.translate(s.x, s.y);
     ctx.rotate(s.a);
-    ctx.fillStyle = `rgba(255,190,80,${0.12 + 0.1 * pulse})`;
+    ctx.fillStyle = s.ore > 0 ? `rgba(255,190,80,${0.12 + 0.1 * pulse})` : `rgba(160,120,255,${0.4 * s.gone})`;
     ctx.beginPath();
     ctx.ellipse(0, 0, s.len / 2 + 12, s.w / 2 + 12, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = `rgba(232,176,74,${0.35 + 0.6 * f})`;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, (s.len / 2) * (0.5 + 0.5 * f), (s.w / 2) * (0.5 + 0.5 * f), 0, 0, Math.PI * 2);
-    ctx.fill();
+    if (s.ore > 0) {
+      ctx.fillStyle = `rgba(232,176,74,${0.35 + 0.6 * f})`;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, (s.len / 2) * (0.5 + 0.5 * f), (s.w / 2) * (0.5 + 0.5 * f), 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 
   parts.draw(ctx);
 
+  // The night: everything outside the ring, with a glowing edge.
+  if (started) {
+    const ring: Vec[] = [];
+    for (let k = 0; k <= 120; k += 1) {
+      const a = (k / 120) * Math.PI * 2;
+      const R = ringAt(a);
+      ring.push({ x: Math.cos(a) * R, y: Math.sin(a) * R });
+    }
+    ctx.beginPath();
+    ctx.rect(-1e5, -1e5, 2e5, 2e5);
+    ring.forEach((p, k) => (k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(3,3,10,0.92)';
+    ctx.fill('evenodd');
+    for (const [width, alpha] of [[40, 0.12], [14, 0.3], [4, 0.9]] as const) {
+      ctx.strokeStyle = `rgba(150,110,255,${alpha})`;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ring.forEach((p, k) => (k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.stroke();
+    }
+  }
+
   // Rover.
   ctx.save();
   ctx.translate(rover.x, rover.y);
-  if (onRail) {
+  if (rail) {
     ctx.strokeStyle = `rgba(120,247,223,${0.3 + 0.6 * charge})`;
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(0, 0, 20, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * charge);
+    ctx.arc(0, 0, 22, 0, Math.PI * 2 * charge);
     ctx.stroke();
   }
   ctx.rotate(rover.h);
-  ctx.fillStyle = charge >= SCOOP_CHARGE && onRail ? '#fff1c4' : '#d9a441';
+  ctx.fillStyle = charge >= SCOOP_CHARGE && rail ? '#fff1c4' : '#d9a441';
   ctx.beginPath();
   ctx.moveTo(20, 0);
   ctx.lineTo(-13, 13);
@@ -463,72 +546,32 @@ function draw(dt: number): void {
   ctx.closePath();
   ctx.fill();
   ctx.restore();
+  ctx.restore();
 
+  // Floating text stays upright on screen.
   for (const p of pops) {
+    const s = camToScreen(cam, w, h, p.x, p.y);
     ctx.globalAlpha = Math.min(1, p.t * 1.5);
     ctx.fillStyle = p.color;
     ctx.font = 'bold 18px ui-monospace, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(p.text, p.x, p.y - (1.2 - p.t) * 40);
+    ctx.fillText(p.text, s.x, s.y - 34 - (1.2 - p.t) * 40);
   }
   ctx.globalAlpha = 1;
-  ctx.restore();
 
-  // Dusk wash.
-  if (dusk > 0) {
-    ctx.fillStyle = `rgba(40,10,30,${0.45 * dusk})`;
-    ctx.fillRect(0, 0, w, h);
-  }
-
-  // Depot arrow when it's off screen.
-  const dx = (0 - cam.x) * cam.z;
-  const dy = (0 - cam.y) * cam.z;
-  if (Math.abs(dx) > w / 2 - 20 || Math.abs(dy) > h / 2 - 20) {
-    const a = Math.atan2(dy, dx);
-    const k = Math.min((w / 2 - 28) / Math.abs(Math.cos(a) || 1e-6), (h / 2 - 40) / Math.abs(Math.sin(a) || 1e-6));
-    ctx.save();
-    ctx.translate(w / 2 + Math.cos(a) * k, h / 2 + Math.sin(a) * k);
-    ctx.rotate(a);
-    ctx.fillStyle = carry > 0 ? '#78f7df' : 'rgba(120,247,223,0.5)';
-    ctx.beginPath();
-    ctx.moveTo(12, 0);
-    ctx.lineTo(-8, 9);
-    ctx.lineTo(-8, -9);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-
-  // Nearest seams off screen: small amber ticks on the edge pointing at them.
-  const edgeMark = (wx: number, wy: number, color: string, size: number) => {
-    const ex = (wx - cam.x) * cam.z;
-    const ey = (wy - cam.y) * cam.z;
-    if (Math.abs(ex) < w / 2 - 20 && Math.abs(ey) < h / 2 - 20) return;
-    const a = Math.atan2(ey, ex);
-    const k = Math.min((w / 2 - 22) / Math.abs(Math.cos(a) || 1e-6), (h / 2 - 34) / Math.abs(Math.sin(a) || 1e-6));
-    ctx.save();
-    ctx.translate(w / 2 + Math.cos(a) * k, h / 2 + Math.sin(a) * k);
-    ctx.rotate(a);
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(size, 0);
-    ctx.lineTo(-size * 0.7, size * 0.7);
-    ctx.lineTo(-size * 0.7, -size * 0.7);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  };
+  // Off-screen pointers: home (cyan) and the three nearest live seams (amber).
   seams
     .filter((s) => s.ore > 0.5)
     .sort((a, b) => Math.hypot(a.x - rover.x, a.y - rover.y) - Math.hypot(b.x - rover.x, b.y - rover.y))
     .slice(0, 3)
-    .forEach((s) => edgeMark(s.x, s.y, 'rgba(232,176,74,0.75)', 7));
+    .forEach((s) => edgeArrow(ctx, w, h, cam, s.x, s.y, 'rgba(232,176,74,0.75)', 7));
+  edgeArrow(ctx, w, h, cam, 0, 0, carry > 0 ? '#78f7df' : 'rgba(120,247,223,0.55)', 11);
 
-  // HUD.
-  const f = sun / DAY;
+  // HUD: the night's reach, banked, carrying, rail state, distance to the dark.
+  const f = ringBase() / RING0;
   ctx.fillStyle = '#1b2230';
   ctx.fillRect(12, 12, w - 24, 8);
-  ctx.fillStyle = f < 0.25 ? '#ff8a5c' : '#ffd27a';
+  ctx.fillStyle = f < 0.25 ? '#b48cff' : '#8fa7ff';
   ctx.fillRect(12, 12, (w - 24) * f, 8);
   ctx.font = 'bold 16px ui-monospace, monospace';
   ctx.textAlign = 'left';
@@ -537,23 +580,29 @@ function draw(dt: number): void {
   ctx.textAlign = 'right';
   ctx.fillStyle = carry > 0 ? '#ffd27a' : '#6b7d92';
   ctx.fillText(`CARRY ${carry.toFixed(0)}`, w - 14, 42);
-  if (onRail) {
+  if (started && !over) {
+    const gap = ringAt(Math.atan2(rover.y, rover.x)) - Math.hypot(rover.x, rover.y);
     ctx.textAlign = 'center';
-    ctx.fillStyle = charge >= SCOOP_CHARGE ? '#fff1c4' : '#78f7df';
-    ctx.fillText(charge >= SCOOP_CHARGE ? (rover.v >= SCOOP_SPEED ? 'RAIL ⚡ SCOOP READY' : 'RAIL ⚡ speed up') : 'RAIL', w / 2, 42);
+    ctx.font = 'bold 14px ui-monospace, monospace';
+    ctx.fillStyle = gap < 120 ? '#ff8a5c' : '#b8a8ff';
+    ctx.fillText(`dark ${Math.max(0, Math.round(gap))}m`, w / 2, 64);
+    if (rail) {
+      ctx.fillStyle = charge >= SCOOP_CHARGE ? '#fff1c4' : '#78f7df';
+      ctx.fillText(charge >= SCOOP_CHARGE ? (rover.v >= SCOOP_SPEED ? 'RAIL ⚡ SCOOP READY' : 'RAIL ⚡ speed up') : 'RAIL', w / 2, 42);
+    }
   }
 
   if (!started && !over) {
     banner(ctx, w, h, 'HOME RUN', [
-      'Drag to drive. Road lays behind you.',
-      'Back on your road it\'s a rail: hold to ride,',
-      'release to stop. Hard turn (or slow + turn) to leave.',
-      'Fast on the rail through ore = scoop it all.',
-      `Bank at the ring before sunset.  best ${stats.best}`
+      'Up = go. Left/right = steer. Road lays behind you.',
+      'Drive onto your road: it’s a rail home. Hold up to ride,',
+      'let go to stop. Hold a full turn to hop off.',
+      'Fast through ore = scoop it. Night closes in: bank first.',
+      `best ${stats.best}`
     ]);
   }
   if (over) {
-    banner(ctx, w, h, lost > 0 ? 'STRANDED' : 'SUNSET', [
+    banner(ctx, w, h, caught ? 'THE NIGHT GOT YOU' : 'NIGHTFALL', [
       `banked ${banked.toFixed(0)}${lost > 0 ? `  ·  lost ${lost.toFixed(0)} in the dark` : ''}`,
       `best ${stats.best}  ·  played ${stats.plays}`,
       time - overAt > 0.8 ? 'tap to go again' : ''
@@ -563,7 +612,17 @@ function draw(dt: number): void {
 }
 
 // Read-only hook for headless checks.
-(window as unknown as { __toy?: () => unknown }).__toy = () => ({ started, over, onRail, rail: rail ? { ...rail, ang: railPoint(rail).ang } : null, lineCount: lines.length, offCentre: rail ? Math.hypot(rover.x - railPoint(rail).x, rover.y - railPoint(rail).y) : null, h: rover.h, charge, carry, banked, sun, v: rover.v, x: rover.x, y: rover.y, roadPoints: lines.reduce((n, l) => n + l.length, 0), plays: stats.plays, seams: seams.map((s) => ({ x: s.x, y: s.y, ore: s.ore })) });
+(window as unknown as { __toy?: () => unknown }).__toy = () => ({
+  started, over, caught, onRail: rail !== null, rail: rail ? { ...rail, ang: railPoint(rail).ang } : null,
+  lines: lines.map((l) => ({ n: l.pts.length, parent: l.parent, pts: l.pts.filter((_, k) => k % 3 === 0 || k === l.pts.length - 1) })), laying, h: rover.h, camRot: cam.rot, v: rover.v, x: rover.x, y: rover.y,
+  offCentre: rail ? Math.hypot(rover.x - railPoint(rail).x, rover.y - railPoint(rail).y) : null,
+  charge, carry, banked, ring: ringAt(Math.atan2(rover.y, rover.x)), dist: Math.hypot(rover.x, rover.y), seamsLive: seams.filter((s) => s.ore > 0).length,
+  seams: seams.map((s) => ({ x: s.x, y: s.y, ore: s.ore })), plays: stats.plays
+});
+// Headless checks can move the night on without touching gameplay constants.
+(window as unknown as { __toySkip?: (s: number) => void }).__toySkip = (s: number) => {
+  dayT += s;
+};
 
 reset();
 loop((dt) => {

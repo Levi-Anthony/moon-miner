@@ -95,6 +95,27 @@ export class Stick {
     return { dir: { x: x / m, y: y / m }, mag: Math.min(1, (m - 0.12) / 0.88) };
   }
 
+  // Up = forward, always (owner, 2026-09-29): read the stick as throttle and
+  // steer relative to the rover, not as a world direction. y > 0 is up
+  // (throttle), x > 0 is right. Each axis has its own dead zone.
+  axes(): Vec {
+    let x = 0;
+    let y = 0;
+    if (this.down) {
+      x = (this.at.x - this.origin.x) / this.radius;
+      y = -(this.at.y - this.origin.y) / this.radius;
+    } else {
+      const k = this.keys;
+      x = (k.has('d') || k.has('arrowright') ? 1 : 0) - (k.has('a') || k.has('arrowleft') ? 1 : 0);
+      y = (k.has('w') || k.has('arrowup') ? 1 : 0) - (k.has('s') || k.has('arrowdown') ? 1 : 0);
+    }
+    const dz = (v: number) => {
+      const a = Math.abs(v);
+      return a < 0.12 ? 0 : Math.sign(v) * Math.min(1, (a - 0.12) / 0.78);
+    };
+    return { x: dz(x), y: dz(y) };
+  }
+
   consumeTap(): boolean {
     const t = this.tapped;
     this.tapped = false;
@@ -260,6 +281,64 @@ export function recordPlay(toy: string, score: number): ToyStats {
     /* private mode: the toy still plays */
   }
   return next;
+}
+
+// --- heading-up camera ----------------------------------------------------------
+// The view turns with the rover so its heading always points up the screen.
+// `anchor` is how far down the screen the camera point sits (0.6 = a little
+// below centre, so you see more of what's ahead).
+export interface Cam {
+  x: number;
+  y: number;
+  rot: number; // the heading that points up
+  z: number;
+}
+
+export function applyCam(ctx: CanvasRenderingContext2D, w: number, h: number, cam: Cam, shake: Vec, anchor = 0.6): void {
+  ctx.translate(w / 2 + shake.x, h * anchor + shake.y);
+  ctx.scale(cam.z, cam.z);
+  ctx.rotate(-Math.PI / 2 - cam.rot);
+  ctx.translate(-cam.x, -cam.y);
+}
+
+export function camToScreen(cam: Cam, w: number, h: number, px: number, py: number, anchor = 0.6): Vec {
+  const a = -Math.PI / 2 - cam.rot;
+  const dx = px - cam.x;
+  const dy = py - cam.y;
+  return {
+    x: w / 2 + (dx * Math.cos(a) - dy * Math.sin(a)) * cam.z,
+    y: h * anchor + (dx * Math.sin(a) + dy * Math.cos(a)) * cam.z
+  };
+}
+
+// Ease the camera toward a target point and heading.
+export function followCam(cam: Cam, x: number, y: number, rot: number, dt: number, rate = 5, turnRate = 6): void {
+  cam.x += (x - cam.x) * Math.min(1, rate * dt);
+  cam.y += (y - cam.y) * Math.min(1, rate * dt);
+  cam.rot += angleTo(cam.rot, rot) * Math.min(1, turnRate * dt);
+}
+
+// A small arrow on the screen edge pointing at an off-screen world point.
+export function edgeArrow(ctx: CanvasRenderingContext2D, w: number, h: number, cam: Cam, px: number, py: number, color: string, size = 9, anchor = 0.6): void {
+  const p = camToScreen(cam, w, h, px, py, anchor);
+  if (p.x > 16 && p.x < w - 16 && p.y > 56 && p.y < h - 16) return;
+  const cx = w / 2;
+  const cy = h * anchor;
+  const a = Math.atan2(p.y - cy, p.x - cx);
+  const kx = (Math.cos(a) > 0 ? w - 18 - cx : cx - 18) / Math.abs(Math.cos(a) || 1e-6);
+  const ky = (Math.sin(a) > 0 ? h - 18 - cy : cy - 60) / Math.abs(Math.sin(a) || 1e-6);
+  const k = Math.min(kx, ky);
+  ctx.save();
+  ctx.translate(cx + Math.cos(a) * k, cy + Math.sin(a) * k);
+  ctx.rotate(a);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(size, 0);
+  ctx.lineTo(-size * 0.7, size * 0.75);
+  ctx.lineTo(-size * 0.7, -size * 0.75);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 }
 
 // --- misc ---------------------------------------------------------------------

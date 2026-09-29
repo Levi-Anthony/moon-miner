@@ -5,7 +5,7 @@
 // you slow and drain. The best ore is in the dark: crater floors, and whatever
 // the night has already swallowed. Dash in, grab it, get back to the light.
 // No road, no stock, no drone.
-import { Hum, Particles, Shake, Stick, angleTo, banner, blip, hash, loadStats, loop, makeScreen, recordPlay, rng } from './kit';
+import { Hum, Particles, Shake, Stick, applyCam, banner, blip, camToScreen, followCam, hash, loadStats, loop, makeScreen, recordPlay, rng, type Cam } from './kit';
 
 const TOY = 'terminator';
 const BAND = 1400; // playable height of the world
@@ -42,7 +42,7 @@ let over = false;
 let overAt = 0;
 let time = 0;
 let stats = loadStats(TOY);
-let cam = { x: 0, y: BAND / 2 };
+const cam: Cam = { x: 0, y: BAND / 2, rot: 0, z: 1 };
 let lowBeep = 0;
 
 function reset(): void {
@@ -56,7 +56,9 @@ function reset(): void {
   pops = [];
   started = false;
   over = false;
-  cam = { x: 0, y: BAND / 2 };
+  cam.x = 0;
+  cam.y = BAND / 2;
+  cam.rot = 0;
 }
 
 // World is generated in vertical strips as you go east.
@@ -122,8 +124,9 @@ function update(dt: number): void {
     return;
   }
   stick.consumeTap();
-  const { dir, mag } = stick.read();
-  if (mag > 0) started = true;
+  // Up = forward (owner, 2026-09-29): throttle and steer, not a world direction.
+  const ax = stick.axes();
+  if (ax.x !== 0 || ax.y !== 0) started = true;
   if (!started) return;
 
   nightSpeed = Math.min(NIGHT_MAX, nightSpeed + NIGHT_ACCEL * dt);
@@ -142,11 +145,10 @@ function update(dt: number): void {
 
   // Sunlight is speed: full pace in the light, down to a crawl as the cells drain.
   const top = TOP_SPEED * (0.35 + 0.65 * Math.max(lit, energy * 0.7));
-  const want = Math.atan2(dir.y, dir.x);
-  const turn = 5 - Math.min(2.5, rover.v / 90);
-  if (mag > 0) rover.h += Math.max(-turn * dt, Math.min(turn * dt, angleTo(rover.h, want)));
-  const target = top * mag;
-  rover.v += Math.sign(target - rover.v) * Math.min(Math.abs(target - rover.v), (rover.v > target ? 380 : 300) * dt);
+  const turn = rover.v < 10 ? 2 : 3.2 - Math.min(1.4, rover.v / 150);
+  rover.h += ax.x * turn * dt;
+  const target = ax.y >= 0 ? top * ax.y : -60 * -ax.y;
+  rover.v += Math.sign(target - rover.v) * Math.min(Math.abs(target - rover.v), (Math.abs(rover.v) > Math.abs(target) ? 380 : 300) * dt);
   rover.x += Math.cos(rover.h) * rover.v * dt;
   rover.y += Math.sin(rover.h) * rover.v * dt;
   if (rover.y < 20 || rover.y > BAND - 20) {
@@ -180,78 +182,77 @@ function update(dt: number): void {
 function draw(dt: number): void {
   const { w, h } = screen;
   const sh = shake.offset(dt);
-  cam.x += (rover.x + Math.cos(rover.h) * 60 - cam.x) * Math.min(1, 4 * dt);
-  cam.y += (Math.max(h / 2, Math.min(BAND - h / 2, rover.y)) - cam.y) * Math.min(1, 4 * dt);
-  const ox = w / 2 - cam.x + sh.x;
-  const oy = h / 2 - cam.y + sh.y;
+  followCam(cam, rover.x + Math.cos(rover.h) * 60, rover.y + Math.sin(rover.h) * 60, rover.h, dt, 4, 5);
+  const reach = Math.hypot(w, h);
 
-  // Day ground, then night painted over it from the left.
-  ctx.fillStyle = '#3a3f4b';
+  // Everything below is drawn in world space under a heading-up camera.
+  ctx.fillStyle = '#05070c';
   ctx.fillRect(0, 0, w, h);
+  ctx.save();
+  applyCam(ctx, w, h, cam, sh);
+  // Day ground (the playable band), then the night over it from the west.
+  ctx.fillStyle = '#3a3f4b';
+  ctx.fillRect(cam.x - reach, 0, reach * 2, BAND);
   const g = 80;
-  const x0 = Math.floor((cam.x - w / 2) / g) - 1;
-  const x1 = Math.ceil((cam.x + w / 2) / g) + 1;
-  const y0 = Math.floor((cam.y - h / 2) / g) - 1;
-  const y1 = Math.ceil((cam.y + h / 2) / g) + 1;
+  const x0 = Math.floor((cam.x - reach) / g);
+  const x1 = Math.ceil((cam.x + reach) / g);
+  const y0 = Math.max(0, Math.floor((cam.y - reach) / g));
+  const y1 = Math.min(Math.ceil(BAND / g), Math.ceil((cam.y + reach) / g));
   for (let gx = x0; gx <= x1; gx += 1) {
     for (let gy = y0; gy <= y1; gy += 1) {
-      const r = hash(gx, gy, 3);
-      if (r < 0.5) {
+      if (hash(gx, gy, 3) < 0.5) {
         ctx.fillStyle = 'rgba(20,24,32,0.25)';
-        ctx.fillRect(gx * g + hash(gx, gy, 4) * g + ox, gy * g + hash(gx, gy, 5) * g + oy, 3, 3);
+        ctx.fillRect(gx * g + hash(gx, gy, 4) * g, gy * g + hash(gx, gy, 5) * g, 3, 3);
       }
     }
   }
   // Craters: rim lit on the sun side (east), floor in shadow.
   const ci = Math.floor(cam.x / CHUNK);
-  for (let k = ci - 2; k <= ci + 2; k += 1) {
+  const span = Math.ceil(reach / CHUNK) + 1;
+  for (let k = ci - span; k <= ci + span; k += 1) {
     for (const c of chunk(k).craters) {
       ctx.fillStyle = 'rgba(8,10,16,0.85)';
       ctx.beginPath();
-      ctx.arc(c.x + ox, c.y + oy, c.r, 0, Math.PI * 2);
+      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = 'rgba(220,210,190,0.55)';
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.arc(c.x + ox, c.y + oy, c.r, -Math.PI / 2, Math.PI / 2);
+      ctx.arc(c.x, c.y, c.r, -Math.PI / 2, Math.PI / 2);
       ctx.stroke();
     }
   }
-  // The night.
-  const nx = night + ox;
-  if (nx > 0) {
-    ctx.fillStyle = '#05070c';
-    ctx.fillRect(0, 0, Math.min(w, nx), h);
-    for (let s = 0; s < 60; s += 1) {
-      const sx = hash(s, 1, 9) * w;
-      const sy = hash(s, 2, 9) * h;
-      if (sx < nx) {
-        ctx.fillStyle = `rgba(255,255,255,${0.2 + 0.5 * hash(s, 3, 9)})`;
-        ctx.fillRect(sx, sy, 1.5, 1.5);
-      }
-    }
-  }
-  const grad = ctx.createLinearGradient(nx, 0, nx + EDGE, 0);
+  // The night, with a soft edge and stars fixed in the world.
+  ctx.fillStyle = '#05070c';
+  ctx.fillRect(night - 5000, -2000, 5000, BAND + 4000);
+  const grad = ctx.createLinearGradient(night, 0, night + EDGE, 0);
   grad.addColorStop(0, 'rgba(5,7,12,1)');
   grad.addColorStop(1, 'rgba(5,7,12,0)');
   ctx.fillStyle = grad;
-  ctx.fillRect(nx, 0, EDGE, h);
+  ctx.fillRect(night, -2000, EDGE, BAND + 4000);
+  for (let gx = Math.floor((cam.x - reach) / 60); gx <= Math.ceil(Math.min(night, cam.x + reach) / 60); gx += 1) {
+    for (let gy = Math.floor((cam.y - reach) / 60); gy <= Math.ceil((cam.y + reach) / 60); gy += 1) {
+      const r = hash(gx, gy, 9);
+      if (r < 0.08 && gx * 60 < night) {
+        ctx.fillStyle = `rgba(255,255,255,${0.2 + 5 * r})`;
+        ctx.fillRect(gx * 60 + hash(gx, gy, 10) * 60, gy * 60 + hash(gx, gy, 11) * 60, 1.5, 1.5);
+      }
+    }
+  }
 
   // Ore: amber in the light, violet glints in the dark.
-  for (let k = ci - 2; k <= ci + 2; k += 1) {
+  for (let k = ci - span; k <= ci + span; k += 1) {
     for (const o of chunk(k).ore) {
       if (o.taken) continue;
       const dark = light(o.x, o.y) < 0.5;
       const pulse = 0.6 + 0.4 * Math.sin(time * 4 + o.x);
       ctx.fillStyle = dark ? `rgba(201,160,255,${pulse})` : '#e8b04a';
       ctx.beginPath();
-      ctx.arc(o.x + ox, o.y + oy, o.v > 1 ? 8 : 5, 0, Math.PI * 2);
+      ctx.arc(o.x, o.y, o.v > 1 ? 8 : 5, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  ctx.save();
-  ctx.translate(ox, oy);
   parts.draw(ctx);
   // Rover: its glow is its charge.
   ctx.translate(rover.x, rover.y);
@@ -268,21 +269,20 @@ function draw(dt: number): void {
   ctx.restore();
 
   for (const p of pops) {
+    const q = camToScreen(cam, w, h, p.x, p.y);
     ctx.globalAlpha = Math.min(1, p.t * 1.5);
     ctx.fillStyle = p.color;
     ctx.font = 'bold 16px ui-monospace, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(p.text, p.x + ox, p.y + oy - (1.1 - p.t) * 36);
+    ctx.fillText(p.text, q.x, q.y - (1.1 - p.t) * 36);
   }
   ctx.globalAlpha = 1;
 
-  // Night-behind arrow when the line is off screen to the left.
-  if (nx < 0) {
-    ctx.fillStyle = '#9fb3ff';
-    ctx.font = 'bold 13px ui-monospace, monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(`◀ night ${Math.round(rover.x - night)}m`, 12, h - 20);
-  }
+  // How far behind you the night is.
+  ctx.fillStyle = rover.x - night < 250 ? '#ff8a5c' : '#9fb3ff';
+  ctx.font = 'bold 13px ui-monospace, monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(`night ${Math.max(0, Math.round(rover.x - night))}m behind`, 12, h - 20);
 
   // HUD: charge, score, distance.
   ctx.fillStyle = '#1b2230';
@@ -299,7 +299,7 @@ function draw(dt: number): void {
 
   if (!started && !over) {
     banner(ctx, w, h, 'TERMINATOR', [
-      'Drag to drive. Sunlight is your power.',
+      'Up = go, left/right = steer. Sunlight is your power.',
       'Night sweeps in from the west, faster and faster.',
       'Ore in the dark is worth double: dive in, get out.',
       `best ${stats.best}`
