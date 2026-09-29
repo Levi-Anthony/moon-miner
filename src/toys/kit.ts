@@ -392,3 +392,91 @@ export function banner(ctx: CanvasRenderingContext2D, w: number, h: number, titl
   lines.forEach((l, i) => ctx.fillText(l, w / 2, h * 0.47 + i * 24));
   ctx.restore();
 }
+
+// --- toy run data --------------------------------------------------------------
+// Toys log their runs locally and hand them to the same "[run-data]" GitHub
+// issue path the main game uses (scripts/ingest-run.mjs), in the same packed
+// format (deflate-raw + base64url in a ```moon-miner-runs-z fence). Copied, not
+// imported, so the toys stay isolated from src/three.
+export interface ToyRun {
+  v: 1;
+  id: string;
+  at: string;
+  build: string;
+  seed: string;
+  mode: string; // e.g. 'toy:home-run:contract'
+  level: number | null;
+  levelName: string | null;
+  day: number;
+  result: string;
+  ore: number;
+  quota: number;
+  sent?: boolean;
+  [extra: string]: unknown;
+}
+
+const TOY_RUNS_KEY = 'mm-toy-runs-v1';
+const TOY_RUNS_MAX = 60;
+const ISSUE_URL_MAX = 7500;
+export const TOY_RUN_REPO = 'Levi-Anthony/moon-miner';
+
+declare const __BUILD_SHA__: string;
+const build = (): string => {
+  try {
+    return typeof __BUILD_SHA__ === 'string' ? __BUILD_SHA__ : 'dev';
+  } catch {
+    return 'dev';
+  }
+};
+
+export function loadToyRuns(): ToyRun[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TOY_RUNS_KEY) ?? '[]');
+    return Array.isArray(raw) ? (raw as ToyRun[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveToyRuns(runs: ToyRun[]): void {
+  try {
+    localStorage.setItem(TOY_RUNS_KEY, JSON.stringify(runs.slice(-TOY_RUNS_MAX)));
+  } catch {
+    /* private mode: the run just isn't kept */
+  }
+}
+
+export function logToyRun(run: Omit<ToyRun, 'v' | 'id' | 'at' | 'build'>): ToyRun {
+  const now = new Date();
+  const rec = { ...run, v: 1, id: `${now.getTime().toString(36)}-${run.seed}`.slice(0, 64), at: now.toISOString(), build: build() } as ToyRun;
+  saveToyRuns([...loadToyRuns(), rec]);
+  return rec;
+}
+
+export function markToyRunsSent(ids: Set<string>): void {
+  saveToyRuns(loadToyRuns().map((r) => (ids.has(r.id) ? { ...r, sent: true } : r)));
+}
+
+async function packToyRuns(runs: ToyRun[]): Promise<string> {
+  const json = JSON.stringify(runs.map(({ sent: _sent, ...rest }) => rest));
+  const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Newest runs that fit one new-issue link. Returns how many made it.
+export async function toyIssueUrl(runs: ToyRun[]): Promise<{ url: string; count: number }> {
+  let n = runs.length;
+  for (;;) {
+    const batch = runs.slice(-n);
+    const lines = batch.slice(-8).map((r) => `- ${r.at.slice(0, 16).replace('T', ' ')} · ${r.mode} · ${r.result} · ${r.ore}${r.quota ? `/${r.quota}` : ''}`);
+    if (batch.length > 8) lines.unshift(`- …and ${batch.length - 8} earlier`);
+    const body = `${lines.join('\n')}\n\n\`\`\`moon-miner-runs-z\n${await packToyRuns(batch)}\n\`\`\`\n`;
+    const title = `[run-data] ${batch.length} toy run${batch.length === 1 ? '' : 's'}`;
+    const url = `https://github.com/${TOY_RUN_REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+    if (url.length <= ISSUE_URL_MAX || n <= 1) return { url, count: n };
+    n -= 1;
+  }
+}

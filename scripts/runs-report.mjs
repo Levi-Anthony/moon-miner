@@ -7,6 +7,7 @@
 //   npm run runs               # table of every stored run
 //   npm run runs -- --last 20  # only the newest 20
 //   npm run runs -- --json     # raw records
+//   npm run runs -- --toys     # the throwaway toys' runs instead (toys/README.md)
 import { existsSync, readFileSync } from 'node:fs';
 import { RUNS_FILE } from './ingest-run.mjs';
 
@@ -21,7 +22,11 @@ if (!existsSync(RUNS_FILE)) {
   process.exit(0);
 }
 
-const runs = readFileSync(RUNS_FILE, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+const all = readFileSync(RUNS_FILE, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+// Toy runs (mode 'toy:…') have their own shape; keep them out of main-game stats.
+const toys = argv.includes('--toys');
+const isToy = (r) => String(r.mode).startsWith('toy:');
+const runs = all.filter((r) => isToy(r) === toys);
 const shown = runs.slice(-last);
 
 if (argv.includes('--json')) {
@@ -29,6 +34,25 @@ if (argv.includes('--json')) {
   process.exit(0);
 }
 
+if (toys) {
+  console.log(`${runs.length} toy run(s)${shown.length < runs.length ? `, newest ${shown.length} shown` : ''}`);
+  console.log('| ended (UTC) | build | mode | result | ore/quota | nights | score | peak x | trips | upgrades | daily | distance | rail share |');
+  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+  for (const r of shown) {
+    console.log(`| ${r.at.slice(0, 16).replace('T', ' ')} | ${r.build} | ${r.mode.replace('toy:', '')} | ${r.result} | ${r.ore}${r.quota ? `/${r.quota}` : ''} | ${r.nightsCleared ?? '-'} | ${r.score ?? '-'} | ${r.multPeak ?? '-'} | ${r.trips ?? '-'} | ${(r.upgrades ?? []).join(',') || '-'} | ${r.daily ? 'yes' : 'no'} | ${r.distance ?? '-'} | ${r.railShare ?? '-'} |`);
+  }
+  const byMode = new Map();
+  for (const r of runs) {
+    const e = byMode.get(r.mode) ?? { n: 0, best: 0 };
+    e.n += 1;
+    e.best = Math.max(e.best, r.score ?? r.ore);
+    byMode.set(r.mode, e);
+  }
+  if (byMode.size) console.log('\nPer mode: runs · best');
+  for (const [m, e] of byMode) console.log(`  ${m}: ${e.n} · ${e.best}`);
+  process.exit(0);
+}
+if (all.length > runs.length) console.log(`(${all.length - runs.length} toy run(s) hidden; npm run runs -- --toys)`);
 console.log(`${runs.length} stored run(s)${shown.length < runs.length ? `, newest ${shown.length} shown` : ''} — ${RUNS_FILE.replace(process.cwd() + '/', '')}`);
 console.log('| ended (UTC) | build | level | result | ore/quota | sun left/window | elapsed | prep/fab/crawl/mine s | drone | min stock | device | knobs changed |');
 console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');

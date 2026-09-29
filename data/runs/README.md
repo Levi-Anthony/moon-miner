@@ -18,6 +18,10 @@
 - Check the "Ingest run data" workflow runs and any open `[run-data]` issues for errors.
 - Say what you checked. Don't say "there is no run data" without looking here and at those two places.
 
+## Toy runs
+
+The throwaway toys (`toys/`) log their runs too, with `mode` starting `toy:` (e.g. `toy:home-run:contract`). The toys index page has **Send toy runs**, which uses the same issue path. `npm run runs` hides them; `npm run runs -- --toys` shows only them. Extra toy fields: `nightsCleared`, `upgrades`, `credit`, `score`, `multPeak`, `trips`, `seconds`, `daily`, `distance`, `railShare`.
+
 ## Record fields (version 1)
 
 `id`, `at` (UTC end time), `build` (commit the live build came from), `seed` (world seed: `<game>:L<n>` in Levels mode until 2026-09-27, then `<game>:S<n>`, one map per shift), `mode`, `level`, `levelName`, `day` (Levels: day within the shift, from 2026-09-27), `result` (`cleared` / `under-quota` / `lost`, or `won` / `sandbox-lost` in Sandbox), `ore`, `quota`, `sunLeft`, `sunWindow`, `elapsed`, `startStock` (what the day began with; Levels start full from 2026-09-27), `parSeconds`, `parSeams`, `bonus`, `slide`, `secs` (seconds prepared / fabricating / crawl / mining), `droneLaunches`, `minStock`, `distance`, `device`, `knobs` (only settings changed from the defaults), `source` (the issue it came from).

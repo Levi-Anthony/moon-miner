@@ -1949,3 +1949,13 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **The road is a tree rooted at the depot.** Each branch records its parent, so the ride inward is a lookup to home, not a nearest-segment search.
   - **Rail entry and exit:** generous grab; exit only by a held full steer or steer while stopped; no re-grab until you're clear of the road.
   - **Night ring:** closes in from the edges and replaces the sun bar. The owner picked this pressure; rejected for now: one sortie per run, stock-costed road, a time-to-home marker.
+- **Outer loop: Contract and Endless Night (2026-09-29):**
+  - **The owner's read:** after playing the toys and the main build, "the seam or bottleneck is another level up".
+  - **What's missing:** a reason to go again, real choices, something to build toward, and real stakes (all four). The owner couldn't choose between four loop shapes; all read as valid modes.
+  - **Where tested:** on the Home Run toy, with two contrasting loops around the same run core:
+    - **Contract:** 5 nights, rising quota, upgrades bought with surplus. Road, seams and outposts persist, and new far seams appear each night.
+    - **Endless Night:** banking pushes back an accelerating night and raises a multiplier.
+  - **Daily map** is a seed toggle on both. "Grow a network" is folded into Contract (a persistent road plus Outposts).
+  - **Run data:** toy runs now go through the `[run-data]` path as `mode: 'toy:…'`, and `npm run runs -- --toys` reports them.
+  - **Run data at the time:** the main game's two newest runs (L9, L10) showed no tension (5× quota, stock never below 19/24, no crawl or drone).
+  - **Next:** port the winning loop into the main 3D build, whose moment-to-moment the owner prefers.
