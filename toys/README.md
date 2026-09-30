@@ -64,6 +64,7 @@ The owner's verdict on Endless Night: "I think we actually found something," and
 - **Strategy has room.** An unbanked night lasts about 65 s (was about 45). New ore after a bank lands mostly beyond the tips of your road, so extending a line toward the border pays off.
 - **You can win: reach dawn.** Bank 150 before the dark reaches home and dawn breaks. The top bar is the dawn bar, with what you carry drawn ahead of it, so you can see when banking now would win.
 - **Hard** (title toggle): the dark kills off your road.
+- **END** (top left, under the HUD) ends a run cleanly, and the run is logged as `quit`.
 - **Getting on is easy too.** Turning round onto the road you just laid grabs it at once, and driving onto any road within 80° of its line grabs it. Only a square crossing drives across. Each missed grab is logged with its reason.
 - The rules are one data object (`NightRules`), so a harder level or another mode is a change of numbers.
 

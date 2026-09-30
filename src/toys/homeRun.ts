@@ -30,6 +30,10 @@ const GRAB = 30;
 // it (was 70). Only a square crossing drives across it.
 const GRAB_ALIGN = Math.cos((80 * Math.PI) / 180);
 const FRESH = 12;
+// After a deliberate hop-off you stay off for this much travel (unless you turn
+// back or get clear of the road): enough to lay away from it, not enough to
+// block you when you change your mind (owner's run data, issue #77).
+const REARM_DIST = 60;
 const FLIP_HOLD = 0.25;
 const POINT_GAP = 14;
 const DEPOT_R = 46;
@@ -142,6 +146,9 @@ let rail: Rail | null = null;
 let steerHeld = 0;
 let armed = true;
 let leftAng = 0; // the way the rail was heading when you last came off it
+let leftHow: 'hop' | 'tip' | null = null; // how you last came off it
+let sinceLeft = 0; // px travelled since then
+let clearOfLeft = true; // been off the road since leaving it (so coming back is a try to get on)
 let backHeld = 0;
 let charge = 0;
 let chain = 0;
@@ -171,6 +178,8 @@ let autoBanks = 0;
 let hopOffs = 0;
 let grabs = 0;
 let missedGrabs = { angle: 0, unarmed: 0, recovered: 0 }; // times over your road without getting on
+let misses: { why: string; deg: number; since: number; how: string | null; t: number }[] = [];
+let quit = false; // the run was ended with the End button
 let missing = false; // over the road right now without having got on
 let runLogged = false;
 let dawnBroke = false; // endless: banked enough, the run is won
@@ -287,6 +296,9 @@ function startNight(): void {
   steerHeld = 0;
   armed = true;
   missing = false;
+  leftHow = null;
+  sinceLeft = 0;
+  clearOfLeft = true;
   backHeld = 0;
   charge = 0;
   chain = 0;
@@ -336,6 +348,8 @@ function startMode(m: Mode): void {
   strandLoad = 0;
   grabs = 0;
   missedGrabs = { angle: 0, unarmed: 0, recovered: 0 };
+  misses = [];
+  quit = false;
   runLogged = false;
   newMap();
   startNight();
@@ -505,6 +519,9 @@ function hopOff(side: number): void {
   addPoint(laying, at);
   rover.h = at.ang + side * 0.6;
   leftAng = at.ang;
+  leftHow = 'hop';
+  sinceLeft = 0;
+  clearOfLeft = false;
   rail = null;
   armed = false;
   if (!mods.chainKeeper) chain = 0;
@@ -544,7 +561,7 @@ function logRun(result: string): void {
   if (runLogged) return;
   runLogged = true;
   const common = {
-    seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(dist), railShare: dist > 0 ? +(railDist / dist).toFixed(2) : 0, hopOffs, grabs, missedGrabs: { ...missedGrabs }
+    seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(dist), railShare: dist > 0 ? +(railDist / dist).toFixed(2) : 0, hopOffs, grabs, missedGrabs: { ...missedGrabs }, misses: misses.slice()
   };
   if (mode === 'contract') {
     logToyRun({
@@ -674,7 +691,12 @@ function update(dt: number): void {
     return;
   }
 
-  stick.consumeTap();
+  // The End button ends the run cleanly (logged 'quit'), so a run left early
+  // isn't mistaken for a closed page.
+  if (stick.consumeTap() && tapIn(endRect())) {
+    endRun();
+    return;
+  }
   const ax = stick.axes();
   if (ax.x !== 0 || ax.y !== 0) started = true;
   if (!started) return;
@@ -757,10 +779,13 @@ function update(dt: number): void {
       if (res === 'home') {
         rover.v = 0;
       } else if (res === 'tip') {
+        // Riding off the end of your road doesn't lock you out of the rail: the
+        // road behind you is fresh and ignored while you head on outward.
         laying = rail.line;
         rail = null;
-        armed = false;
         leftAng = p.ang;
+        leftHow = 'tip';
+        sinceLeft = 0;
         rover.h = p.ang;
         rover.v = Math.min(rover.v, LAY_SPEED * 1.3);
         if (!mods.chainKeeper) chain = 0;
@@ -785,7 +810,9 @@ function update(dt: number): void {
       if (Math.hypot(rover.x - last.x, rover.y - last.y) >= POINT_GAP) addPoint(laying, rover);
     }
     const road = nearestRoad(rover);
-    if (!armed && (!road || road.d > GRAB + 10)) armed = true;
+    sinceLeft += Math.abs(rover.v) * dt;
+    if (!road || road.d >= GRAB) clearOfLeft = true;
+    if (!armed && (!road || road.d > GRAB + 10 || sinceLeft >= REARM_DIST)) armed = true;
     // Grab: driving onto your road within 80 degrees of its line. Each time
     // you're over your road with the throttle on and don't get on, log why, so
     // run data shows what "hard to get on" is made of.
@@ -799,16 +826,29 @@ function update(dt: number): void {
     const turnedBack = Math.cos(rover.h - leftAng) < -0.17;
     const free = armed || turnedBack;
     const grab = over && free && Math.abs(along) >= GRAB_ALIGN;
-    if (over && !grab && !missing) {
+    // Still on the road you just hopped off: that's the hop-off, not a miss.
+    if (over && !grab && !missing && (free || clearOfLeft)) {
       missing = true;
       if (!free) missedGrabs.unarmed += 1;
       else missedGrabs.angle += 1;
+      // What each miss looked like: why, how far off the road's line you were
+      // heading, how far you'd come since leaving the rail, and how you left it.
+      if (misses.length < 24) {
+        misses.push({
+          why: free ? 'angle' : 'unarmed',
+          deg: Math.round((Math.acos(Math.min(1, Math.abs(along))) * 180) / Math.PI),
+          since: Math.round(sinceLeft),
+          how: leftHow,
+          t: Math.round(elapsed)
+        });
+      }
     }
     if (!over) missing = false;
     if (grab && road) {
       grabs += 1;
       if (missing) missedGrabs.recovered += 1;
       missing = false;
+      armed = true;
       rail = { line: road.line, i: road.i, t: road.t, dir: along >= 0 ? 1 : -1 };
       if (laying === lines.length - 1 && lines[laying].pts.length < 2 && lines[laying].parent) lines.pop();
       laying = -1;
@@ -867,6 +907,16 @@ function update(dt: number): void {
 
   if (rail && rover.v > 200 && Math.random() < 0.6) parts.trail(rover.x - Math.cos(rover.h) * 14, rover.y - Math.sin(rover.h) * 14, '#78f7df', 2, 0.35);
   hum.set(Math.min(1, Math.abs(rover.v) / (mods.railBase + mods.railBonus)), 50, rail ? 160 : 70);
+}
+
+function endRect(): Rect {
+  return { x: 12, y: 66, w: 64, h: 28 };
+}
+
+function endRun(): void {
+  quit = true;
+  if (mode === 'contract') totalBanked += banked;
+  gameOver('quit');
 }
 
 // Endless: enough banked, dawn breaks. The night lifts off the whole field and
@@ -1363,7 +1413,7 @@ function drawOver(): void {
   const { w, h } = screen;
   const again = time - phaseAt > 0.8 ? 'tap for the menu' : '';
   if (mode === 'contract') {
-    const title = contractWon ? 'CONTRACT COMPLETE' : `NIGHT ${night} SHORT`;
+    const title = contractWon ? 'CONTRACT COMPLETE' : quit ? 'CONTRACT ENDED' : `NIGHT ${night} SHORT`;
     banner(ctx, w, h, title, [
       `${contractWon ? QUOTAS.length : night - 1} of ${QUOTAS.length} nights · banked ${totalBanked.toFixed(0)} · credit ${credit.toFixed(0)}`,
       contractWon ? `score ${(totalBanked + credit).toFixed(0)}` : `needed ${quota()}, banked ${banked.toFixed(0)}${lost > 0.5 ? ` · lost ${lost.toFixed(0)} in the dark` : ''}`,
@@ -1379,7 +1429,7 @@ function drawOver(): void {
         again
       ]);
     } else {
-      banner(ctx, w, h, strandLoad > 0.5 ? 'STRANDED' : 'NIGHTFALL', [
+      banner(ctx, w, h, quit ? 'RUN ENDED' : strandLoad > 0.5 ? 'STRANDED' : 'NIGHTFALL', [
         `dawn ${banked.toFixed(0)}/${ENDLESS.dawnOre}${strandLoad > 0.5 ? ` · stranded with ${strandLoad.toFixed(0)}` : ''}`,
         `score ${score.toFixed(0)} · ${trips} trips · peak x${multPeak} · ${Math.round(elapsed)} s`,
         `best ${statsE.best} · played ${statsE.plays}`,
@@ -1396,7 +1446,25 @@ function draw(dt: number): void {
     if (phase === 'shop') drawShop();
     if (phase === 'over') drawOver();
   }
-  if (phase === 'play') stick.draw(ctx);
+  if (phase === 'play') {
+    drawEndButton();
+    stick.draw(ctx);
+  }
+}
+
+function drawEndButton(): void {
+  const r = endRect();
+  ctx.fillStyle = 'rgba(11,15,22,0.8)';
+  ctx.strokeStyle = '#3a4658';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(r.x, r.y, r.w, r.h, 8);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#8fa3ba';
+  ctx.font = 'bold 13px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('END', r.x + r.w / 2, r.y + 19);
 }
 
 // --- headless hooks (read-only state, plus test shortcuts) ---------------------------

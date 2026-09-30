@@ -2045,3 +2045,12 @@ New merges add a row here. Decisions in this range that change what older entrie
   - light the beacons (a road-network objective)
   - rising targets
   - beat your best
+- **Rail lockout trimmed, End button (2026-09-30, DEV-68):** issue #77 holds the first two runs on the dawn build. Both ended "abandoned" (page closed) at 64 and 108 banked, in 68–76 s. Missed grabs after PR #75:
+  - Still 4 and 10 from the rule that you had to be 40 px clear of the road after leaving the rail.
+  - 2 and 4 rejoined after a miss.
+
+  So turning back worked, but coming off and angling back on the same way still hit the lockout. Now:
+  - **Riding off the end of your road no longer locks you out.** The road behind you is fresh and ignored anyway.
+  - **After a deliberate hop-off, you stay off for 60 px of travel** (or until you get clear of the road, or turn back).
+  - **Every miss is logged with its context:** why, angle to the road, distance since leaving the rail, how you left it, and the time. A miss counts only if you'd pulled clear of the road first, so the hop-off itself isn't one.
+  - **An End button** (top left, under the HUD) ends a run cleanly as `quit`. Before, a run left early looked the same as a page closed to send runs.
