@@ -27,7 +27,8 @@ import { RoadModel, DEFAULT_ROAD_CONFIG, type RoadConfig, type RoadEdge, type Ro
 import { Campaign, DEFAULT_LOOP_CONFIG, type LoopConfig } from './loop';
 import { pushOutOfCraters } from './craters';
 import { START_BEARING, sunState } from './sun';
-import { RUN_HISTORY_KEY, runIssueUrlPacked, appendRun, buildRunRecord, createRunStats, accumulateRunStats, diffKnobs, loadRunHistory, runIssueUrl, saveRunHistory, unsentRuns, type RunRecord, type RunStats } from './runRecord';
+import { allRuns, markSentAll, sendAllUrl, sendLabel as sendLabelText, unsentAll, type AnyRun } from '../runs/sendAll';
+import { RUN_HISTORY_KEY, appendRun, buildRunRecord, createRunStats, accumulateRunStats, diffKnobs, loadRunHistory, runIssueUrl, saveRunHistory, type RunRecord, type RunStats } from './runRecord';
 import { createPanel, DEFAULT_CAMERA_CONFIG, DEFAULT_CONTROLS_CONFIG, DEFAULT_TERRAIN_CONFIG, type CameraConfig, type ControlsConfig, type TerrainConfig } from './panel';
 import { stickToInput } from './stick';
 import { levelSpec } from '../game/level';
@@ -1188,32 +1189,34 @@ hud.banner.addEventListener('pointerdown', onContinue);
 // unsent runs ride along with the next send.
 const sendRunsBtn = el('send-runs') as HTMLButtonElement;
 const runsNote = el('runs-note');
-let pendingSend: RunRecord[] = [];
+// Every Send button sends every unsent run this browser has: the main game's
+// and the toys' (src/runs/sendAll.ts; owner, 2026-09-30, after a main-game
+// send left the Contract/Endless runs behind in issue #62).
+let pendingSend: AnyRun[] = [];
 // Packed issue links, built ahead of the tap: compression is async, and a
 // window.open outside the tap's own handler is blocked as a pop-up. Keyed by
 // the ids they carry so a stale one is never used; the plain-JSON link (fewer
 // runs) is the fallback when none is ready.
-interface PreparedSend { key: string; url: string; count: number }
+interface PreparedSend { key: string; url: string; count: number; toys: number }
 let preparedPending: PreparedSend | null = null;
 let preparedAll: PreparedSend | null = null;
-const sendKey = (rs: RunRecord[]) => rs.map((r) => r.id).join('|');
-async function prepareSend(rs: RunRecord[]): Promise<PreparedSend | null> {
+const sendKey = (rs: AnyRun[]) => rs.map((r) => r.id).join('|');
+async function prepareSend(rs: AnyRun[]): Promise<PreparedSend | null> {
   if (!rs.length) return null;
   try {
-    const { url, count } = await runIssueUrlPacked(RUN_REPO, rs);
-    return { key: sendKey(rs), url, count };
+    return { key: sendKey(rs), ...(await sendAllUrl(rs, RUN_REPO)) };
   } catch {
     return null; // no CompressionStream: the plain link still works
   }
 }
-function linkFor(rs: RunRecord[], cache: PreparedSend | null): { url: string; count: number } {
-  return cache && cache.key === sendKey(rs) ? cache : runIssueUrl(RUN_REPO, rs);
+function linkFor(rs: AnyRun[], cache: PreparedSend | null): { url: string; count: number } {
+  return cache && cache.key === sendKey(rs) ? cache : runIssueUrl(RUN_REPO, rs as unknown as RunRecord[]);
 }
 // The button says exactly what the next issue will carry.
 function sendLabel(): void {
-  const n = pendingSend.length;
   const { count } = linkFor(pendingSend, preparedPending);
-  sendRunsBtn.textContent = n <= 1 ? 'Send run data' : count >= n ? `Send ${n} runs` : `Send ${count} of ${n} runs`;
+  const toys = pendingSend.slice(-count).filter((r) => String(r.mode).startsWith('toy:')).length;
+  sendRunsBtn.textContent = sendLabelText(pendingSend.length, count, toys);
 }
 function refreshPrepared(): void {
   const rs = pendingSend.slice();
@@ -1223,7 +1226,7 @@ function refreshPrepared(): void {
       sendLabel();
     }
   });
-  const all = loadRunHistory(storage());
+  const all = allRuns(storage());
   void prepareSend(all).then((p) => {
     if (p) preparedAll = p;
   });
@@ -1252,8 +1255,8 @@ function recordRun(levelRun: typeof campaign.level): void {
   });
   const history = appendRun(loadRunHistory(storage()), record);
   const saved = saveRunHistory(storage(), history);
-  pendingSend = unsentRuns(history);
-  if (!saved) pendingSend = [record]; // no storage: still offer this run
+  pendingSend = unsentAll(storage());
+  if (!saved) pendingSend = [record as unknown as AnyRun]; // no storage: still offer this run
   const n = pendingSend.length;
   runsNote.textContent = saved
     ? `${n} run${n === 1 ? '' : 's'} not yet sent. Opens GitHub; press Submit there.`
@@ -1275,9 +1278,8 @@ function sendRuns(cache: PreparedSend | null = preparedPending): void {
     // Pop-up blocked: navigate this tab instead; the run is already saved locally.
     window.location.href = url;
   }
-  const history = loadRunHistory(storage()).map((r) => (sentIds.has(r.id) ? { ...r, sent: true } : r));
-  saveRunHistory(storage(), history);
-  pendingSend = unsentRuns(history);
+  markSentAll(storage(), sentIds);
+  pendingSend = unsentAll(storage());
   const left = pendingSend.length;
   runsNote.textContent = left
     ? `Opened GitHub with the newest ${count}; press Submit there. ${left} older run${left === 1 ? '' : 's'} still to send.`
@@ -1635,7 +1637,7 @@ createPanel({
   newGame,
   fullReset,
   sendAllRuns: () => {
-    const all = loadRunHistory(storage());
+    const all = allRuns(storage());
     if (!all.length) return 0;
     pendingSend = all;
     const cache = preparedAll;

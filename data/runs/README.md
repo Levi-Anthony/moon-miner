@@ -6,6 +6,7 @@
 
 1. Every finished level in the live build saves a run record in the browser (`src/three/runRecord.ts`, localStorage key `mm3d-runs-v1`, last 50 runs).
 2. The end-of-level banner has **Send run data**. The ⚙ panel has **Send saved runs**, which re-sends everything saved in that browser. Either one opens a GitHub issue titled `[run-data] …`, pre-filled with the records: a compressed ```` ```moon-miner-runs-z ```` block (deflate-raw + base64url, from 2026-09-27; about 30 runs fit one issue) or, as a fallback, plain ```` ```json moon-miner-runs ```` JSON. The button says how many runs the issue will carry. The owner presses Submit.
+   Every Send button (end-of-level banner, ⚙ panel, toys page) sends every unsent run in that browser, main game and toys together (`src/runs/sendAll.ts`, from 2026-09-30). Issue #62 carried 48 main-game runs and none of the toy runs, which is why the buttons became one.
 3. `.github/workflows/ingest-run.yml` validates the records (`scripts/ingest-run.mjs`), appends new ones here (runs it already has are skipped by `id`), commits to `main`, and closes the issue with a comment. A malformed issue gets a comment saying what was wrong and stays open. Only issues from the owner or collaborators are ingested.
 
 ## Agent-played runs
@@ -20,7 +21,7 @@
 
 ## Toy runs
 
-The throwaway toys (`toys/`) log their runs too, with `mode` starting `toy:` (e.g. `toy:home-run:contract`). The toys index page has **Send toy runs**, which uses the same issue path. `npm run runs` hides them; `npm run runs -- --toys` shows only them. Extra toy fields: `nightsCleared`, `upgrades`, `credit`, `score`, `multPeak`, `trips`, `seconds`, `daily`, `distance`, `railShare`.
+The throwaway toys (`toys/`) log their runs too, with `mode` starting `toy:` (e.g. `toy:home-run:contract`). Any Send button sends them along with the main game's runs. `npm run runs` hides them; `npm run runs -- --toys` shows only them. Extra toy fields: `nightsCleared`, `upgrades`, `credit`, `score`, `multPeak`, `trips`, `seconds`, `daily`, `distance`, `railShare`.
 
 ## Record fields (version 1)
 

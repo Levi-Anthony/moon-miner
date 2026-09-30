@@ -46,7 +46,7 @@ Two outer loops now wrap that core. Pick one on the title screen:
   - Getting caught ends the run.
 - **Daily map:** a toggle on both modes, seeded by the UTC date.
 
-**Toy runs now reach the run data.** Each finished contract or endless run is logged on the phone. **Send toy runs** on this page opens the same `[run-data]` issue the main game uses. `npm run runs -- --toys` shows them, and they're kept out of the main-game stats.
+**Toy runs now reach the run data.** Each finished contract or endless run is logged on the phone. **Send runs** on this page, or any Send button in the main game, sends every unsent run on the phone, toys and main game together, in one `[run-data]` issue. `npm run runs -- --toys` shows them, and they're kept out of the main-game stats.
 
 A third idea, drawing the road with your finger ahead of an always-moving rover, was dropped at the owner's call.
 

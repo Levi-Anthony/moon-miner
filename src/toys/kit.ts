@@ -417,8 +417,6 @@ export interface ToyRun {
 
 const TOY_RUNS_KEY = 'mm-toy-runs-v1';
 const TOY_RUNS_MAX = 60;
-const ISSUE_URL_MAX = 7500;
-export const TOY_RUN_REPO = 'Levi-Anthony/moon-miner';
 
 declare const __BUILD_SHA__: string;
 const build = (): string => {
@@ -453,30 +451,4 @@ export function logToyRun(run: Omit<ToyRun, 'v' | 'id' | 'at' | 'build'>): ToyRu
   return rec;
 }
 
-export function markToyRunsSent(ids: Set<string>): void {
-  saveToyRuns(loadToyRuns().map((r) => (ids.has(r.id) ? { ...r, sent: true } : r)));
-}
-
-async function packToyRuns(runs: ToyRun[]): Promise<string> {
-  const json = JSON.stringify(runs.map(({ sent: _sent, ...rest }) => rest));
-  const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
-  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-// Newest runs that fit one new-issue link. Returns how many made it.
-export async function toyIssueUrl(runs: ToyRun[]): Promise<{ url: string; count: number }> {
-  let n = runs.length;
-  for (;;) {
-    const batch = runs.slice(-n);
-    const lines = batch.slice(-8).map((r) => `- ${r.at.slice(0, 16).replace('T', ' ')} · ${r.mode} · ${r.result} · ${r.ore}${r.quota ? `/${r.quota}` : ''}`);
-    if (batch.length > 8) lines.unshift(`- …and ${batch.length - 8} earlier`);
-    const body = `${lines.join('\n')}\n\n\`\`\`moon-miner-runs-z\n${await packToyRuns(batch)}\n\`\`\`\n`;
-    const title = `[run-data] ${batch.length} toy run${batch.length === 1 ? '' : 's'}`;
-    const url = `https://github.com/${TOY_RUN_REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
-    if (url.length <= ISSUE_URL_MAX || n <= 1) return { url, count: n };
-    n -= 1;
-  }
-}
+// Sending lives in src/runs/sendAll.ts: one send covers toy and main-game runs.
