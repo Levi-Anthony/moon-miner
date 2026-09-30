@@ -21,7 +21,7 @@
 
 ## Toy runs
 
-The throwaway toys (`toys/`) log their runs too, with `mode` starting `toy:` (e.g. `toy:home-run:contract`). Any Send button sends them along with the main game's runs. `npm run runs` hides them; `npm run runs -- --toys` shows only them. Extra toy fields: `nightsCleared`, `upgrades`, `credit`, `score`, `multPeak`, `trips`, `seconds`, `daily`, `distance`, `railShare`.
+The throwaway toys (`toys/`) log their runs too, with `mode` starting `toy:` (e.g. `toy:home-run:contract`). Any Send button sends them along with the main game's runs. `npm run runs` hides them; `npm run runs -- --toys` shows only them. Extra toy fields: `nightsCleared`, `upgrades`, `credit`, `score`, `multPeak`, `trips`, `seconds`, `daily`, `distance`, `railShare`, `lostInDark`, `strandedNights` (contract). From 2026-09-30 the dark no longer ends a run, so `caught` is gone: contract results are `won` / `under-quota`, endless `nightfall` / `stranded`. Toy runs before then with `result: caught` at nightfall recorded `ore: 0` even when ore had been banked (a recording bug, now fixed).
 
 ## Record fields (version 1)
 
