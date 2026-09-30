@@ -55,6 +55,16 @@ Two outer loops now wrap that core. Pick one on the title screen:
 - **Daily map:** a toggle on both modes, seeded by the UTC date.
 - **The dark is not lethal (2026-09-30).** The owner's call after a contract ended on night 1 with quota already banked: the night border must not turn a prepared road deadly. Off your road in the dark, your load leaks away (35% a second, at least 2). On your road it's safe. Not home at nightfall = stranded: the load is lost, the banked ore counts, and a contract goes on if quota was met.
 
+### Home Run v4: Endless Night, tuned for the port (2026-09-30)
+
+The owner's verdict on Endless Night: "I think we actually found something," and "this is the 3D port move for sure." The changes below answer their playtest notes (DEV-68); `DECISIONS.md` has the full trail.
+- **The rail is reliable.** Off the rail only by a full sideways hold at speed (an amber arc on the rover fills over 0.35 s) or a sideways push once stopped. Braking, a drifting thumb or steering into a bend never drops you. In the dark, any road you laid before keeps your load safe, locked on or not.
+- **Digging holds the night off.** Nibbling and scooping push the border back as you dig. A bank drives it back further (more at a higher multiplier) and cools how fast it closes. A 5-scoop chain banks itself. You watch each push happen: the border glides back and flares.
+- **You can see and hear it coming.** A countdown in seconds, ground that darkens toward the border, a glow from the side it's on, an arrow when it's off screen, a rising drone and ticks, and a minimap of the border, your road and the ore.
+- **Strategy has room.** An unbanked night lasts about 65 s (was about 45). New ore after a bank lands mostly beyond the tips of your road, so extending a line toward the border pays off.
+- **Hard** (title toggle): the dark kills off your road.
+- The rules are one data object (`NightRules`), so a harder level or another mode is a change of numbers.
+
 **Toy runs now reach the run data.** Each finished contract or endless run is logged on the phone. **Send runs** on this page, or any Send button in the main game, sends every unsent run on the phone, toys and main game together, in one `[run-data]` issue. `npm run runs -- --toys` shows them, and they're kept out of the main-game stats.
 
 A third idea, drawing the road with your finger ahead of an always-moving rover, was dropped at the owner's call.
