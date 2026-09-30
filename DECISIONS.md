@@ -1977,3 +1977,10 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **Home Run** becomes the parallel 2D version: it follows the design, and each change that lands in the 3D game lands there too.
   - **Terminator** is parked. It stays playable and linked, with no new work.
   - Whether Home Run shares a rules core with the 3D game is open: requirement 17 in the engine-and-toolkit requirements (Claude Doc "Moon Miner: Design Theory", Port requirements tab).
+- **Port requirements approved (2026-09-30):** the owner approved the engine and toolkit requirements (`PORT_REQUIREMENTS.md`; canonical copy in the Claude Doc's Port requirements tab). Their answers:
+  - Performance target: an **iPhone 16**.
+  - **App Store eventually**, so the engine choice must not block an iOS build (now a should-have).
+  - **Assets kept open**: procedural first, but hand-made or imported assets must work.
+
+  Next: the survey (DEV-65), then the Contract port (DEV-66).
+- **Owner's reading surface (2026-09-30):** the owner follows along in a Claude Doc they can highlight, comment on and edit, and reads it on an iPhone. So docs meant for the owner use lists, not tables, and checkboxes, not dropdowns (tables scrolled sideways, and dropdowns couldn't be changed on the phone).

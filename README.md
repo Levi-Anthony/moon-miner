@@ -68,6 +68,7 @@ In dev and production builds, `window.__mm3d` exposes `{ getState, road, keys }`
 - `HANDOFF.md`: shortest cold-start summary of the current build, how we work, architecture, and open work.
 - `GAME_DESIGN.md`: active design rules and scope for the continuous-motion direction.
 - `DESIGN_THEORY.md`: systems theory and concept card for testing ideas (twelve laws, run-data metrics).
+- `PORT_REQUIREMENTS.md`: owner-approved engine and toolkit requirements for the Contract port (snapshot of the Claude Doc).
 - `BETS.md`: current product bets, appetite, and completion checks.
 - `DECISIONS.md`: durable product and engineering choices.
 - `PROGRESS.md`: completed slices and next tasks.

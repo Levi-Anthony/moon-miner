@@ -6,7 +6,8 @@ The game runs on Three.js (`index.html` → `src/three/bootstrap.ts`). Phaser wa
 
 - **Build shape:** Levels mode by default. Six authored levels with map-derived budgets, then an endless tail (PR #40). Sandbox mode is in the ⚙ panel.
 - **URLs:** desktop and phone use the same URL, `http://localhost:<printed-port>/`. The build reads no URL parameters.
-- **Unit tests:** green as of 2026-09-24 on `main` at `bef3b58`, 189 tests in 18 files.
+- **Unit tests:** green as of 2026-09-30 on `main` after PR #67, 218 tests in 21 files.
+- **Design direction:** `DESIGN_THEORY.md` and `PORT_REQUIREMENTS.md` (2026-09-30); next work is DEV-65 then DEV-66 (see `HANDOFF.md` §5).
 - **Build:** green. **Audit:** 0 vulnerabilities.
 - **Smoke:** green. It checks boot, HUD and one drive through `window.__mm3d`.
 - **`npm run play:through`:** green since DEV-55 rewired it to `window.__mm3d`. With seed `audit-1` the default policy clears levels 1–3. It is not in CI.
