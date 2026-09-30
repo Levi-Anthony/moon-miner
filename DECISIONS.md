@@ -1973,3 +1973,7 @@ New merges add a row here. Decisions in this range that change what older entrie
     - Quota margins are bimodal (quartiles 0.28 / 1.29 / 2.32), with 1 near miss in 54.
     - 87% of runs launch no drone.
     - So the open problems are the clock never binding (L6), no friction on the economy (L7) and a dead drone decision (L1/L2), not feel.
+- **Both toys stay (2026-09-30):** the owner said neither toy should be killed; both could become mini-games.
+  - **Home Run** becomes the parallel 2D version: it follows the design, and each change that lands in the 3D game lands there too.
+  - **Terminator** is parked. It stays playable and linked, with no new work.
+  - Whether Home Run shares a rules core with the 3D game is open: requirement 17 in the engine-and-toolkit requirements (Claude Doc "Moon Miner: Design Theory", Port requirements tab).

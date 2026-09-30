@@ -2,6 +2,14 @@
 
 Started 2026-09-29. The main game is healthier than it has ever been, and it still isn't fun. Tuning can't fix that, because almost every knob tunes the part of the game that isn't the fun.
 
+## Status (2026-09-30): both toys stay
+
+The owner's call: neither toy gets retired, and both are candidate mini-games.
+- **Home Run** is now the **parallel 2D version**. It follows the design as it moves: each design change that lands in the 3D game lands here too, so Home Run keeps testing ideas cheaply.
+- **Terminator** is **parked**: it stays playable and linked from the toys page, with no new work on it for now.
+
+The isolation rule below still holds. Whether Home Run later shares a rules core with the 3D game is requirement 17 in the engine-and-toolkit survey.
+
 ## Hypothesis
 
 The owner named what has felt good in every version: riding my own road fast, scooping a seam, beating the sunset. They added that "all three are kinda the same thing". Laying road was *not* on the list.

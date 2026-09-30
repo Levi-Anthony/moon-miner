@@ -250,7 +250,8 @@ Short verdicts. "?" means the data doesn't settle it yet.
 | **Main game (levels)** | weak: parking, drone unused | low: 46% of the sun left | ok since PR #54 | ok since PR #53 | **fails** | **fails**: bimodal | weak: blowouts | Fix L6/L7 first: a clock that binds and friction on the engine |
 | **Home Run: Contract** | turn-home and upgrade picks | stake is carry, pushed by quota | ok since PR #65 | persists and carries | ring binds by design | rising quota | 5-night arc, shop | Strongest candidate; needs data |
 | **Home Run: Endless** | turn-home only | stake is carry × multiplier | ok since PR #65 | persists within the run | pushes back 25%, accelerating | acceleration is the stopper | score chase; short | Good arcade; thinner R3 |
-| **Terminator** | dive depth into the dark | double-value ore in the dark | ? | none (L5 n/a) | the line is the clock | ? | ? | Untested; the owner hasn't played it |
+| **Home Run, going forward** | — | — | — | — | — | — | — | Stays alive as the parallel 2D version: each design change lands in both, so it keeps testing ideas cheaply |
+| **Terminator** | dive depth into the dark | double-value ore in the dark | ? | none (L5 n/a) | the line is the clock | ? | ? | Parked, still playable, not deleted; a candidate mini-game |
 | **Dark leak (PR #65)** | on-road vs off-road in the dark | proportional stake | passes L4 | makes the road the safe lane (L5+) | keeps the ring meaningful | leak is friction | — | Consistent with Dredge's panic model |
 
 **Porting guidance.** For moving the winning loop into the 3D build, the laws predict that Contract's structure (R2 carry at risk, R3 quota ramp and upgrades, persistent road) repairs the main game's L6/L7 failures directly:
