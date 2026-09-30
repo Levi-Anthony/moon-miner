@@ -2028,3 +2028,20 @@ New merges add a row here. Decisions in this range that change what older entrie
   Headless, after a deliberate hop-off:
   - Spinning round and driving back grabbed within 1 px. The old build drove 232 px along the road without the rail and logged the miss.
   - Carrying on after a hop-off still stays off.
+- **Endless Night is won at dawn (2026-09-30, DEV-68):** the owner: "There's no real legible win condition to go for." Every Endless run ended in a loss (nightfall or stranded), and the only in-run target was a score with nothing to measure it against (best showed only on the title and end screens). That fails L12: no specific "next time I…". Offered four shapes:
+  - reach dawn
+  - light the beacons
+  - rising targets
+  - beat your best
+
+  The owner chose **Reach dawn**. Now:
+  - **The win:** bank `dawnOre` (150) before the dark reaches home and dawn breaks. The night lifts, and the end screen reads DAWN, with the time taken, trips, peak multiplier and score.
+    - Why 150: the first runs on the push-back build banked 168 and 115, so it's a good run with little to spare.
+  - **The dawn bar:** the top bar shows banked ore toward dawn, with the carried load drawn ahead of it. When the load would reach the end, the HUD says "bank now for dawn".
+  - **A loss** reads "dawn 132/150", which is the counterfactual. "Stranded" now means you lost a load; out with an empty hold is plain nightfall. (Before, 6 of 9 "stranded" runs had carried nothing.)
+  - **Run data** adds `dawnOre` and `strandLoad`; `result` is `dawn` on a win.
+
+  Not chosen, kept as options for later levels or modes:
+  - light the beacons (a road-network objective)
+  - rising targets
+  - beat your best

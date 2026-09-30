@@ -62,6 +62,7 @@ The owner's verdict on Endless Night: "I think we actually found something," and
 - **Digging holds the night off.** Nibbling and scooping push the border back as you dig. A bank drives it back further (more at a higher multiplier) and cools how fast it closes. A 5-scoop chain banks itself. You watch each push happen: the border glides back and flares.
 - **You can see and hear it coming.** A countdown in seconds, ground that darkens toward the border, a glow from the side it's on, an arrow when it's off screen, a rising drone and ticks, and a minimap of the border, your road and the ore.
 - **Strategy has room.** An unbanked night lasts about 65 s (was about 45). New ore after a bank lands mostly beyond the tips of your road, so extending a line toward the border pays off.
+- **You can win: reach dawn.** Bank 150 before the dark reaches home and dawn breaks. The top bar is the dawn bar, with what you carry drawn ahead of it, so you can see when banking now would win.
 - **Hard** (title toggle): the dark kills off your road.
 - **Getting on is easy too.** Turning round onto the road you just laid grabs it at once, and driving onto any road within 80° of its line grabs it. Only a square crossing drives across. Each missed grab is logged with its reason.
 - The rules are one data object (`NightRules`), so a harder level or another mode is a change of numbers.

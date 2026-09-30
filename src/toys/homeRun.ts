@@ -54,6 +54,7 @@ interface NightRules {
   bankShareMax: number;
   bankCool: number; // share of heat a bank takes off
   autoBankChain: number; // a scoop chain this long banks itself (0 = never)
+  dawnOre: number; // bank this much and dawn breaks: the run is won
 }
 const ENDLESS: NightRules = {
   speed0: 12,
@@ -64,7 +65,11 @@ const ENDLESS: NightRules = {
   bankShareStep: 0.05,
   bankShareMax: 0.6,
   bankCool: 0.2,
-  autoBankChain: 5
+  autoBankChain: 5,
+  // The win (owner, 2026-09-30: "there's no real legible win condition to go
+  // for"; they chose Reach dawn). The first runs on the push-back build banked
+  // 168 and 115, so 150 is a good run with little to spare.
+  dawnOre: 150
 };
 const PUSH_RATE = 4; // a push plays out over about 1/4 s, so you see the night fall back
 const PUSH_RATE_MIN = 240; // px/s
@@ -168,6 +173,8 @@ let grabs = 0;
 let missedGrabs = { angle: 0, unarmed: 0, recovered: 0 }; // times over your road without getting on
 let missing = false; // over the road right now without having got on
 let runLogged = false;
+let dawnBroke = false; // endless: banked enough, the run is won
+let strandLoad = 0; // the load you were carrying when night reached home
 let mapReach = RING0 * 1.3; // the minimap's radius in world px
 let nearest = { gap: Infinity, x: 0, y: 0 }; // the nearest point of the border
 const cam: Cam = { x: 0, y: 0, rot: -Math.PI / 2, z: 1 };
@@ -325,6 +332,8 @@ function startMode(m: Mode): void {
   pushBank = 0;
   autoBanks = 0;
   hopOffs = 0;
+  dawnBroke = false;
+  strandLoad = 0;
   grabs = 0;
   missedGrabs = { angle: 0, unarmed: 0, recovered: 0 };
   runLogged = false;
@@ -548,7 +557,7 @@ function logRun(result: string): void {
     logToyRun({
       ...common, mode: 'toy:home-run:endless', level: null, levelName: null, day: 1, result,
       ore: Math.round(banked), quota: 0, score: Math.round(score), multPeak, trips, seconds: Math.round(elapsed),
-      lostInDark: Math.round(lostTotal), autoBanks, pushMine: Math.round(pushMine), pushBank: Math.round(pushBank), closingEnd: Math.round(closingSpeed())
+      lostInDark: Math.round(lostTotal), dawnOre: ENDLESS.dawnOre, strandLoad: Math.round(strandLoad), autoBanks, pushMine: Math.round(pushMine), pushBank: Math.round(pushBank), closingEnd: Math.round(closingSpeed())
     });
     statsE = recordPlay(`${TOY}-endless`, score);
   }
@@ -572,6 +581,7 @@ function gameOver(result: string): void {
 function strand(): void {
   if (atBank(rover)) return;
   stranded = true;
+  strandLoad = carry;
   lost += carry;
   lostTotal += carry;
   if (carry > 0.5) pop(rover.x, rover.y, `STRANDED -${carry.toFixed(0)}`, '#ff8a5c');
@@ -688,7 +698,8 @@ function update(dt: number): void {
     }
     if (ringR * ringMinFactor <= DEPOT_R) {
       strand();
-      gameOver(stranded ? 'stranded' : 'nightfall');
+      // Stranded only if you lost a load; out empty-handed is plain nightfall.
+      gameOver(strandLoad > 0.5 ? 'stranded' : 'nightfall');
       return;
     }
   }
@@ -858,6 +869,19 @@ function update(dt: number): void {
   hum.set(Math.min(1, Math.abs(rover.v) / (mods.railBase + mods.railBonus)), 50, rail ? 160 : 70);
 }
 
+// Endless: enough banked, dawn breaks. The night lifts off the whole field and
+// the run is won.
+function breakDawn(): void {
+  dawnBroke = true;
+  ringR = RING0;
+  ringPush = 0;
+  ringFlash = 1;
+  parts.burst(0, 0, 90, '#ffe7a8', 420, 4, 1.4);
+  shake.kick(12);
+  [523, 659, 784, 1046, 1318].forEach((f, i) => setTimeout(() => blip(f, 0.22, 'triangle', 0.24), i * 110));
+  gameOver('dawn');
+}
+
 // Bank the load: at the depot or an outpost, or (auto) mid-field when a scoop
 // chain gets long enough. In Endless it scores x mult, drives the night back
 // (farther at a higher multiplier), cools it, and grows ore beyond your road.
@@ -877,6 +901,11 @@ function bank(auto: boolean): void {
     multPeak = Math.max(multPeak, mult);
     addSeamsBeyondRoad(rng((seed ^ (trips * 40503)) >>> 0), 3);
     blip(180, 0.5, 'sawtooth', 0.12, 520);
+    if (banked >= ENDLESS.dawnOre) {
+      carry = 0;
+      breakDawn();
+      return;
+    }
   }
   pop(rover.x, rover.y, text, '#78f7df');
   parts.burst(rover.x, rover.y, 50, '#78f7df', 260, 3, 0.9);
@@ -937,7 +966,7 @@ function drawTitle(): void {
   ctx.fillText('hold a full turn to hop off (or stop, then steer)', w / 2, Math.max(136, h * 0.1 + 66));
   const L = titleLayout();
   card(L.contract, 'CONTRACT', ['5 nights, rising quota. Miss one: over.', 'Surplus buys upgrades; your road stays.', `best ${statsC.best} · played ${statsC.plays}`], '#ffd27a');
-  card(L.endless, 'ENDLESS NIGHT', ['One night, closing ever faster.', 'Digging holds it; banks drive it back.', `best ${statsE.best} · played ${statsE.plays}`], '#b8a8ff');
+  card(L.endless, 'ENDLESS NIGHT', [`Bank ${ENDLESS.dawnOre} before the dark reaches home.`, 'Digging holds it; banks drive it back.', `best ${statsE.best} · played ${statsE.plays}`], '#b8a8ff');
   toggle(L.daily, daily, '#78f7df', '#12302c', daily ? `DAILY MAP ON · ${new Date().toISOString().slice(0, 10)}` : 'daily map: off (tap for today’s)');
   toggle(L.hard, hard, '#ff8a5c', '#33170f', hard ? 'HARD ON · the dark kills off your road' : 'hard: off (tap: the dark kills)');
 }
@@ -1179,12 +1208,24 @@ function drawWorld(dt: number): void {
     drawMinimap(w);
   }
 
-  // HUD.
-  const f = ringR / RING0;
+  // HUD. Contract: the top bar is the night left. Endless: it's the dawn bar,
+  // banked ore toward dawn, with what you carry shown ahead of it: if the pale
+  // part reaches the end, banking now wins.
+  const barW = w - 24;
   ctx.fillStyle = '#1b2230';
-  ctx.fillRect(12, 12, w - 24, 8);
-  ctx.fillStyle = f < 0.25 ? '#b48cff' : '#8fa7ff';
-  ctx.fillRect(12, 12, (w - 24) * Math.max(0, f), 8);
+  ctx.fillRect(12, 12, barW, 8);
+  if (mode === 'endless') {
+    const got = Math.min(1, banked / ENDLESS.dawnOre);
+    const withLoad = Math.min(1, (banked + carry) / ENDLESS.dawnOre);
+    ctx.fillStyle = withLoad >= 1 ? 'rgba(255,241,196,0.75)' : 'rgba(255,210,122,0.35)';
+    ctx.fillRect(12, 12, barW * withLoad, 8);
+    ctx.fillStyle = '#ffd27a';
+    ctx.fillRect(12, 12, barW * got, 8);
+  } else {
+    const f = ringR / RING0;
+    ctx.fillStyle = f < 0.25 ? '#b48cff' : '#8fa7ff';
+    ctx.fillRect(12, 12, barW * Math.max(0, f), 8);
+  }
   ctx.font = 'bold 16px ui-monospace, monospace';
   ctx.textAlign = 'left';
   if (mode === 'contract') {
@@ -1196,8 +1237,14 @@ function drawWorld(dt: number): void {
     ctx.fillStyle = banked >= q ? '#78f7df' : '#ffd27a';
     ctx.fillRect(14, 50, 150 * Math.min(1, banked / q), 5);
   } else {
-    ctx.fillStyle = '#b8a8ff';
-    ctx.fillText(`SCORE ${score.toFixed(0)}  x${mult}`, 14, 42);
+    const winsNow = banked + carry >= ENDLESS.dawnOre;
+    ctx.fillStyle = winsNow ? '#fff1c4' : '#ffd27a';
+    ctx.fillText(`DAWN ${banked.toFixed(0)}/${ENDLESS.dawnOre}  x${mult}`, 14, 42);
+    if (winsNow && phase === 'play') {
+      ctx.font = 'bold 12px ui-monospace, monospace';
+      ctx.fillText('bank now for dawn', 14, 58);
+      ctx.font = 'bold 16px ui-monospace, monospace';
+    }
   }
   ctx.textAlign = 'right';
   ctx.fillStyle = carry > 0 ? '#ffd27a' : '#6b7d92';
@@ -1224,7 +1271,7 @@ function drawWorld(dt: number): void {
     const lines2 =
       mode === 'contract'
         ? [`Night ${night} of ${QUOTAS.length}: bank ${quota()} before the dark reaches home.`, 'Off your road, the dark leaks your load. Surplus buys upgrades.', 'Push up to begin.']
-        : ['Digging holds the night off; banking drives it back and ups the x.', `A ${ENDLESS.autoBankChain}-scoop chain banks itself. On your road, the dark can't touch your load.`, 'Push up to begin.'];
+        : [`Bank ${ENDLESS.dawnOre} ore before the dark reaches home, and dawn breaks.`, 'Digging holds the night off; banking drives it back and ups the x.', `A ${ENDLESS.autoBankChain}-scoop chain banks itself. Push up to begin.`];
     banner(ctx, w, h, mode === 'contract' ? `NIGHT ${night}` : 'ENDLESS NIGHT', lines2);
   }
 }
@@ -1324,12 +1371,21 @@ function drawOver(): void {
       again
     ]);
   } else {
-    banner(ctx, w, h, stranded ? 'STRANDED' : 'NIGHTFALL', [
-      `score ${score.toFixed(0)} · ${trips} trips · peak x${multPeak}`,
-      `${Math.round(elapsed)} s${lost > 0.5 ? ` · lost ${lost.toFixed(0)} in the dark` : ''}`,
-      `best ${statsE.best} · played ${statsE.plays}`,
-      again
-    ]);
+    if (dawnBroke) {
+      banner(ctx, w, h, 'DAWN', [
+        `dawn in ${Math.round(elapsed)} s · ${trips} trips · peak x${multPeak}`,
+        `score ${score.toFixed(0)}`,
+        `best ${statsE.best} · played ${statsE.plays}`,
+        again
+      ]);
+    } else {
+      banner(ctx, w, h, strandLoad > 0.5 ? 'STRANDED' : 'NIGHTFALL', [
+        `dawn ${banked.toFixed(0)}/${ENDLESS.dawnOre}${strandLoad > 0.5 ? ` · stranded with ${strandLoad.toFixed(0)}` : ''}`,
+        `score ${score.toFixed(0)} · ${trips} trips · peak x${multPeak} · ${Math.round(elapsed)} s`,
+        `best ${statsE.best} · played ${statsE.plays}`,
+        again
+      ]);
+    }
   }
 }
 
