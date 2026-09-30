@@ -43,6 +43,11 @@ const NIGHT = 60; // seconds for the ring to reach the depot
 const ENDLESS_SPEED0 = 16; // px/s the night closes at first
 const ENDLESS_ACCEL = 0.9; // and how much faster each second
 const PUSH_BACK = 0.25; // share of lost ground a bank wins back
+// The dark is not lethal (owner, 2026-09-30): off your road, your load leaks
+// away; on your road it's safe. Not home when night falls = stranded: the load
+// is lost, but what you banked counts.
+const DARK_LEAK = 0.35; // share of the load lost per second, off-road in the dark
+const DARK_LEAK_MIN = 2; // ore per second, so a small load still drains
 
 type Mode = 'contract' | 'endless';
 type Phase = 'title' | 'play' | 'shop' | 'over';
@@ -104,8 +109,11 @@ let ringMinFactor = 1;
 let seams: Seam[] = [];
 let pops: Pop[] = [];
 let started = false;
-let caught = false;
-let lost = 0;
+let stranded = false; // not home when night fell
+let inDark = false;
+let lost = 0; // ore lost to the dark this night (contract) / this run (endless)
+let lostTotal = 0;
+let strandedNights = 0;
 let time = 0;
 let phaseAt = 0;
 let dist = 0;
@@ -186,7 +194,8 @@ function startNight(): void {
   ringR = RING0;
   pops = [];
   started = false;
-  caught = false;
+  stranded = false;
+  inDark = false;
   lost = 0;
   elapsed = 0;
   cam.x = 0;
@@ -203,6 +212,8 @@ function startMode(m: Mode): void {
   night = 1;
   credit = 0;
   totalBanked = 0;
+  lostTotal = 0;
+  strandedNights = 0;
   taken = [];
   contractWon = false;
   mult = 1;
@@ -368,13 +379,15 @@ function logRun(result: string): void {
   if (mode === 'contract') {
     logToyRun({
       ...common, mode: 'toy:home-run:contract', level: night, levelName: `night ${night}`, day: night, result,
-      ore: Math.round(totalBanked), quota: quota(), nightsCleared: contractWon ? QUOTAS.length : night - 1, upgrades: taken, credit: Math.round(credit)
+      ore: Math.round(totalBanked), quota: quota(), nightsCleared: contractWon ? QUOTAS.length : night - 1, upgrades: taken, credit: Math.round(credit),
+      lostInDark: Math.round(lostTotal), strandedNights
     });
     statsC = recordPlay(`${TOY}-contract`, totalBanked + credit);
   } else {
     logToyRun({
       ...common, mode: 'toy:home-run:endless', level: null, levelName: null, day: 1, result,
-      ore: Math.round(banked), quota: 0, score: Math.round(score), multPeak, trips, seconds: Math.round(elapsed)
+      ore: Math.round(banked), quota: 0, score: Math.round(score), multPeak, trips, seconds: Math.round(elapsed),
+      lostInDark: Math.round(lostTotal)
     });
     statsE = recordPlay(`${TOY}-endless`, score);
   }
@@ -385,23 +398,25 @@ function gameOver(result: string): void {
   phase = 'over';
   phaseAt = time;
   hum.mute();
-  if (caught && carry > 0) {
-    lost = carry;
-    carry = 0;
-  }
   logRun(result);
-  shake.kick(caught ? 14 : 6);
-  blip(caught ? 170 : 660, 0.6, caught ? 'sawtooth' : 'triangle', 0.3, caught ? 55 : 990);
+  shake.kick(stranded ? 14 : 6);
+  blip(stranded ? 170 : 660, 0.6, stranded ? 'sawtooth' : 'triangle', 0.3, stranded ? 55 : 990);
+}
+
+// Night fell and the rover isn't home: the load is lost, the banked ore stays.
+function strand(): void {
+  if (atBank(rover)) return;
+  stranded = true;
+  lost += carry;
+  lostTotal += carry;
+  if (carry > 0.5) pop(rover.x, rover.y, `STRANDED -${carry.toFixed(0)}`, '#ff8a5c');
+  carry = 0;
 }
 
 // Contract: the ring has reached the depot. Did you make quota?
 function nightfall(): void {
-  const home = atBank(rover);
-  if (!home) {
-    caught = true;
-    gameOver('caught');
-    return;
-  }
+  strand();
+  if (stranded) strandedNights += 1;
   totalBanked += banked;
   if (banked < quota()) {
     gameOver('under-quota');
@@ -496,8 +511,8 @@ function update(dt: number): void {
   } else {
     ringR -= (ENDLESS_SPEED0 + ENDLESS_ACCEL * elapsed) * dt;
     if (ringR * ringMinFactor <= DEPOT_R) {
-      caught = !atBank(rover);
-      gameOver(caught ? 'caught' : 'nightfall');
+      strand();
+      gameOver(stranded ? 'stranded' : 'nightfall');
       return;
     }
   }
@@ -507,11 +522,13 @@ function update(dt: number): void {
       s.gone = 0.8;
     }
   }
-  if (outsideRing(rover.x, rover.y)) {
-    caught = true;
-    if (mode === 'contract') totalBanked += banked;
-    gameOver('caught');
-    return;
+  inDark = outsideRing(rover.x, rover.y);
+  if (inDark && !rail && carry > 0) {
+    const leak = Math.min(carry, Math.max(DARK_LEAK * carry, DARK_LEAK_MIN) * dt);
+    carry -= leak;
+    lost += leak;
+    lostTotal += leak;
+    if (Math.random() < 0.4) parts.trail(rover.x + (Math.random() - 0.5) * 16, rover.y + (Math.random() - 0.5) * 16, '#b48cff', 2, 0.6);
   }
 
   const px = rover.x;
@@ -708,7 +725,7 @@ function drawShop(): void {
   ctx.fillText(`NIGHT ${night} MADE`, w / 2, Math.max(60, h * 0.08));
   ctx.font = '14px ui-monospace, monospace';
   ctx.fillStyle = '#a9bcd0';
-  ctx.fillText(`banked ${banked.toFixed(0)} of ${quota()} · credit ${credit.toFixed(0)}`, w / 2, Math.max(88, h * 0.08 + 28));
+  ctx.fillText(`banked ${banked.toFixed(0)}/${quota()} · credit ${credit.toFixed(0)}${lost > 0.5 ? ` · dark took ${lost.toFixed(0)}` : ''}`, w / 2, Math.max(88, h * 0.08 + 28));
   ctx.fillStyle = '#ffd27a';
   ctx.fillText(`next: night ${night + 1} of ${QUOTAS.length}, quota ${QUOTAS[night]}`, w / 2, Math.max(110, h * 0.08 + 50));
   ctx.fillStyle = '#8fa3ba';
@@ -906,7 +923,12 @@ function drawWorld(dt: number): void {
     ctx.textAlign = 'center';
     ctx.font = 'bold 14px ui-monospace, monospace';
     ctx.fillStyle = gap < 120 ? '#ff8a5c' : '#b8a8ff';
-    ctx.fillText(`dark ${Math.max(0, Math.round(gap))}m`, w / 2, 72);
+    if (inDark) {
+      ctx.fillStyle = rail ? '#78f7df' : '#ff8a5c';
+      ctx.fillText(rail ? 'IN THE DARK · your road keeps your load' : carry > 0 ? 'IN THE DARK · load leaking, find your road' : 'IN THE DARK', w / 2, 72);
+    } else {
+      ctx.fillText(`dark ${Math.max(0, Math.round(gap))}m`, w / 2, 72);
+    }
     if (rail) {
       ctx.fillStyle = charge >= SCOOP_CHARGE ? '#fff1c4' : '#78f7df';
       ctx.fillText(charge >= SCOOP_CHARGE ? (rover.v >= SCOOP_SPEED ? 'RAIL ⚡ SCOOP READY' : 'RAIL ⚡ speed up') : 'RAIL', w / 2, 92);
@@ -915,8 +937,8 @@ function drawWorld(dt: number): void {
   if (!started && phase === 'play') {
     const lines2 =
       mode === 'contract'
-        ? [`Night ${night} of ${QUOTAS.length}: bank ${quota()} before the dark reaches home.`, 'Surplus becomes credit for upgrades.', 'Push up to begin.']
-        : ['Bank to push the night back and raise the multiplier.', 'Caught in the dark = run over.', 'Push up to begin.'];
+        ? [`Night ${night} of ${QUOTAS.length}: bank ${quota()} before the dark reaches home.`, 'Off your road, the dark leaks your load. Surplus buys upgrades.', 'Push up to begin.']
+        : ['Bank to push the night back and raise the multiplier.', 'In the dark, your load leaks unless you are on your road.', 'Push up to begin.'];
     banner(ctx, w, h, mode === 'contract' ? `NIGHT ${night}` : 'ENDLESS NIGHT', lines2);
   }
 }
@@ -925,17 +947,17 @@ function drawOver(): void {
   const { w, h } = screen;
   const again = time - phaseAt > 0.8 ? 'tap for the menu' : '';
   if (mode === 'contract') {
-    const title = contractWon ? 'CONTRACT COMPLETE' : caught ? 'THE NIGHT GOT YOU' : `NIGHT ${night} SHORT`;
+    const title = contractWon ? 'CONTRACT COMPLETE' : `NIGHT ${night} SHORT`;
     banner(ctx, w, h, title, [
       `${contractWon ? QUOTAS.length : night - 1} of ${QUOTAS.length} nights · banked ${totalBanked.toFixed(0)} · credit ${credit.toFixed(0)}`,
-      caught ? `lost ${lost.toFixed(0)} in the dark` : contractWon ? `score ${(totalBanked + credit).toFixed(0)}` : `needed ${quota()}, banked ${banked.toFixed(0)}`,
+      contractWon ? `score ${(totalBanked + credit).toFixed(0)}` : `needed ${quota()}, banked ${banked.toFixed(0)}${lost > 0.5 ? ` · lost ${lost.toFixed(0)} in the dark` : ''}`,
       `best ${statsC.best} · contracts ${statsC.plays}`,
       again
     ]);
   } else {
-    banner(ctx, w, h, caught ? 'THE NIGHT GOT YOU' : 'NIGHTFALL', [
+    banner(ctx, w, h, stranded ? 'STRANDED' : 'NIGHTFALL', [
       `score ${score.toFixed(0)} · ${trips} trips · peak x${multPeak}`,
-      lost > 0 ? `lost ${lost.toFixed(0)} in the dark` : `${Math.round(elapsed)} s survived`,
+      `${Math.round(elapsed)} s${lost > 0.5 ? ` · lost ${lost.toFixed(0)} in the dark` : ''}`,
       `best ${statsE.best} · played ${statsE.plays}`,
       again
     ]);
@@ -956,7 +978,7 @@ function draw(dt: number): void {
 const W = window as unknown as Record<string, unknown>;
 W.__toy = () => ({
   phase, mode, daily, seed, night, credit, totalBanked, taken, offers: offers.map((o) => o.id), mods: { ...mods, outposts: mods.outposts.length },
-  started, caught, onRail: rail !== null, rail: rail ? { ...rail, ang: railPoint(rail).ang } : null,
+  started, stranded, inDark, lost, lostTotal, strandedNights, onRail: rail !== null, rail: rail ? { ...rail, ang: railPoint(rail).ang } : null,
   lines: lines.map((l) => ({ n: l.pts.length, parent: l.parent, pts: l.pts.filter((_, k) => k % 3 === 0 || k === l.pts.length - 1) })),
   laying, h: rover.h, camRot: cam.rot, v: rover.v, x: rover.x, y: rover.y, charge, carry, banked, score, mult, trips, ringR,
   dist: Math.hypot(rover.x, rover.y), seamsLive: seams.filter((s) => s.ore > 0).length, seams: seams.map((s) => ({ x: +s.x.toFixed(1), y: +s.y.toFixed(1), ore: s.ore }))

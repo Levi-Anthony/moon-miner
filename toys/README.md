@@ -43,8 +43,9 @@ Two outer loops now wrap that core. Pick one on the title screen:
   - This folds in the "grow a network" idea.
 - **Endless Night** (arcade): one night that closes faster and faster.
   - Every bank pushes it back 25%, raises the multiplier, and spawns ore in the ground you won back.
-  - Getting caught ends the run.
+  - The run ends when the night reaches home. Not home then = stranded: the load is lost, the score stays.
 - **Daily map:** a toggle on both modes, seeded by the UTC date.
+- **The dark is not lethal (2026-09-30).** The owner's call after a contract ended on night 1 with quota already banked: the night border must not turn a prepared road deadly. Off your road in the dark, your load leaks away (35% a second, at least 2). On your road it's safe. Not home at nightfall = stranded: the load is lost, the banked ore counts, and a contract goes on if quota was met.
 
 **Toy runs now reach the run data.** Each finished contract or endless run is logged on the phone. **Send runs** on this page, or any Send button in the main game, sends every unsent run on the phone, toys and main game together, in one `[run-data]` issue. `npm run runs -- --toys` shows them, and they're kept out of the main-game stats.
 

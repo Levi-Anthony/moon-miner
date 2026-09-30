@@ -1959,3 +1959,9 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **Run data:** toy runs now go through the `[run-data]` path as `mode: 'toy:…'`, and `npm run runs -- --toys` reports them.
   - **Run data at the time:** the main game's two newest runs (L9, L10) showed no tension (5× quota, stock never below 19/24, no crawl or drone).
   - **Next:** port the winning loop into the main 3D build, whose moment-to-moment the owner prefers.
+- **One send for all runs (PR #63, 2026-09-30):** issue #62 carried 48 main-game runs and none of the owner's toy runs; the two stores had separate Send buttons. The owner chose to merge them: every Send button now sends all unsent runs from both stores (`src/runs/sendAll.ts`).
+- **The dark is not lethal (2026-09-30):** issue #64's third toy run was a contract lost on night 1 with 27/20 already banked, caught by the ring on the way back out. The owner: soft end, "I don't like the instakill night border that makes my prepared road suddenly deadly." Now:
+  - Off your road in the dark, your load leaks away. On your road, the load is safe.
+  - Not home at nightfall = stranded: the load is lost and the banked ore counts. A contract continues if quota was met.
+  - Under quota still ends a contract.
+  - This also fixes a recording bug: a run caught at nightfall logged 0 ore even when ore had been banked.
