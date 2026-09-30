@@ -1965,3 +1965,11 @@ New merges add a row here. Decisions in this range that change what older entrie
   - Not home at nightfall = stranded: the load is lost and the banked ore counts. A contract continues if quota was met.
   - Under quota still ends a contract.
   - This also fixes a recording bug: a run caught at nightfall logged 0 ore even when ore had been banked.
+- **Design theory (2026-09-30):** the owner asked for research to anchor generator concepts in established, experience-focused game design, and for a systems theory to test ideas against. `DESIGN_THEORY.md`:
+  - **Sources:** MDA, SDT/PENS, meaningful play, Meier, Koster, Chen, Costikyan, Juul, Adams & Dormans, Cook, Swink, Nijman, Thorson, Lazzaro, push-your-luck, plus genre evidence.
+  - **Contents:** a loop ladder (R0–R4), a stock-flow graph, twelve testable laws, a concept card and run-data metrics.
+  - **First finding on the main game's 54 level runs:**
+    - Winning runs leave 46% of the sun unused.
+    - Quota margins are bimodal (quartiles 0.28 / 1.29 / 2.32), with 1 near miss in 54.
+    - 87% of runs launch no drone.
+    - So the open problems are the clock never binding (L6), no friction on the economy (L7) and a dead drone decision (L1/L2), not feel.

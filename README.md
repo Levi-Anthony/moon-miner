@@ -3,7 +3,7 @@
 Moon Miner is being reframed from a grid rail puzzle into a short-session live-action extraction game about a spider-armed industrial rover that fabricates temporary nano-field under itself, launches an autonomous reclaim drone, and survives by managing route shape, arm capacity, nanobot flow, mining yield, and sunlight.
 
 For the current build and how work happens on it, read `HANDOFF.md` first.
-For design intent, read `CONCEPT_REFRAME.md`, then `GAME_DESIGN.md`, then `BETS.md`.
+For design intent, read `CONCEPT_REFRAME.md`, then `GAME_DESIGN.md`, then `BETS.md`. To test a design idea against established game-design principles before building it, use `DESIGN_THEORY.md`.
 
 If you are new to command-line projects, start with `START_HERE.md`. It explains exactly how to open the folder, run the game, use localhost URLs, play on a phone, stop the server, and recover when something goes wrong.
 
@@ -67,6 +67,7 @@ In dev and production builds, `window.__mm3d` exposes `{ getState, road, keys }`
 - `HUMAN_OPERATING_SYSTEM.md`: personal workflow scaffold for Git, proof discipline, and agent ground rules.
 - `HANDOFF.md`: shortest cold-start summary of the current build, how we work, architecture, and open work.
 - `GAME_DESIGN.md`: active design rules and scope for the continuous-motion direction.
+- `DESIGN_THEORY.md`: systems theory and concept card for testing ideas (twelve laws, run-data metrics).
 - `BETS.md`: current product bets, appetite, and completion checks.
 - `DECISIONS.md`: durable product and engineering choices.
 - `PROGRESS.md`: completed slices and next tasks.
