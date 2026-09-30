@@ -1,6 +1,6 @@
 # Design Theory: a systems test for Moon Miner ideas
 
-Status: working instrument, 2026-09-30. Use it to test any concept, mode, toy or tuning change **before** building it, and to diagnose a build **after** play. It sits under the canon (`CONCEPT_REFRAME.md`, `GAME_DESIGN.md`) and doesn't replace it. The canon says what the game is. This file says how to tell whether a design will produce the intended experience.
+Status: working instrument, 2026-09-30. The owner reads and comments on it in the Claude Doc [Moon Miner: Design Theory](https://claude.ai/code/artifact/72757fa6-a2e7-4550-a3f2-80b96b526f55) (Design theory tab); this file is the repo copy. Use it to test any concept, mode, toy or tuning change **before** building it, and to diagnose a build **after** play. It sits under the canon (`CONCEPT_REFRAME.md`, `GAME_DESIGN.md`) and doesn't replace it. The canon says what the game is. This file says how to tell whether a design will produce the intended experience.
 
 "Successful" here means player experience: enjoyment, the wish to play again, and a sense of competence and agency. Revenue design (retention hooks, compulsion loops, monetised friction) is out of scope and counts against an idea.
 

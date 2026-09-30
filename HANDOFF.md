@@ -1,10 +1,10 @@
 # Moon Miner — Handoff
 
-Last updated: 2026-09-24, at `main` `bef3b58` (PR #40). Rewritten by DEV-58 from the 2026-09-24 state audit (`docs/audit/2026-09-24/STATE_AUDIT.md`).
+Last updated: 2026-09-30, at `main` after PR #67. §0 and §4–§6 reflect PRs #53–#67. The 2026-09-24 rewrite came from DEV-58 and the state audit (`docs/audit/2026-09-24/STATE_AUDIT.md`).
 
 This file is the cold start for a fresh agent: what the game is now, how we work on it and why, and where things live. The pre-rewrite handoff (Phaser-era §1–§8, written 2026-09-16) is archived at `docs/archive/HANDOFF_2026-09-16.md`. Keep it for intent, not for current facts.
 
-The decision trail lives in `DECISIONS.md`. Its dated entries end 2026-09-15. PRs #10 onward are indexed at the end of that file, and each one's reasoning is in its PR body and commit message.
+The decision trail lives in `DECISIONS.md`; its newest entries (2026-09-27 to 2026-09-30) are at the end. Each PR's reasoning is in its PR body and commit message.
 
 ---
 
@@ -12,9 +12,13 @@ The decision trail lives in `DECISIONS.md`. Its dated entries end 2026-09-15. PR
 
 - **The app is `index.html` → `src/three/bootstrap.ts`.** It is a Three.js scene with a real perspective camera, a ground plane, and the rover and drone as meshes. The road is painted into a canvas texture on the ground (a raster decal), never vector geometry. Do not reintroduce per-frame vector road drawing. That was the Phaser build's whole class of bugs (flashing, bowties, pinch).
 - **The simulation is authoritative and engine-free.** `src/game/continuous.ts` and `continuousArena.ts` are pure TypeScript with their own tests. The 3D layer reads sim state and feeds input; it does not fork the rules.
-- **Phaser is gone** (PR #10). `src/main.ts`, `src/scenes/*`, the `#moon-miner-continuous-debug-state` snapshot and `window.__moonMinerContinuous` no longer exist. The debug hook is now `window.__mm3d = { getState, road, keys }` (`bootstrap.ts:1418`).
+- **Phaser is gone** (PR #10). `src/main.ts`, `src/scenes/*`, the `#moon-miner-continuous-debug-state` snapshot and `window.__moonMinerContinuous` no longer exist. The debug hook is `window.__mm3d = { getState, road, keys, runs, pendingRuns, runIssue }` (`bootstrap.ts`).
 - **Run data (the owner's real runs) is in `data/runs/runs.jsonl` on `main`.** Read it before saying there is no run data: `git pull origin main && npm run runs`. The game saves every finished level locally. **Send run data** on the end banner (or ⚙ → **Send saved runs**) opens a pre-filled `[run-data]` GitHub issue, and `.github/workflows/ingest-run.yml` appends it to that file. `data/runs/README.md` has the fields and troubleshooting. Capture is guarded by `smoke:continuous` and `play:through` (DEV-61).
 - **Road and shadows.** The road is painted into the ground's emissive layer so daylight never changes its brightness (PR #34). three.js doesn't shadow emissive light, so `groundMat.onBeforeCompile` multiplies the emissive term by the sun's shadow factor, scaled by the Shadow on road knob and the sun's height (DEV-59). If the ground material is ever replaced, carry that patch over, or shadows will pass under the road again.
+- **Design direction (2026-09-30): read `DESIGN_THEORY.md` next.** It is the test for game ideas: twelve laws anchored in established game design, a concept card, and run-data metrics. It finds the main game failing L6 (the clock never binds: wins leave 46% of the sun) and L7 (no friction: ore ÷ quota quartiles 0.28 / 1.29 / 2.32). The plan is to port Home Run's Contract loop into the 3D game (DEV-66), after an engine and toolkit survey (DEV-65) against `PORT_REQUIREMENTS.md`.
+- **The owner reads and comments in a Claude Doc:** [Moon Miner: Design Theory](https://claude.ai/code/artifact/72757fa6-a2e7-4550-a3f2-80b96b526f55), with a Design theory tab and a Port requirements tab. It is canonical for the requirements; `DESIGN_THEORY.md` and `PORT_REQUIREMENTS.md` are the repo copies. Keep them in step, and check the doc's comments at the start of a session. The owner reads on an iPhone: lists, not tables; checkboxes, not dropdowns.
+- **Toys (`toys/`, `src/toys/`).** 2D canvas games, isolated from `src/game` and `src/three`. **Home Run** has Contract and Endless modes; the owner ruled it the parallel 2D version, so each design change that lands in the 3D game lands there too. **Terminator** is parked, playable, no new work. The dark in Home Run leaks your load off-road instead of ending the run (PR #65).
+- **One Send for all runs (PR #63).** Every Send button (end banner, ⚙ panel, toys page) sends every unsent run in that browser, game and toys together, through `src/runs/sendAll.ts`. `npm run runs` reports the main game; `npm run runs -- --toys` the toys.
 - **The 3D build reads no URL parameters.** `?mobile=1`, `?debug=1`, `?view=`, `?shift=` and `?sandbox=1` in older docs have no effect (DEV-52). The layout is the same on every screen, and drag-to-drive works with mouse or touch.
 
 ## 1. Cold start
@@ -77,11 +81,11 @@ Simulation (`src/game/`):
 
 ## 4. Test and proof state
 
-Measured 2026-09-24 at `bef3b58` (see `PROGRESS.md` "Last Verified"):
+Measured 2026-09-30 on `main` after PR #67:
 
 - **Passing:**
-  - `npm test`: 189 tests in 18 files.
-  - Build.
+  - `npm test`: 218 tests in 21 files.
+  - Build: one 688 kB chunk (184 kB gzipped).
   - `npm audit`: 0 vulnerabilities.
   - `smoke:continuous`: boot, HUD, one drive, and the phone HUD layout. Needs `CHROME_PATH` in this container.
   - `report:last-light`: 5/5 routes won.
@@ -92,18 +96,22 @@ Measured 2026-09-24 at `bef3b58` (see `PROGRESS.md` "Last Verified"):
 
 | Ticket | Priority | Issue |
 |---|---|---|
-| DEV-14 | High | Drone timing decision. Recheck after the eraser PRs. |
-| DEV-20 | High | Drone lift topology. Recheck after PRs #38/#39. |
-| DEV-13 | High | Close drift between build and design canon (`GAME_DESIGN.md`, `CONCEPT_REFRAME.md`) |
+| DEV-65 | High | **Next.** Engine and toolkit survey against `PORT_REQUIREMENTS.md` |
+| DEV-66 | High | Port Home Run's Contract loop into the 3D game (blocked by DEV-65) |
+| DEV-67 | Medium | Log the turn-home load and choice records in run data |
+| DEV-60 | High | Levels too easy (evidence in its comments; DEV-66 is the planned fix) |
+| DEV-14 | High | Drone timing decision (87% of runs launch none) |
+| DEV-20 | High | Drone lift topology |
+| DEV-13 | High | Close drift between build and design canon |
 | DEV-24 | Medium | Road legibility |
 | DEV-47 | Medium | Vehicle classes → road types |
 | DEV-7 | Medium | PROGRESS contradictions |
 | DEV-10 | Medium | Generate proof status mechanically |
-| DEV-11 | Low | `--experimental-websocket` flag |
-| DEV-50 | — | Retro-ticket PRs #10–#40 |
-| DEV-51 | — | Last-light notes ignore crawl |
-| DEV-53 | — | Widen smoke coverage |
+| DEV-11, DEV-8 | Low | Smoke flag; machine-specific paths |
+| DEV-50, DEV-51, DEV-52, DEV-53 | — | Retro-tickets; last-light notes; dead URL flags in docs; smoke coverage |
 
 ## 6. Design north star
 
 `GAME_DESIGN.md` and `CONCEPT_REFRAME.md` (2026-07-01) still hold in outline: a competent machine, physical drone logistics, prepared road, and overextension → crawl → recovery. Neither mentions levels, the eraser, or junctions. DEV-13 owns reconciling them. `BETS.md` is the 2026-07-01 bet sheet.
+
+`DESIGN_THEORY.md` (2026-09-30) sits under that canon and says how to test an idea against it. Its core claim: the fun is a push-your-luck sortie (carry ore out at risk, turn home before the clock) carried by the feel of riding your own road fast. The owner's three good moments, "riding my road fast, scooping a seam, beating the sunset", are that one sortie. `toys/README.md` records the toys' results.
