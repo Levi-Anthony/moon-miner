@@ -63,6 +63,7 @@ The owner's verdict on Endless Night: "I think we actually found something," and
 - **You can see and hear it coming.** A countdown in seconds, ground that darkens toward the border, a glow from the side it's on, an arrow when it's off screen, a rising drone and ticks, and a minimap of the border, your road and the ore.
 - **Strategy has room.** An unbanked night lasts about 65 s (was about 45). New ore after a bank lands mostly beyond the tips of your road, so extending a line toward the border pays off.
 - **Hard** (title toggle): the dark kills off your road.
+- **Getting on is easy too.** Turning round onto the road you just laid grabs it at once, and driving onto any road within 80° of its line grabs it. Only a square crossing drives across. Each missed grab is logged with its reason.
 - The rules are one data object (`NightRules`), so a harder level or another mode is a change of numbers.
 
 **Toy runs now reach the run data.** Each finished contract or endless run is logged on the phone. **Send runs** on this page, or any Send button in the main game, sends every unsent run on the phone, toys and main game together, in one `[run-data]` issue. `npm run runs -- --toys` shows them, and they're kept out of the main-game stats.

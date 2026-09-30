@@ -1999,3 +1999,22 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **Hard (title toggle):** the dark kills off your road, which was the owner's "instakill might come back as hard mode".
   - **Run data:** a run is now also logged when the page closes mid-run (`result: 'abandoned'`). The owner's recent toy runs never reached issue #69, most likely because they didn't end before the page closed. New fields: `hard`, `hopOffs`, `autoBanks`, `pushMine`, `pushBank`, `closingEnd`. `npm run runs -- --toys` shows them.
   - **Vision fork, open:** the closing "event horizon" suggests a different game (anomaly miner / black hole miner). No build yet. Next is a concept card under `DESIGN_THEORY.md` §5, so the owner can compare it with Moon Miner.
+- **Getting on the rail (2026-09-30, DEV-68):** the owner: "It's not that it's hard to stay on the rail usually. It's hard to get on sometimes in the first place." Run data (issue #72) holds the first two runs on the PR #70 build:
+  - A normal run lasted 101 s (every run on the old build lasted 50–55 s) and scored 286 (old best 107). Digging pushed the night back 1257 px and banking 427 px.
+  - A Hard run lasted 43 s with only 2% of its distance on the rail and no banks.
+
+  Three rules could refuse a grab:
+  - The fresh end of the road you're laying didn't count for about 170 px, so turning round onto the road you just laid gave no rail. Headless, the old build grabbed only after about 93 px of driving back along it.
+  - Joining at more than 70° off the road's line never grabbed.
+  - You had to be 40 px clear of all road before any grab.
+
+  Changes:
+  - The fresh end is ignored only while you're still heading the way you laid it, so turning back grabs at once (1 px in the same test).
+  - The grab angle widens to 80°. Only a square crossing drives across your road.
+  - The 40 px clearance stays, so a deliberate hop-off stays off.
+
+  Rejected: grabbing after a short dwell on the road at any angle. At laying speed, a square crossing sits on the road for about 0.29 s, which would have made crossing your own road impossible.
+
+  Run data now logs `grabs` and `missedGrabs` (`angle`, `unarmed`, `recovered`): each time you're over your road with the throttle on and don't get on, and why.
+
+  For the port: the 3D game's grab needs you within about 53° (`ROAD_ALIGN_MIN` 0.6), and issue #69 had it at 0.66 (about 49°). That's stricter than the old toy.
