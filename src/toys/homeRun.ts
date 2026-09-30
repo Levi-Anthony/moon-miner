@@ -10,7 +10,7 @@
 //   ENDLESS   One night that keeps closing faster. Every bank pushes it back a
 //             little and raises the multiplier. Caught = over.
 // Both can use a Daily map (seed = UTC date). Runs are logged for the owner's
-// run data (kit: logToyRun / toyIssueUrl).
+// run data (kit: logToyRun; sent by src/runs/sendAll.ts).
 import {
   Hum, Particles, Shake, Stick, angleTo, applyCam, banner, blip, camToScreen, edgeArrow, followCam, hash, loadStats, logToyRun, loop, makeScreen,
   recordPlay, rng, type Cam, type Vec

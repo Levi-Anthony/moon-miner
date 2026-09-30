@@ -9,6 +9,7 @@
 // Submit; `.github/workflows/ingest-run.yml` appends the record to
 // `data/runs/runs.jsonl` on main, where any later session can read it.
 import type { ContinuousWorldState, SpeedState } from '../game/continuous';
+import { packRecords, type AnyRun } from '../runs/sendAll';
 
 export const RUN_RECORD_VERSION = 1;
 export const RUN_ISSUE_TITLE_PREFIX = '[run-data]';
@@ -204,14 +205,9 @@ export function runIssueBody(records: RunRecord[], packed?: string): string {
 }
 
 // deflate-raw + base64url of the records' JSON (local bookkeeping stripped).
-// CompressionStream is in every current browser and in Node 18+.
+// The packer is shared with the toys (src/runs/sendAll.ts).
 export async function packRuns(records: RunRecord[]): Promise<string> {
-  const json = JSON.stringify(records.map(({ sent: _sent, ...rest }) => rest));
-  const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
-  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return packRecords(records as unknown as AnyRun[]);
 }
 
 export function runIssueTitle(records: RunRecord[]): string {

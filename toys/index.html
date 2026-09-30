@@ -38,29 +38,30 @@
         <li>Which moment felt best?</li>
         <li>What annoyed me?</li>
       </ol>
-      <p class="lede">Your runs in the toys are logged on this phone. Send them so they land in the run data with the main game's:</p>
-      <p><button id="send" disabled style="font:inherit;padding:12px 16px;border-radius:10px;border:1px solid #78f7df;background:#0c111a;color:#78f7df;width:100%">Checking saved toy runs…</button></p>
+      <p class="lede">Your runs are logged on this phone. This button sends every unsent run, toys and main game alike (so does the main game's Send):</p>
+      <p><button id="send" disabled style="font:inherit;padding:12px 16px;border-radius:10px;border:1px solid #78f7df;background:#0c111a;color:#78f7df;width:100%">Checking saved runs…</button></p>
       <p class="lede" id="send-note"></p>
       <p><a class="home" href="../">← the main game</a></p>
     </main>
     <script type="module">
-      import { loadToyRuns, markToyRunsSent, toyIssueUrl } from '/src/toys/kit.ts';
+      import { markSentAll, sendAllUrl, sendLabel, unsentAll } from '/src/runs/sendAll.ts';
       const btn = document.getElementById('send');
       const note = document.getElementById('send-note');
       let prepared = null;
-      // Built ahead of the tap: window.open has to run inside the tap itself.
+      // One send for everything this browser has saved: the toys' runs and the
+      // main game's. Built ahead of the tap: window.open has to run inside the tap itself.
       async function prepare() {
-        const unsent = loadToyRuns().filter((r) => !r.sent);
-        if (!unsent.length) { btn.disabled = true; btn.textContent = 'No unsent toy runs'; prepared = null; return; }
-        prepared = { ...(await toyIssueUrl(unsent)), ids: unsent.map((r) => r.id) };
+        const unsent = unsentAll(localStorage);
+        if (!unsent.length) { btn.disabled = true; btn.textContent = sendLabel(0, 0, 0); prepared = null; return; }
+        prepared = { ...(await sendAllUrl(unsent)), ids: unsent.map((r) => r.id) };
         btn.disabled = false;
-        btn.textContent = prepared.count < unsent.length ? `Send ${prepared.count} of ${unsent.length} toy runs` : `Send ${unsent.length} toy run${unsent.length === 1 ? '' : 's'}`;
+        btn.textContent = sendLabel(unsent.length, prepared.count, prepared.toys);
       }
       btn.addEventListener('click', () => {
         if (!prepared) return;
         const w = window.open(prepared.url, '_blank');
         if (w) w.opener = null; else window.location.href = prepared.url;
-        markToyRunsSent(new Set(prepared.ids.slice(-prepared.count)));
+        markSentAll(localStorage, new Set(prepared.ids.slice(-prepared.count)));
         note.textContent = 'Opened GitHub. Press Submit there to store them.';
         void prepare();
       });
