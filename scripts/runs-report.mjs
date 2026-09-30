@@ -36,10 +36,10 @@ if (argv.includes('--json')) {
 
 if (toys) {
   console.log(`${runs.length} toy run(s)${shown.length < runs.length ? `, newest ${shown.length} shown` : ''}`);
-  console.log('| ended (UTC) | build | mode | result | ore/quota | nights | score | peak x | trips | upgrades | daily | hard | secs | distance | rail share | hop-offs | auto-banks | push mine/bank |');
-  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+  console.log('| ended (UTC) | build | mode | result | ore/quota | nights | score | peak x | trips | upgrades | daily | hard | secs | distance | rail share | hop-offs | grabs | missed grabs (angle/unarmed) | auto-banks | push mine/bank |');
+  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const r of shown) {
-    console.log(`| ${r.at.slice(0, 16).replace('T', ' ')} | ${r.build} | ${r.mode.replace('toy:', '')} | ${r.result} | ${r.ore}${r.quota ? `/${r.quota}` : ''} | ${r.nightsCleared ?? '-'} | ${r.score ?? '-'} | ${r.multPeak ?? '-'} | ${r.trips ?? '-'} | ${(r.upgrades ?? []).join(',') || '-'} | ${r.daily ? 'yes' : 'no'} | ${r.hard ? 'yes' : '-'} | ${r.seconds ?? '-'} | ${r.distance ?? '-'} | ${r.railShare ?? '-'} | ${r.hopOffs ?? '-'} | ${r.autoBanks ?? '-'} | ${r.pushMine != null ? `${r.pushMine}/${r.pushBank}` : '-'} |`);
+    console.log(`| ${r.at.slice(0, 16).replace('T', ' ')} | ${r.build} | ${r.mode.replace('toy:', '')} | ${r.result} | ${r.ore}${r.quota ? `/${r.quota}` : ''} | ${r.nightsCleared ?? '-'} | ${r.score ?? '-'} | ${r.multPeak ?? '-'} | ${r.trips ?? '-'} | ${(r.upgrades ?? []).join(',') || '-'} | ${r.daily ? 'yes' : 'no'} | ${r.hard ? 'yes' : '-'} | ${r.seconds ?? '-'} | ${r.distance ?? '-'} | ${r.railShare ?? '-'} | ${r.hopOffs ?? '-'} | ${r.grabs ?? '-'} | ${r.missedGrabs ? `${r.missedGrabs.angle}/${r.missedGrabs.unarmed}` : '-'} | ${r.autoBanks ?? '-'} | ${r.pushMine != null ? `${r.pushMine}/${r.pushBank}` : '-'} |`);
   }
   const byMode = new Map();
   for (const r of runs) {
