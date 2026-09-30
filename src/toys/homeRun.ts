@@ -136,6 +136,7 @@ let grid = new Map<string, { line: number; i: number }[]>();
 let rail: Rail | null = null;
 let steerHeld = 0;
 let armed = true;
+let leftAng = 0; // the way the rail was heading when you last came off it
 let backHeld = 0;
 let charge = 0;
 let chain = 0;
@@ -494,6 +495,7 @@ function hopOff(side: number): void {
   laying = lines.length - 1;
   addPoint(laying, at);
   rover.h = at.ang + side * 0.6;
+  leftAng = at.ang;
   rail = null;
   armed = false;
   if (!mods.chainKeeper) chain = 0;
@@ -747,6 +749,7 @@ function update(dt: number): void {
         laying = rail.line;
         rail = null;
         armed = false;
+        leftAng = p.ang;
         rover.h = p.ang;
         rover.v = Math.min(rover.v, LAY_SPEED * 1.3);
         if (!mods.chainKeeper) chain = 0;
@@ -777,10 +780,17 @@ function update(dt: number): void {
     // run data shows what "hard to get on" is made of.
     const over = road !== null && road.d < GRAB && ax.y > 0.1 && rover.v > 15;
     const along = road ? Math.cos(rover.h) * road.tx + Math.sin(rover.h) * road.ty : 0;
-    const grab = over && armed && Math.abs(along) >= GRAB_ALIGN;
+    // Just off the rail (a hop-off, or the end of your road), you stay off while
+    // you carry on the way you left, until you're clear of the road. Turn back
+    // (past about 100 degrees from the way you left) and the rail takes you at
+    // once: the owner's run data (issue #74) showed 15 missed grabs from the
+    // old clear-of-the-road rule and 1 from the angle.
+    const turnedBack = Math.cos(rover.h - leftAng) < -0.17;
+    const free = armed || turnedBack;
+    const grab = over && free && Math.abs(along) >= GRAB_ALIGN;
     if (over && !grab && !missing) {
       missing = true;
-      if (!armed) missedGrabs.unarmed += 1;
+      if (!free) missedGrabs.unarmed += 1;
       else missedGrabs.angle += 1;
     }
     if (!over) missing = false;

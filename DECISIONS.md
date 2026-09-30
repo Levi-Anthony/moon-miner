@@ -2018,3 +2018,13 @@ New merges add a row here. Decisions in this range that change what older entrie
   Run data now logs `grabs` and `missedGrabs` (`angle`, `unarmed`, `recovered`): each time you're over your road with the throttle on and don't get on, and why.
 
   For the port: the 3D game's grab needs you within about 53° (`ROAD_ALIGN_MIN` 0.6), and issue #69 had it at 0.66 (about 49°). That's stricter than the old toy.
+- **Turn back and the rail takes you (2026-09-30, DEV-68):** issue #74 holds the first runs on the PR #73 build.
+  - **Endless:** 111 s, 4 trips, peak x5. Digging pushed the night back 903 px and banking 704 px, so both now count. 8 grabs.
+  - **Contract:** night 2, 34/35, logged "abandoned" because the page closed to send runs.
+  - **Missed grabs:** 1 from the angle and 15 from the old rule that you had to be 40 px clear of all road after leaving the rail (a hop-off, or riding off the end of your road). So the 80° grab works, and the clearance rule was the friction left.
+
+  Now you stay off only while you carry on the way you left. Once you turn back more than about 100° from that way, the rail takes you at once.
+
+  Headless, after a deliberate hop-off:
+  - Spinning round and driving back grabbed within 1 px. The old build drove 232 px along the road without the rail and logged the miss.
+  - Carrying on after a hop-off still stays off.
