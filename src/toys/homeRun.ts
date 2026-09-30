@@ -27,10 +27,6 @@ const ROAD_W = 26;
 const GRAB = 30;
 const GRAB_ALIGN = Math.cos((70 * Math.PI) / 180);
 const FRESH = 12;
-const LEAVE_STEER = 0.75;
-const LEAVE_HOLD = 0.2;
-const SLOW = 60;
-const SLOW_STEER = 0.4;
 const FLIP_HOLD = 0.25;
 const POINT_GAP = 14;
 const DEPOT_R = 46;
@@ -39,15 +35,53 @@ const CELL = 64;
 // Contract
 const QUOTAS = [20, 35, 55, 80, 110];
 const NIGHT = 60; // seconds for the ring to reach the depot
-// Endless
-const ENDLESS_SPEED0 = 16; // px/s the night closes at first
-const ENDLESS_ACCEL = 0.9; // and how much faster each second
-const PUSH_BACK = 0.25; // share of lost ground a bank wins back
+// Endless Night's rules, all in one place, so a variant (a harder level, a later
+// mode, the 3D port) is a change of data, not of code (owner, 2026-09-30).
+// The night closes at speed0 + accel * heat. Heat builds one per second; a bank
+// cools it. Digging pushes the night back as you dig (owner: "the border pushes
+// back live while nibbling, slurping"); a bank pushes it back further, more at a
+// higher multiplier; a long enough scoop chain banks itself.
+interface NightRules {
+  speed0: number; // px/s the night closes at first
+  accel: number; // px/s faster per unit of heat
+  pushPerOre: number; // px the night falls back per ore dug off a nibble
+  scoopPushPerOre: number; // px per ore scooped (chain bonus included in the ore)
+  bankShare: number; // share of lost ground a bank wins back at x1
+  bankShareStep: number; // added per multiplier step
+  bankShareMax: number;
+  bankCool: number; // share of heat a bank takes off
+  autoBankChain: number; // a scoop chain this long banks itself (0 = never)
+}
+const ENDLESS: NightRules = {
+  speed0: 12,
+  accel: 0.45,
+  pushPerOre: 5,
+  scoopPushPerOre: 8,
+  bankShare: 0.25,
+  bankShareStep: 0.05,
+  bankShareMax: 0.6,
+  bankCool: 0.2,
+  autoBankChain: 5
+};
+const PUSH_RATE = 4; // a push plays out over about 1/4 s, so you see the night fall back
+const PUSH_RATE_MIN = 240; // px/s
 // The dark is not lethal (owner, 2026-09-30): off your road, your load leaks
 // away; on your road it's safe. Not home when night falls = stranded: the load
-// is lost, but what you banked counts.
+// is lost, but what you banked counts. Hard (a title toggle) brings the lethal
+// dark back: caught in it off your road ends the run.
 const DARK_LEAK = 0.35; // share of the load lost per second, off-road in the dark
 const DARK_LEAK_MIN = 2; // ore per second, so a small load still drains
+// How close to your own road counts as on it, for the dark. Safety doesn't hang
+// on the rail lock: sitting on your road is enough.
+const SAFE_R = ROAD_W / 2 + 6;
+// Border cues start this many seconds before the dark reaches you.
+const WARN_S = 8;
+// Getting off the rail on purpose: a full sideways hold at speed, or any clear
+// sideways push once stopped. Nothing else lets go.
+const LEAVE_FULL = 0.85;
+const LEAVE_SECONDS = 0.35;
+const STOPPED = 8;
+const STOPPED_STEER = 0.5;
 
 type Mode = 'contract' | 'endless';
 type Phase = 'title' | 'play' | 'shop' | 'over';
@@ -89,6 +123,7 @@ const stick = new Stick(screen.canvas);
 const parts = new Particles();
 const shake = new Shake();
 const hum = new Hum();
+const darkHum = new Hum();
 
 // --- run state -------------------------------------------------------------------
 let rover = { x: 0, y: 0, h: -Math.PI / 2, v: 0 };
@@ -118,12 +153,23 @@ let time = 0;
 let phaseAt = 0;
 let dist = 0;
 let railDist = 0;
+let heat = 0; // endless: what drives the night's closing speed
+let ringPush = 0; // px of push-back still to play out
+let ringFlash = 0; // 0..1 glow on the border while it falls back
+let pushMine = 0; // px of push-back from digging, this run
+let pushBank = 0; // px of push-back from banks, this run
+let autoBanks = 0;
+let hopOffs = 0;
+let runLogged = false;
+let mapReach = RING0 * 1.3; // the minimap's radius in world px
+let nearest = { gap: Infinity, x: 0, y: 0 }; // the nearest point of the border
 const cam: Cam = { x: 0, y: 0, rot: -Math.PI / 2, z: 1 };
 
 // --- loop state -------------------------------------------------------------------
 let phase: Phase = 'title';
 let mode: Mode = 'contract';
 let daily = false;
+let hard = false;
 let seed = 1;
 let mods: Mods = cloneMods(BASE);
 let night = 1;
@@ -165,6 +211,44 @@ function addSeams(r: () => number, n: number, dMin: number, dMax: number): void 
   }
 }
 
+// Endless: fresh ore after a bank, in the band just inside the border. Most of
+// it lands beyond the tips of your road, so the road you built keeps paying: a
+// line pushed toward the border is a line to the next ore (owner, 2026-09-30:
+// "I couldn't ever get a good strategy going").
+function addSeamsBeyondRoad(r: () => number, n: number): void {
+  const tips = lines
+    .filter((l) => l.pts.length >= 2)
+    .map((l) => l.pts[l.pts.length - 1])
+    .filter((p) => Math.hypot(p.x, p.y) > DEPOT_R * 3)
+    .sort((a, b) => Math.hypot(b.x, b.y) - Math.hypot(a.x, a.y))
+    .slice(0, 4);
+  for (let k = 0; k < n; k += 1) {
+    const tip = tips.length && r() < 0.7 ? tips[Math.floor(r() * tips.length)] : null;
+    if (!tip) {
+      addSeams(r, 1, ringR * 0.55, ringR * 0.92);
+      continue;
+    }
+    const ta = Math.atan2(tip.y, tip.x);
+    const td = Math.hypot(tip.x, tip.y);
+    let placed = false;
+    for (let tries = 0; tries < 40 && !placed; tries += 1) {
+      const a = ta + (r() - 0.5) * 0.7;
+      const edge = ringAt(a) * 0.92;
+      const lo = Math.max(td + 90, ringR * 0.45);
+      if (lo >= edge) continue;
+      const d = lo + r() * (edge - lo);
+      const x = Math.cos(a) * d;
+      const y = Math.sin(a) * d;
+      if (seams.some((s) => s.ore > 0 && Math.hypot(s.x - x, s.y - y) < 150)) continue;
+      const ore = Math.round(4 + d / 55);
+      seams.push({ x, y, a: r() * Math.PI, len: 60 + d / 25 + r() * 30, w: 26 + r() * 12, ore, max: ore, gone: 0 });
+      placed = true;
+    }
+    // The tip is already at the border: put it somewhere in the band instead.
+    if (!placed) addSeams(r, 1, ringR * 0.55, ringR * 0.92);
+  }
+}
+
 function newMap(): void {
   const r = rng(seed);
   lines = [];
@@ -173,7 +257,9 @@ function newMap(): void {
   ringPhase = [r() * Math.PI * 2, r() * Math.PI * 2];
   ringMinFactor = Infinity;
   for (let k = 0; k < 90; k += 1) ringMinFactor = Math.min(ringMinFactor, ringFactor((k / 90) * Math.PI * 2));
-  addSeams(r, 16, 230, 1510);
+  // Endless keeps its first ore inside the border's nearest lobe, so none of it
+  // is gone before you start.
+  addSeams(r, 16, 230, mode === 'endless' ? RING0 * ringMinFactor * 0.9 : 1510);
 }
 
 // Put the rover back at the depot for a new night/run. The road tree, seams and
@@ -192,6 +278,11 @@ function startNight(): void {
   carry = 0;
   banked = 0;
   ringR = RING0;
+  heat = 0;
+  ringPush = 0;
+  ringFlash = 0;
+  mapReach = RING0 * 1.3;
+  nearest = { gap: Infinity, x: 0, y: 0 };
   pops = [];
   started = false;
   stranded = false;
@@ -222,6 +313,11 @@ function startMode(m: Mode): void {
   trips = 0;
   dist = 0;
   railDist = 0;
+  pushMine = 0;
+  pushBank = 0;
+  autoBanks = 0;
+  hopOffs = 0;
+  runLogged = false;
   newMap();
   startNight();
   blip(520, 0.1, 'triangle', 0.2, 780);
@@ -237,6 +333,46 @@ function ringAt(a: number): number {
 function outsideRing(x: number, y: number): boolean {
   return Math.hypot(x, y) > ringAt(Math.atan2(y, x));
 }
+// Endless: how fast the night is closing right now, px/s.
+function closingSpeed(): number {
+  return ENDLESS.speed0 + ENDLESS.accel * heat;
+}
+// Endless: push the night back by px. It plays out over a moment (see update),
+// so you watch the border fall back instead of it jumping.
+function pushNight(px: number, from: 'mine' | 'bank'): void {
+  if (mode !== 'endless' || px <= 0) return;
+  ringPush += px;
+  if (from === 'mine') pushMine += px;
+  else pushBank += px;
+  ringFlash = Math.min(1, ringFlash + (from === 'bank' ? 1 : px / 120));
+}
+// The nearest point of the border to the rover, and how far off it is.
+function findNearest(): void {
+  let best = { gap: Infinity, x: 0, y: 0 };
+  for (let k = 0; k < 144; k += 1) {
+    const a = (k / 144) * Math.PI * 2;
+    const R = ringAt(a);
+    const x = Math.cos(a) * R;
+    const y = Math.sin(a) * R;
+    const d = Math.hypot(x - rover.x, y - rover.y);
+    if (d < best.gap) best = { gap: d, x, y };
+  }
+  nearest = best;
+}
+// Seconds until the dark reaches you where you stand (Infinity once you're in it,
+// or when the night isn't moving).
+function secondsToDark(): number {
+  if (inDark) return 0;
+  const v = mode === 'endless' ? closingSpeed() : RING0 / (NIGHT + mods.dusk);
+  return v > 0 ? nearest.gap / v : Infinity;
+}
+// On your own road, for the dark: locked on, or sitting on road laid before.
+function onOwnRoad(): boolean {
+  if (rail) return true;
+  const road = nearestRoad(rover);
+  return road !== null && road.d <= SAFE_R;
+}
+
 function quota(): number {
   return QUOTAS[Math.min(night, QUOTAS.length) - 1];
 }
@@ -336,6 +472,7 @@ function advanceRail(r: Rail, d: number): 'ok' | 'home' | 'tip' {
 
 function hopOff(side: number): void {
   if (!rail) return;
+  hopOffs += 1;
   const at = railPoint(rail);
   lines.push({ pts: [], parent: { line: rail.line, i: rail.i, t: rail.t } });
   laying = lines.length - 1;
@@ -374,8 +511,14 @@ function inSeam(s: Seam, p: Vec, pad: number): boolean {
 }
 
 // --- how a night / run ends ---------------------------------------------------------
+// Each run is logged once: at its end, or as 'abandoned' if the page closes
+// mid-run (a run only counted when it ended, so closing the tab lost it).
 function logRun(result: string): void {
-  const common = { seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, distance: Math.round(dist), railShare: dist > 0 ? +(railDist / dist).toFixed(2) : 0 };
+  if (runLogged) return;
+  runLogged = true;
+  const common = {
+    seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(dist), railShare: dist > 0 ? +(railDist / dist).toFixed(2) : 0, hopOffs
+  };
   if (mode === 'contract') {
     logToyRun({
       ...common, mode: 'toy:home-run:contract', level: night, levelName: `night ${night}`, day: night, result,
@@ -387,17 +530,21 @@ function logRun(result: string): void {
     logToyRun({
       ...common, mode: 'toy:home-run:endless', level: null, levelName: null, day: 1, result,
       ore: Math.round(banked), quota: 0, score: Math.round(score), multPeak, trips, seconds: Math.round(elapsed),
-      lostInDark: Math.round(lostTotal)
+      lostInDark: Math.round(lostTotal), autoBanks, pushMine: Math.round(pushMine), pushBank: Math.round(pushBank), closingEnd: Math.round(closingSpeed())
     });
     statsE = recordPlay(`${TOY}-endless`, score);
   }
   recordPlay(TOY, mode === 'contract' ? totalBanked : score);
 }
+window.addEventListener('pagehide', () => {
+  if (phase === 'play' && started) logRun('abandoned');
+});
 
 function gameOver(result: string): void {
   phase = 'over';
   phaseAt = time;
   hum.mute();
+  darkHum.mute();
   logRun(result);
   shake.kick(stranded ? 14 : 6);
   blip(stranded ? 170 : 660, 0.6, stranded ? 'sawtooth' : 'triangle', 0.3, stranded ? 55 : 990);
@@ -439,6 +586,7 @@ function nightfall(): void {
   // (A thumb still held down from driving makes no new tap.)
   stick.consumeTap();
   hum.mute();
+  darkHum.mute();
   [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => blip(f, 0.14, 'triangle', 0.22), i * 80));
 }
 
@@ -469,6 +617,9 @@ function update(dt: number): void {
       else if (tapIn(L.daily)) {
         daily = !daily;
         blip(daily ? 700 : 500, 0.06, 'triangle', 0.15);
+      } else if (tapIn(L.hard)) {
+        hard = !hard;
+        blip(hard ? 300 : 500, 0.08, hard ? 'sawtooth' : 'triangle', 0.15);
       }
     }
     return;
@@ -509,13 +660,21 @@ function update(dt: number): void {
       return;
     }
   } else {
-    ringR -= (ENDLESS_SPEED0 + ENDLESS_ACCEL * elapsed) * dt;
+    heat += dt;
+    ringR -= closingSpeed() * dt;
+    // Push-back plays out over a moment, so you see the border fall back.
+    if (ringPush > 0) {
+      const step = Math.min(ringPush, Math.max(PUSH_RATE_MIN, ringPush * PUSH_RATE) * dt);
+      ringPush -= step;
+      ringR = Math.min(RING0, ringR + step);
+    }
     if (ringR * ringMinFactor <= DEPOT_R) {
       strand();
       gameOver(stranded ? 'stranded' : 'nightfall');
       return;
     }
   }
+  ringFlash = Math.max(0, ringFlash - dt * 1.5);
   for (const s of seams) {
     if (s.ore > 0 && outsideRing(s.x, s.y)) {
       s.ore = 0;
@@ -523,19 +682,31 @@ function update(dt: number): void {
     }
   }
   inDark = outsideRing(rover.x, rover.y);
-  if (inDark && !rail && carry > 0) {
-    const leak = Math.min(carry, Math.max(DARK_LEAK * carry, DARK_LEAK_MIN) * dt);
-    carry -= leak;
-    lost += leak;
-    lostTotal += leak;
-    if (Math.random() < 0.4) parts.trail(rover.x + (Math.random() - 0.5) * 16, rover.y + (Math.random() - 0.5) * 16, '#b48cff', 2, 0.6);
+  if (inDark && !onOwnRoad()) {
+    if (hard) {
+      strand();
+      gameOver('caught');
+      return;
+    }
+    if (carry > 0) {
+      const leak = Math.min(carry, Math.max(DARK_LEAK * carry, DARK_LEAK_MIN) * dt);
+      carry -= leak;
+      lost += leak;
+      lostTotal += leak;
+      if (Math.random() < 0.4) parts.trail(rover.x + (Math.random() - 0.5) * 16, rover.y + (Math.random() - 0.5) * 16, '#b48cff', 2, 0.6);
+    }
   }
 
   const px = rover.x;
   const py = rover.y;
   if (rail) {
-    steerHeld = Math.abs(ax.x) >= LEAVE_STEER ? steerHeld + dt : 0;
-    if (steerHeld >= LEAVE_HOLD || (rover.v < SLOW && Math.abs(ax.x) >= SLOW_STEER)) {
+    // Off the rail only on purpose: a full sideways hold at speed (the arc on the
+    // rover shows it filling), or a clear sideways push once stopped. Braking,
+    // a drifting thumb, or steering into a bend never drops you (owner,
+    // 2026-09-30: "the road/rail needs to be reliable").
+    steerHeld = Math.abs(ax.x) >= LEAVE_FULL && ax.y > -0.3 ? steerHeld + dt : 0;
+    const stoppedSteer = rover.v < STOPPED && Math.abs(ax.x) >= STOPPED_STEER && ax.y > -0.3;
+    if (steerHeld >= LEAVE_SECONDS || stoppedSteer) {
       hopOff(Math.sign(ax.x));
     } else {
       const target = mods.railBase + mods.railBonus * charge;
@@ -569,6 +740,7 @@ function update(dt: number): void {
   }
 
   if (!rail) {
+    steerHeld = 0;
     charge = Math.max(0, charge - 1.5 * dt);
     const turn = rover.v < 10 ? 1.8 : 2.9 - Math.min(1.3, rover.v / 150);
     rover.h += ax.x * turn * dt;
@@ -600,7 +772,8 @@ function update(dt: number): void {
   dist += moved;
   if (rail) railDist += moved;
 
-  // Seams: scoop at charged rail speed, nibble otherwise.
+  // Seams: scoop at charged rail speed, nibble otherwise. In Endless, what you
+  // dig pushes the night back as you dig it.
   const scooping = rail !== null && charge >= SCOOP_CHARGE && rover.v >= SCOOP_SPEED;
   for (const s of seams) {
     if (s.ore <= 0 || !inSeam(s, rover, scooping ? mods.scoopPad : 0)) continue;
@@ -609,57 +782,81 @@ function update(dt: number): void {
       const gain = s.ore * (1 + 0.25 * (chain - 1));
       carry += gain;
       s.ore = 0;
+      pushNight(gain * ENDLESS.scoopPushPerOre, 'mine');
       parts.burst(s.x, s.y, 40, '#ffcf5a', 320, 4, 0.8);
       shake.kick(10 + chain * 3);
       blip(440 * Math.pow(1.19, Math.min(chain, 8)), 0.18, 'square', 0.28, 1400);
       pop(rover.x, rover.y, chain > 1 ? `SCOOP x${chain}  +${gain.toFixed(0)}` : `SCOOP +${gain.toFixed(0)}`);
+      if (mode === 'endless' && ENDLESS.autoBankChain > 0 && chain >= ENDLESS.autoBankChain) {
+        autoBanks += 1;
+        bank(true);
+        chain = 0;
+      }
     } else {
       const take = Math.min(s.ore, mods.nibble * dt);
       s.ore -= take;
       carry += take;
+      pushNight(take * ENDLESS.pushPerOre, 'mine');
       if (Math.random() < 0.5) parts.trail(rover.x + (Math.random() - 0.5) * 20, rover.y + (Math.random() - 0.5) * 20, '#e8b04a', 2, 0.5);
       if (Math.random() < 0.08) blip(300 + Math.random() * 60, 0.03, 'square', 0.06);
     }
   }
 
   // Bank at the depot or an outpost.
-  if (carry > 0.5 && atBank(rover)) {
-    banked += carry;
-    trips += 1;
-    let text = `BANKED +${carry.toFixed(0)}`;
-    if (mode === 'endless') {
-      score += carry * mult;
-      text = `BANKED +${carry.toFixed(0)} x${mult}`;
-      ringR += (RING0 - ringR) * PUSH_BACK; // the night gives back a little
-      mult += 1;
-      multPeak = Math.max(multPeak, mult);
-      // New ore appears in the ground you just won back.
-      addSeams(rng((seed ^ (trips * 40503)) >>> 0), 2, ringR * 0.55, ringR * 0.92);
-    }
-    pop(rover.x, rover.y, text, '#78f7df');
-    parts.burst(rover.x, rover.y, 50, '#78f7df', 260, 3, 0.9);
-    shake.kick(8);
-    [523, 659, 784].forEach((f, i) => setTimeout(() => blip(f, 0.12, 'triangle', 0.22), i * 70));
-    carry = 0;
-    if (!mods.chainKeeper) chain = 0;
-  }
+  if (carry > 0.5 && atBank(rover)) bank(false);
 
-  const gap = ringAt(Math.atan2(rover.y, rover.x)) - Math.hypot(rover.x, rover.y);
-  const rate = gap < 100 ? 6 : 3;
-  if (gap < 220 && Math.floor(time * rate) !== Math.floor((time - dt) * rate)) blip(gap < 100 ? 990 : 760, 0.04, 'square', 0.1);
+  // Border cues: they build as the dark gets closer in seconds, and come from
+  // the side it's on (owner, 2026-09-30: "I had no idea how far away it was").
+  findNearest();
+  const ttd = secondsToDark();
+  const urgency = inDark ? 1 : Math.max(0, 1 - ttd / WARN_S);
+  darkHum.set(urgency, 38, 70, 0);
+  if (!inDark && urgency > 0) {
+    const rate = 1 + 7 * urgency;
+    if (Math.floor(time * rate) !== Math.floor((time - dt) * rate)) blip(520 + 520 * urgency, 0.04, 'square', 0.05 + 0.08 * urgency);
+  }
 
   if (rail && rover.v > 200 && Math.random() < 0.6) parts.trail(rover.x - Math.cos(rover.h) * 14, rover.y - Math.sin(rover.h) * 14, '#78f7df', 2, 0.35);
   hum.set(Math.min(1, Math.abs(rover.v) / (mods.railBase + mods.railBonus)), 50, rail ? 160 : 70);
 }
 
+// Bank the load: at the depot or an outpost, or (auto) mid-field when a scoop
+// chain gets long enough. In Endless it scores x mult, drives the night back
+// (farther at a higher multiplier), cools it, and grows ore beyond your road.
+function bank(auto: boolean): void {
+  banked += carry;
+  trips += 1;
+  let text = `${auto ? 'AUTO-BANK' : 'BANKED'} +${carry.toFixed(0)}`;
+  if (mode === 'endless') {
+    score += carry * mult;
+    text += ` x${mult}`;
+    const share = Math.min(ENDLESS.bankShareMax, ENDLESS.bankShare + ENDLESS.bankShareStep * (mult - 1));
+    const won = (RING0 - ringR - ringPush) * share;
+    pushNight(won, 'bank');
+    heat *= 1 - ENDLESS.bankCool;
+    if (won > 1) pop(nearest.x, nearest.y, `+${won.toFixed(0)}m`, '#b8a8ff');
+    mult += 1;
+    multPeak = Math.max(multPeak, mult);
+    addSeamsBeyondRoad(rng((seed ^ (trips * 40503)) >>> 0), 3);
+    blip(180, 0.5, 'sawtooth', 0.12, 520);
+  }
+  pop(rover.x, rover.y, text, '#78f7df');
+  parts.burst(rover.x, rover.y, 50, '#78f7df', 260, 3, 0.9);
+  shake.kick(auto ? 12 : 8);
+  [523, 659, 784].forEach((f, i) => setTimeout(() => blip(f, 0.12, 'triangle', 0.22), i * 70));
+  carry = 0;
+  if (!mods.chainKeeper) chain = 0;
+}
+
 // --- screens ------------------------------------------------------------------------
-function titleLayout(): { contract: Rect; endless: Rect; daily: Rect } {
+function titleLayout(): { contract: Rect; endless: Rect; daily: Rect; hard: Rect } {
   const { w, h } = screen;
   const top = Math.max(150, h * 0.26);
   return {
     contract: { x: 16, y: top, w: w - 32, h: 112 },
     endless: { x: 16, y: top + 126, w: w - 32, h: 112 },
-    daily: { x: 16, y: top + 252, w: w - 32, h: 46 }
+    daily: { x: 16, y: top + 252, w: w - 32, h: 46 },
+    hard: { x: 16, y: top + 308, w: w - 32, h: 46 }
   };
 }
 
@@ -699,20 +896,25 @@ function drawTitle(): void {
   ctx.font = '12px ui-monospace, monospace';
   ctx.fillText('up = go · left/right = steer', w / 2, Math.max(100, h * 0.1 + 30));
   ctx.fillText('road lays behind you; drive onto it to ride home', w / 2, Math.max(118, h * 0.1 + 48));
-  ctx.fillText('hold a full turn to hop off the rail', w / 2, Math.max(136, h * 0.1 + 66));
+  ctx.fillText('hold a full turn to hop off (or stop, then steer)', w / 2, Math.max(136, h * 0.1 + 66));
   const L = titleLayout();
   card(L.contract, 'CONTRACT', ['5 nights, rising quota. Miss one: over.', 'Surplus buys upgrades; your road stays.', `best ${statsC.best} · played ${statsC.plays}`], '#ffd27a');
-  card(L.endless, 'ENDLESS NIGHT', ['One night, closing ever faster.', 'Banking pushes it back, ups the x.', `best ${statsE.best} · played ${statsE.plays}`], '#b8a8ff');
-  ctx.fillStyle = daily ? '#12302c' : '#0b0f16';
-  ctx.strokeStyle = daily ? '#78f7df' : '#263041';
+  card(L.endless, 'ENDLESS NIGHT', ['One night, closing ever faster.', 'Digging holds it; banks drive it back.', `best ${statsE.best} · played ${statsE.plays}`], '#b8a8ff');
+  toggle(L.daily, daily, '#78f7df', '#12302c', daily ? `DAILY MAP ON · ${new Date().toISOString().slice(0, 10)}` : 'daily map: off (tap for today’s)');
+  toggle(L.hard, hard, '#ff8a5c', '#33170f', hard ? 'HARD ON · the dark kills off your road' : 'hard: off (tap: the dark kills)');
+}
+
+function toggle(r: Rect, on: boolean, color: string, fill: string, text: string): void {
+  ctx.fillStyle = on ? fill : '#0b0f16';
+  ctx.strokeStyle = on ? color : '#263041';
   ctx.beginPath();
-  ctx.roundRect(L.daily.x, L.daily.y, L.daily.w, L.daily.h, 10);
+  ctx.roundRect(r.x, r.y, r.w, r.h, 10);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = daily ? '#78f7df' : '#8fa3ba';
+  ctx.fillStyle = on ? color : '#8fa3ba';
   ctx.font = 'bold 15px ui-monospace, monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(daily ? `DAILY MAP ON · ${new Date().toISOString().slice(0, 10)}` : 'daily map: off (tap for today’s)', w / 2, L.daily.y + 29);
+  ctx.fillText(text, r.x + r.w / 2, r.y + 29);
 }
 
 function drawShop(): void {
@@ -847,8 +1049,23 @@ function drawWorld(dt: number): void {
     ctx.closePath();
     ctx.fillStyle = 'rgba(3,3,10,0.92)';
     ctx.fill('evenodd');
-    for (const [width, alpha] of [[40, 0.12], [14, 0.3], [4, 0.9]] as const) {
-      ctx.strokeStyle = `rgba(150,110,255,${alpha})`;
+    // Dusk: the ground darkens over the last stretch before the border, so
+    // driving toward it reads as getting darker, not as a line appearing.
+    for (let k = 6; k >= 1; k -= 1) {
+      ctx.strokeStyle = `rgba(20,10,50,${0.07 * (7 - k)})`;
+      ctx.lineWidth = 48;
+      ctx.beginPath();
+      for (let j = 0; j <= 120; j += 1) {
+        const a = (j / 120) * Math.PI * 2;
+        const R = Math.max(0, ringAt(a) - k * 44 + 22);
+        if (j) ctx.lineTo(Math.cos(a) * R, Math.sin(a) * R);
+        else ctx.moveTo(Math.cos(a) * R, Math.sin(a) * R);
+      }
+      ctx.stroke();
+    }
+    // The border itself; it flares while it's being pushed back.
+    for (const [width, alpha] of [[40 + 40 * ringFlash, 0.12 + 0.2 * ringFlash], [14, 0.3 + 0.3 * ringFlash], [4, 0.9]] as const) {
+      ctx.strokeStyle = ringFlash > 0.05 ? `rgba(${150 + 80 * ringFlash},${110 + 120 * ringFlash},255,${alpha})` : `rgba(150,110,255,${alpha})`;
       ctx.lineWidth = width;
       ctx.beginPath();
       ring.forEach((p, k) => (k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
@@ -865,6 +1082,14 @@ function drawWorld(dt: number): void {
     ctx.beginPath();
     ctx.arc(0, 0, 22, 0, Math.PI * 2 * charge);
     ctx.stroke();
+    // Hop-off hold filling: you always see it coming.
+    if (steerHeld > 0) {
+      ctx.strokeStyle = '#ffd27a';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, 0, 29, 0, Math.PI * 2 * Math.min(1, steerHeld / LEAVE_SECONDS));
+      ctx.stroke();
+    }
   }
   ctx.rotate(rover.h);
   ctx.fillStyle = charge >= SCOOP_CHARGE && rail ? '#fff1c4' : '#d9a441';
@@ -895,6 +1120,27 @@ function drawWorld(dt: number): void {
     .forEach((s) => edgeArrow(ctx, w, h, cam, s.x, s.y, 'rgba(232,176,74,0.75)', 7));
   edgeArrow(ctx, w, h, cam, 0, 0, carry > 0 ? '#78f7df' : 'rgba(120,247,223,0.55)', 11);
 
+  // The dark's side: a glow from the screen edge nearest the border, building
+  // as it gets closer in seconds. Off screen, an arrow points at it.
+  if (started && phase === 'play') {
+    const u = inDark ? 1 : Math.max(0, 1 - secondsToDark() / WARN_S);
+    if (u > 0) {
+      const c = { x: w / 2, y: h * 0.6 };
+      const sp = camToScreen(cam, w, h, nearest.x, nearest.y);
+      const dx = sp.x - c.x;
+      const dy = sp.y - c.y;
+      const L = Math.hypot(dx, dy) || 1;
+      const reach = Math.max(w, h) * 0.75;
+      const g = ctx.createLinearGradient(c.x + (dx / L) * reach, c.y + (dy / L) * reach, c.x, c.y);
+      g.addColorStop(0, `rgba(120,70,255,${0.55 * u})`);
+      g.addColorStop(0.55, 'rgba(120,70,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+      if (!inDark) edgeArrow(ctx, w, h, cam, nearest.x, nearest.y, `rgba(184,140,255,${0.4 + 0.6 * u})`, 9);
+    }
+    drawMinimap(w);
+  }
+
   // HUD.
   const f = ringR / RING0;
   ctx.fillStyle = '#1b2230';
@@ -919,15 +1165,17 @@ function drawWorld(dt: number): void {
   ctx.fillStyle = carry > 0 ? '#ffd27a' : '#6b7d92';
   ctx.fillText(`CARRY ${carry.toFixed(0)}`, w - 14, 42);
   if (started && phase === 'play') {
-    const gap = ringAt(Math.atan2(rover.y, rover.x)) - Math.hypot(rover.x, rover.y);
+    const ttd = secondsToDark();
     ctx.textAlign = 'center';
     ctx.font = 'bold 14px ui-monospace, monospace';
-    ctx.fillStyle = gap < 120 ? '#ff8a5c' : '#b8a8ff';
+    ctx.fillStyle = ttd < 3 ? '#ff8a5c' : ttd < WARN_S ? '#d8b8ff' : '#8fa7ff';
     if (inDark) {
-      ctx.fillStyle = rail ? '#78f7df' : '#ff8a5c';
-      ctx.fillText(rail ? 'IN THE DARK · your road keeps your load' : carry > 0 ? 'IN THE DARK · load leaking, find your road' : 'IN THE DARK', w / 2, 72);
+      const safe = onOwnRoad();
+      ctx.fillStyle = safe ? '#78f7df' : '#ff8a5c';
+      ctx.fillText(safe ? 'IN THE DARK · your road keeps your load' : carry > 0 ? 'IN THE DARK · load leaking, find your road' : 'IN THE DARK', w / 2, 72);
     } else {
-      ctx.fillText(`dark ${Math.max(0, Math.round(gap))}m`, w / 2, 72);
+      const push = mode === 'endless' && ringPush > 1 ? '  ▲ pushing back' : '';
+      ctx.fillText(`dark in ${ttd > 30 ? '30+' : ttd.toFixed(1)} s${push}`, w / 2, 72);
     }
     if (rail) {
       ctx.fillStyle = charge >= SCOOP_CHARGE ? '#fff1c4' : '#78f7df';
@@ -938,9 +1186,92 @@ function drawWorld(dt: number): void {
     const lines2 =
       mode === 'contract'
         ? [`Night ${night} of ${QUOTAS.length}: bank ${quota()} before the dark reaches home.`, 'Off your road, the dark leaks your load. Surplus buys upgrades.', 'Push up to begin.']
-        : ['Bank to push the night back and raise the multiplier.', 'In the dark, your load leaks unless you are on your road.', 'Push up to begin.'];
+        : ['Digging holds the night off; banking drives it back and ups the x.', `A ${ENDLESS.autoBankChain}-scoop chain banks itself. On your road, the dark can't touch your load.`, 'Push up to begin.'];
     banner(ctx, w, h, mode === 'contract' ? `NIGHT ${night}` : 'ENDLESS NIGHT', lines2);
   }
+}
+
+// Minimap (owner, 2026-09-30): the whole field around home, turned like the view
+// (up = the way you're facing), so the border, your road and the ore line up
+// with what's on screen. It zooms to keep the border and you in view, easing so
+// a push-back reads as the map opening out.
+function drawMinimap(w: number): void {
+  const r = 54;
+  const cx = w - 14 - r;
+  const cy = 108 + r;
+  const want = Math.max(ringR * 1.3, Math.hypot(rover.x, rover.y) * 1.15, 360);
+  mapReach += (want - mapReach) * 0.08;
+  const k = r / mapReach;
+  const rot = -Math.PI / 2 - cam.rot;
+  const cs = Math.cos(rot);
+  const sn = Math.sin(rot);
+  const at = (x: number, y: number): Vec => ({ x: cx + (x * cs - y * sn) * k, y: cy + (x * sn + y * cs) * k });
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(16,20,28,0.85)';
+  ctx.fill();
+  ctx.clip();
+  // The dark, outside the border.
+  ctx.beginPath();
+  ctx.rect(cx - r, cy - r, r * 2, r * 2);
+  for (let j = 0; j <= 72; j += 1) {
+    const a = (j / 72) * Math.PI * 2;
+    const p = at(Math.cos(a) * ringAt(a), Math.sin(a) * ringAt(a));
+    if (j) ctx.lineTo(p.x, p.y);
+    else ctx.moveTo(p.x, p.y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(3,3,10,0.9)';
+  ctx.fill('evenodd');
+  ctx.strokeStyle = ringFlash > 0.05 ? '#e0d0ff' : '#9670ff';
+  ctx.lineWidth = 1.5 + 2 * ringFlash;
+  ctx.stroke();
+  // Road.
+  ctx.strokeStyle = 'rgba(120,247,223,0.8)';
+  ctx.lineWidth = 1.5;
+  for (const line of lines) {
+    if (line.pts.length < 2) continue;
+    ctx.beginPath();
+    line.pts.forEach((p, j) => {
+      const q = at(p.x, p.y);
+      if (j) ctx.lineTo(q.x, q.y);
+      else ctx.moveTo(q.x, q.y);
+    });
+    ctx.stroke();
+  }
+  // Ore, sized by what's left.
+  ctx.fillStyle = '#e8b04a';
+  for (const s of seams) {
+    if (s.ore <= 0.5) continue;
+    const q = at(s.x, s.y);
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, 1.5 + Math.min(3, s.ore / 10), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Home and outposts, then you.
+  ctx.strokeStyle = '#78f7df';
+  ctx.lineWidth = 1.5;
+  for (const b of [{ x: 0, y: 0 }, ...mods.outposts]) {
+    const q = at(b.x, b.y);
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, 3, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  const me = at(rover.x, rover.y);
+  ctx.fillStyle = '#fff1c4';
+  ctx.beginPath();
+  ctx.moveTo(me.x, me.y - 5);
+  ctx.lineTo(me.x + 3.5, me.y + 4);
+  ctx.lineTo(me.x - 3.5, me.y + 4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = '#263041';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
 }
 
 function drawOver(): void {
@@ -980,12 +1311,16 @@ W.__toy = () => ({
   phase, mode, daily, seed, night, credit, totalBanked, taken, offers: offers.map((o) => o.id), mods: { ...mods, outposts: mods.outposts.length },
   started, stranded, inDark, lost, lostTotal, strandedNights, onRail: rail !== null, rail: rail ? { ...rail, ang: railPoint(rail).ang } : null,
   lines: lines.map((l) => ({ n: l.pts.length, parent: l.parent, pts: l.pts.filter((_, k) => k % 3 === 0 || k === l.pts.length - 1) })),
-  laying, h: rover.h, camRot: cam.rot, v: rover.v, x: rover.x, y: rover.y, charge, carry, banked, score, mult, trips, ringR,
+  laying, h: rover.h, camRot: cam.rot, v: rover.v, x: rover.x, y: rover.y, charge, carry, banked, score, mult, trips, ringR, ringPush, heat, hard,
+  closing: closingSpeed(), toDark: secondsToDark(), nearestGap: nearest.gap, onOwnRoad: onOwnRoad(), steerHeld, hopOffs, autoBanks, pushMine, pushBank, chain,
   dist: Math.hypot(rover.x, rover.y), seamsLive: seams.filter((s) => s.ore > 0).length, seams: seams.map((s) => ({ x: +s.x.toFixed(1), y: +s.y.toFixed(1), ore: s.ore }))
 });
 W.__toySkip = (s: number) => {
   elapsed += s;
-  if (mode === 'endless') ringR -= (ENDLESS_SPEED0 + ENDLESS_ACCEL * elapsed) * s;
+  if (mode === 'endless') {
+    heat += s;
+    ringR -= closingSpeed() * s;
+  }
 };
 W.__toyGive = (n: number) => {
   carry += n;

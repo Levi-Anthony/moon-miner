@@ -173,11 +173,12 @@ export function blip(freq: number, dur = 0.08, type: OscillatorType = 'square', 
   o.stop(t + dur + 0.02);
 }
 
-// A continuous hum whose pitch and level follow a 0..1 "intensity".
+// A continuous hum whose pitch and level follow a 0..1 "intensity". `floor` is
+// its level at intensity 0 (0 = silent until something rises).
 export class Hum {
   private o: OscillatorNode | null = null;
   private g: GainNode | null = null;
-  set(intensity: number, base = 55, span = 110): void {
+  set(intensity: number, base = 55, span = 110, floor = 0.02): void {
     if (!audio || !master) return;
     if (!this.o) {
       this.o = audio.createOscillator();
@@ -192,7 +193,7 @@ export class Hum {
     }
     const t = audio.currentTime;
     this.o.frequency.setTargetAtTime(base + span * intensity, t, 0.08);
-    this.g!.gain.setTargetAtTime(0.02 + 0.07 * intensity, t, 0.08);
+    this.g!.gain.setTargetAtTime(floor + 0.07 * intensity, t, 0.08);
   }
   mute(): void {
     if (audio && this.g) this.g.gain.setTargetAtTime(0, audio.currentTime, 0.1);
