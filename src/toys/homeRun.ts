@@ -25,7 +25,10 @@ const SCOOP_SPEED = 230;
 const BRAKE = 420;
 const ROAD_W = 26;
 const GRAB = 30;
-const GRAB_ALIGN = Math.cos((70 * Math.PI) / 180);
+// Getting on (owner, 2026-09-30: "it's hard to get on sometimes in the first
+// place"): driving onto your road anywhere within 80 degrees of its line grabs
+// it (was 70). Only a square crossing drives across it.
+const GRAB_ALIGN = Math.cos((80 * Math.PI) / 180);
 const FRESH = 12;
 const FLIP_HOLD = 0.25;
 const POINT_GAP = 14;
@@ -160,6 +163,9 @@ let pushMine = 0; // px of push-back from digging, this run
 let pushBank = 0; // px of push-back from banks, this run
 let autoBanks = 0;
 let hopOffs = 0;
+let grabs = 0;
+let missedGrabs = { angle: 0, unarmed: 0, recovered: 0 }; // times over your road without getting on
+let missing = false; // over the road right now without having got on
 let runLogged = false;
 let mapReach = RING0 * 1.3; // the minimap's radius in world px
 let nearest = { gap: Infinity, x: 0, y: 0 }; // the nearest point of the border
@@ -272,6 +278,7 @@ function startNight(): void {
   rail = null;
   steerHeld = 0;
   armed = true;
+  missing = false;
   backHeld = 0;
   charge = 0;
   chain = 0;
@@ -317,6 +324,8 @@ function startMode(m: Mode): void {
   pushBank = 0;
   autoBanks = 0;
   hopOffs = 0;
+  grabs = 0;
+  missedGrabs = { angle: 0, unarmed: 0, recovered: 0 };
   runLogged = false;
   newMap();
   startNight();
@@ -400,18 +409,24 @@ function addPoint(line: number, p: Vec): void {
 
 interface RoadHit { d: number; line: number; i: number; t: number; tx: number; ty: number; px: number; py: number }
 
-function nearestRoad(p: Vec): RoadHit | null {
+// The nearest road to p. The road you're laying right now trails behind you, so
+// its fresh end doesn't count while you're still heading the way you laid it.
+// Once you've turned back on it, it does: turning round onto the road you just
+// laid is the ride home.
+function nearestRoad(p: Vec, heading = rover.h): RoadHit | null {
   const cx = Math.floor(p.x / CELL);
   const cy = Math.floor(p.y / CELL);
+  const hx = Math.cos(heading);
+  const hy = Math.sin(heading);
   let best: RoadHit | null = null;
   for (let ox = -1; ox <= 1; ox += 1) {
     for (let oy = -1; oy <= 1; oy += 1) {
       for (const ref of grid.get(key(cx + ox, cy + oy)) ?? []) {
-        if (ref.line === laying && ref.i >= lines[laying].pts.length - FRESH) continue;
         const a = lines[ref.line].pts[ref.i];
         const b = lines[ref.line].pts[ref.i + 1];
         const dx = b.x - a.x;
         const dy = b.y - a.y;
+        if (ref.line === laying && ref.i >= lines[laying].pts.length - FRESH && dx * hx + dy * hy > 0) continue;
         const L2 = dx * dx + dy * dy || 1;
         const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2));
         const px = a.x + dx * t;
@@ -473,6 +488,7 @@ function advanceRail(r: Rail, d: number): 'ok' | 'home' | 'tip' {
 function hopOff(side: number): void {
   if (!rail) return;
   hopOffs += 1;
+  missing = true; // still over the road you just left: not a missed grab
   const at = railPoint(rail);
   lines.push({ pts: [], parent: { line: rail.line, i: rail.i, t: rail.t } });
   laying = lines.length - 1;
@@ -517,7 +533,7 @@ function logRun(result: string): void {
   if (runLogged) return;
   runLogged = true;
   const common = {
-    seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(dist), railShare: dist > 0 ? +(railDist / dist).toFixed(2) : 0, hopOffs
+    seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(dist), railShare: dist > 0 ? +(railDist / dist).toFixed(2) : 0, hopOffs, grabs, missedGrabs: { ...missedGrabs }
   };
   if (mode === 'contract') {
     logToyRun({
@@ -756,16 +772,28 @@ function update(dt: number): void {
     }
     const road = nearestRoad(rover);
     if (!armed && (!road || road.d > GRAB + 10)) armed = true;
-    if (armed && ax.y > 0.1 && rover.v > 15 && road && road.d < GRAB) {
-      const along = Math.cos(rover.h) * road.tx + Math.sin(rover.h) * road.ty;
-      if (Math.abs(along) >= GRAB_ALIGN) {
-        rail = { line: road.line, i: road.i, t: road.t, dir: along >= 0 ? 1 : -1 };
-        if (laying === lines.length - 1 && lines[laying].pts.length < 2 && lines[laying].parent) lines.pop();
-        laying = -1;
-        rover.x = road.px;
-        rover.y = road.py;
-        blip(520, 0.07, 'triangle', 0.18, 780);
-      }
+    // Grab: driving onto your road within 80 degrees of its line. Each time
+    // you're over your road with the throttle on and don't get on, log why, so
+    // run data shows what "hard to get on" is made of.
+    const over = road !== null && road.d < GRAB && ax.y > 0.1 && rover.v > 15;
+    const along = road ? Math.cos(rover.h) * road.tx + Math.sin(rover.h) * road.ty : 0;
+    const grab = over && armed && Math.abs(along) >= GRAB_ALIGN;
+    if (over && !grab && !missing) {
+      missing = true;
+      if (!armed) missedGrabs.unarmed += 1;
+      else missedGrabs.angle += 1;
+    }
+    if (!over) missing = false;
+    if (grab && road) {
+      grabs += 1;
+      if (missing) missedGrabs.recovered += 1;
+      missing = false;
+      rail = { line: road.line, i: road.i, t: road.t, dir: along >= 0 ? 1 : -1 };
+      if (laying === lines.length - 1 && lines[laying].pts.length < 2 && lines[laying].parent) lines.pop();
+      laying = -1;
+      rover.x = road.px;
+      rover.y = road.py;
+      blip(520, 0.07, 'triangle', 0.18, 780);
     }
   }
   const moved = Math.hypot(rover.x - px, rover.y - py);
@@ -1312,7 +1340,7 @@ W.__toy = () => ({
   started, stranded, inDark, lost, lostTotal, strandedNights, onRail: rail !== null, rail: rail ? { ...rail, ang: railPoint(rail).ang } : null,
   lines: lines.map((l) => ({ n: l.pts.length, parent: l.parent, pts: l.pts.filter((_, k) => k % 3 === 0 || k === l.pts.length - 1) })),
   laying, h: rover.h, camRot: cam.rot, v: rover.v, x: rover.x, y: rover.y, charge, carry, banked, score, mult, trips, ringR, ringPush, heat, hard,
-  closing: closingSpeed(), toDark: secondsToDark(), nearestGap: nearest.gap, onOwnRoad: onOwnRoad(), steerHeld, hopOffs, autoBanks, pushMine, pushBank, chain,
+  closing: closingSpeed(), toDark: secondsToDark(), nearestGap: nearest.gap, onOwnRoad: onOwnRoad(), steerHeld, hopOffs, grabs, missedGrabs, armed, autoBanks, pushMine, pushBank, chain,
   dist: Math.hypot(rover.x, rover.y), seamsLive: seams.filter((s) => s.ore > 0).length, seams: seams.map((s) => ({ x: +s.x.toFixed(1), y: +s.y.toFixed(1), ore: s.ore }))
 });
 W.__toySkip = (s: number) => {
