@@ -2054,3 +2054,19 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **After a deliberate hop-off, you stay off for 60 px of travel** (or until you get clear of the road, or turn back).
   - **Every miss is logged with its context:** why, angle to the road, distance since leaving the rail, how you left it, and the time. A miss counts only if you'd pulled clear of the road first, so the hop-off itself isn't one.
   - **An End button** (top left, under the HUD) ends a run cleanly as `quit`. Before, a run left early looked the same as a page closed to send runs.
+- **Port requirements revised; survey keeps Three.js (2026-10-01, DEV-65):**
+  - **The survey (2026-09-30, Claude Doc "Moon Miner: Engine and Toolkit Survey")** measured the same minimal scene built with Vite and gzipped: Three.js 125 kB, Babylon.js 335 kB, PlayCanvas 501 kB.
+  - **Out:** Godot 4 (rules can't be TypeScript; C# can't export to web) and Defold (custom licence).
+  - **Pick:** keep Three.js, and extract one shared rules core first.
+  - **An external review and the owner's DEV-65 comment (with DEV-70 dual view and DEV-71 campaign) led to three changes the owner approved:**
+    - 11: first load under 5 MB, raised from 1 MB. The old limit never decided anything.
+    - 12: reworded to "editable as text, run from the command line; no step needs a person in an editor".
+    - 17: one rules core, promoted to a must-have.
+  - **The split, from the review, corrected for DEV-70:**
+    - The shared core holds what happens and how the rover moves. The dual view shows one rover in one simulation, so movement can't differ by view.
+    - Each view owns only its presentation (camera, easing, effects).
+    - Each game (Home Run vs the 3D game) tunes its own numbers through config.
+    - The review's "separate movement maths per view" holds only for separate games.
+  - **Four scored criteria added from DEV-65:** modes as config, two views at once at 60 fps, a curved-world shader, and the chase-to-top-down camera transition. None changes the pick.
+  - **Survey step 2 corrected:** the 3D view keeps its own grab smoothing, and the toy's rules for when you can get on and off are shared.
+  - **The 2D question:** DEV-70 answers it. 2D is a second view of the same live run (switching never pauses), not a separate mode or a literal minimap. Home Run stays a stand-alone 2D game.
