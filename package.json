@@ -9,11 +9,12 @@
     "preview": "vite preview --host 0.0.0.0",
     "report:last-light": "node scripts/last-light-report.mjs",
     "smoke:continuous": "node --experimental-websocket scripts/continuous-smoke.mjs",
+    "smoke:toys": "node scripts/toy-smoke.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "verify": "npm test && npm run build",
     "verify:known-green": "npm run verify",
-    "verify:full": "npm run verify && npm run smoke:continuous && npm run verify:audit",
+    "verify:full": "npm run verify && npm run smoke:continuous && npm run smoke:toys && npm run verify:audit",
     "verify:audit": "npm audit",
     "play:through": "node scripts/playthrough.mjs",
     "runs": "node scripts/runs-report.mjs"

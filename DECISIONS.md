@@ -2075,3 +2075,13 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **State and functions, not globals.** The night is one `NightState` and the rules are functions over it (`stepEndless`, `bankEndless`, `digPush`, `nearestBorder`, and so on), driven by `NightRules`. A 3D game or a variant gets the same core by passing its own rules.
   - **Pinned by tests:** an unbanked night lasts 50–80 s; the border never goes above its start; a push plays out over about a second rather than at once; the bank share rises with the multiplier up to a cap; dawn breaks only at `dawnOre`.
   - **Still in the toy (step 2):** the road tree, the rail and grab rules, the dark's leak, and the seams. Those are next, in a second PR.
+- **Step 2 preflight; the toys get CI coverage (2026-10-02, DEV-66):** the owner asked for a check of dependencies, reconciliation, architectural debt and downstream opportunities before step 2. The full findings are on DEV-66. The ones that shape the work:
+  - **Two road and rail models.**
+    - The toy: a road tree, with the rover following the path exactly and zero steering on the rail.
+    - The 3D game: `RoadModel` in `src/three/road.ts`, a steering assist fed to the sim, with its rules in the presentation layer.
+    - Approved requirement 9 ("road tree, zero steering on the rail") is the toy's model, so the core takes it. Step 3 replaces the 3D rail.
+    - What happens to the old 3D loop's road economy (nanobots, drone reclaim, eraser, slurp charge) is for the owner at step 3. Proposal: quarantine it behind the Levels mode, not delete it.
+  - **No CI coverage for the toys.** Every headless check of the last two days ran from scratch scripts that disappear with the container. Now `npm run smoke:toys` (`scripts/toy-smoke.mjs`) runs in CI. It covers Endless banking and push-back, the dawn win at 150, END logging `quit`, and Contract banking.
+  - **Units.** The toy works in px and the 3D arena in its own units, so the core takes its numbers from each game's config.
+  - **Drift fixed:** test counts (241 in 22 files), the line count in requirement 18 (repo and Claude Doc), and the toys page's Endless blurb (now names the dawn win).
+  - **Downstream:** a headless Endless self-play harness on the core can tune `dawnOre` and the clock without waiting on playtests (no run has reached dawn yet). It also makes DEV-67 (turn-home load), the DEV-70 inset and DEV-71's modes-as-config cheap.
