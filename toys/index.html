@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>Moon Miner toys</title>
+    <style>
+      body { margin: 0; background: #05070c; color: #dfe8f2; font: 15px/1.5 ui-monospace, monospace; }
+      main { max-width: 520px; margin: 0 auto; padding: 24px 16px 48px; }
+      h1 { font-size: 22px; margin: 0 0 4px; }
+      p.lede { color: #8fa3ba; margin: 0 0 20px; }
+      a.toy { display: block; padding: 16px; margin: 0 0 12px; border: 1px solid #263041; border-radius: 10px; color: inherit; text-decoration: none; background: #0c111a; }
+      a.toy:active { background: #131b28; }
+      a.toy b { font-size: 18px; color: #ffd27a; }
+      a.toy span { display: block; color: #a9bcd0; margin-top: 4px; }
+      a.toy i { display: block; font-style: normal; color: #78f7df; margin-top: 8px; font-size: 13px; }
+      ol { color: #a9bcd0; padding-left: 20px; }
+      a.home { color: #6b7d92; }
+    </style>
+    <script type="module" crossorigin src="/moon-miner/assets/toys-BJ-LkTyw.js"></script>
+    <link rel="modulepreload" crossorigin href="/moon-miner/assets/modulepreload-polyfill-B5Qt9EMX.js">
+    <link rel="modulepreload" crossorigin href="/moon-miner/assets/sendAll-VgxgnN6Y.js">
+  </head>
+  <body>
+    <main>
+      <h1>Find the fun</h1>
+      <p class="lede">Throwaway toys testing core ideas and, now, outer loops. Play each for a few minutes on your phone.</p>
+      <a class="toy" href="../night.html" data-toy="night-3d">
+        <b>Endless Night 3D (new)</b>
+        <span>Home Run's Endless Night in the 3D game, on the same rules core. A chase camera over your road, the night as a wall closing in. Bank 150 and dawn breaks.</span>
+        <i></i>
+      </a>
+      <a class="toy" href="./home-run.html" data-toy="home-run">
+        <b>Home Run</b>
+        <span>Two outer loops around the same run. <b style="font-size:inherit;color:#ffd27a">Contract</b>: 5 nights, rising quota, upgrades between nights, your road carries. <b style="font-size:inherit;color:#b8a8ff">Endless Night</b>: bank 150 before the dark reaches home and dawn breaks; digging holds the dark off, banking drives it back. Hard and daily map optional.</span>
+        <i></i>
+      </a>
+      <a class="toy" href="./terminator.html" data-toy="terminator">
+        <b>Terminator</b>
+        <span>No road. A solar rover racing the day/night line. Ore in the dark is worth double: dive in, get back to the light.</span>
+        <i></i>
+      </a>
+      <ol>
+        <li>Did I want another go?</li>
+        <li>Which moment felt best?</li>
+        <li>What annoyed me?</li>
+      </ol>
+      <p class="lede">Your runs are logged on this phone. This button sends every unsent run, toys and main game alike (so does the main game's Send):</p>
+      <p><button id="send" disabled style="font:inherit;padding:12px 16px;border-radius:10px;border:1px solid #78f7df;background:#0c111a;color:#78f7df;width:100%">Checking saved runs…</button></p>
+      <p class="lede" id="send-note"></p>
+      <p><a class="home" href="../">← the main game</a></p>
+    </main>
+  </body>
+</html>

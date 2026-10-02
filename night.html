@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link rel="icon" href="data:," />
+    <title>Endless Night · Moon Miner</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #05070c; overflow: hidden; overscroll-behavior: none; }
+      #app { position: fixed; inset: 0; touch-action: none; }
+      #overlay { position: fixed; inset: 0; pointer-events: none; z-index: 4; }
+      #hud { position: fixed; left: 0; right: 0; top: 0; z-index: 6; display: flex; gap: 6px 8px; flex-wrap: wrap; align-items: flex-end;
+        padding: 8px 12px 8px 88px; background: linear-gradient(#05070ccc, #05070c00); font: 13px/1.2 ui-monospace, monospace; color: #dfe8f2; pointer-events: none; }
+      #hud .v { flex: 1 1 48px; min-width: 0; }
+      #hud .v b { display: block; font-size: 10px; color: #8fa3ba; font-weight: 400; letter-spacing: 0.04em; }
+      #hud .v span { font-size: 16px; }
+      #hud .bar { height: 4px; border-radius: 2px; background: #263041; margin-top: 3px; overflow: hidden; }
+      #hud .bar i { display: block; height: 100%; background: #ffe7a8; width: 0%; }
+      #end { position: fixed; left: 12px; top: 10px; z-index: 7; width: 64px; height: 30px; border-radius: 8px; border: 1.5px solid #2b3a4d;
+        background: rgba(12,16,24,0.85); color: #8fa3ba; font: bold 13px ui-monospace, monospace; display: none; }
+      .screen { position: fixed; inset: 0; z-index: 8; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+        padding: 24px 16px; box-sizing: border-box; background: rgba(5,7,12,0.82); font: 14px/1.45 ui-monospace, monospace; color: #cfe0ee; text-align: center; }
+      .screen h1 { margin: 0; font-size: 26px; letter-spacing: 0.08em; color: #b8a8ff; }
+      .screen h1.win { color: #ffe7a8; }
+      .screen p { margin: 0; max-width: 360px; color: #8fa3ba; }
+      .screen .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; max-width: 360px; }
+      .screen button { font: inherit; padding: 12px 18px; border-radius: 10px; border: 1.5px solid #78f7df; background: #0c111a; color: #78f7df; min-width: 120px; }
+      .screen button.toggle { border-color: #2b3a4d; color: #8fa3ba; }
+      .screen button.toggle.on { border-color: #b8a8ff; color: #b8a8ff; }
+      .screen button.go { border-color: #ffe7a8; color: #ffe7a8; font-weight: bold; min-width: 200px; }
+      .screen small { color: #6b7d92; }
+      .screen a { color: #6b7d92; font-size: 12px; }
+    </style>
+    <script type="module" crossorigin src="/moon-miner/assets/night-CfGawLsi.js"></script>
+    <link rel="modulepreload" crossorigin href="/moon-miner/assets/modulepreload-polyfill-B5Qt9EMX.js">
+    <link rel="modulepreload" crossorigin href="/moon-miner/assets/UnrealBloomPass-B2cSZ_TF.js">
+    <link rel="modulepreload" crossorigin href="/moon-miner/assets/kit-UuIoymPo.js">
+    <link rel="modulepreload" crossorigin href="/moon-miner/assets/run-Bl1qOnds.js">
+    <link rel="modulepreload" crossorigin href="/moon-miner/assets/sendAll-VgxgnN6Y.js">
+  </head>
+  <body>
+    <div id="app"></div>
+    <canvas id="overlay"></canvas>
+    <div id="hud">
+      <div class="v"><b>DAWN</b><span id="h-dawn">0/150</span><div class="bar"><i id="h-dawn-bar"></i></div></div>
+      <div class="v"><b>CARRY</b><span id="h-carry">0</span></div>
+      <div class="v"><b>MULT</b><span id="h-mult">x1</span></div>
+      <div class="v"><b>SCORE</b><span id="h-score">0</span></div>
+      <div class="v"><b>DARK IN</b><span id="h-dark">–</span></div>
+    </div>
+    <button id="end" type="button">END</button>
+    <div class="screen" id="title">
+      <h1>ENDLESS NIGHT</h1>
+      <p>The night closes in on home, faster and faster. Dig to push it back. Bank at home to push it back further and raise the multiplier. Bank 150 and dawn breaks.</p>
+      <p>Drag to drive (or W A S D). Ride your own road: it is fast and safe in the dark.</p>
+      <div class="row"><button class="go" id="start" type="button">START</button></div>
+      <div class="row"><button class="toggle" id="daily" type="button">Daily map: off</button><button class="toggle" id="hard" type="button">Hard: off</button></div>
+      <small id="best"></small>
+      <div class="row"><a href="./">Levels (the old game)</a><a href="toys/">Toys</a></div>
+    </div>
+    <div class="screen" id="over">
+      <h1 id="over-title">NIGHTFALL</h1>
+      <p id="over-body"></p>
+      <div class="row"><button class="go" id="again" type="button">PLAY AGAIN</button></div>
+      <div class="row"><button id="send" type="button" disabled>No unsent runs</button></div>
+      <small id="send-note"></small>
+      <div class="row"><a href="./">Levels (the old game)</a><a href="toys/">Toys</a></div>
+    </div>
+  </body>
+</html>
