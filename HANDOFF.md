@@ -75,6 +75,7 @@ Simulation (`src/game/`):
 |---|---|
 | `continuous.ts`, `continuousArena.ts` | The authoritative sim and arena generation. Used by the build. |
 | `level.ts` | Level specs and map-derived budgets. Used by the build. |
+| `night.ts` | Endless Night's rules, engine-free: the border, the clock, push-back, banking, dawn. Home Run draws it; the 3D game will too (DEV-66). Tested in `night.test.ts`. |
 | `hex.ts` | The lattice the laid road lives on. |
 | `continuousSelfPlay.ts`, `continuousTrace.ts`, `routeAffordance.ts` | Self-play routes and analysis. Used by tests and `report:last-light`, not by the build. |
 | `rules.ts`, `world.ts`, `types.ts`, `keys.ts` | The V0 grid prototype. Not in the build; kept as prior art with its tests. |
