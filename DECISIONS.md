@@ -2070,3 +2070,8 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **Four scored criteria added from DEV-65:** modes as config, two views at once at 60 fps, a curved-world shader, and the chase-to-top-down camera transition. None changes the pick.
   - **Survey step 2 corrected:** the 3D view keeps its own grab smoothing, and the toy's rules for when you can get on and off are shared.
   - **The 2D question:** DEV-70 answers it. 2D is a second view of the same live run (switching never pauses), not a separate mode or a literal minimap. Home Run stays a stand-alone 2D game.
+- **The shared rules core, step 1 (2026-10-02, DEV-66):** Endless Night's border, clock, push-back, banking, scoring and dawn now live in `src/game/night.ts`, engine-free, with 23 tests (`night.test.ts`). `src/toys/homeRun.ts` draws it and feeds input. Requirement 17 (one rules core) starts here.
+  - **No behaviour change.** Headless, the numbers match the toy before the move: border 1328 px after 20 s, a bank at x1 pushing 105 px, banked 160 for score 220 and a `dawn` result, and a turn-back grab within 1 px.
+  - **State and functions, not globals.** The night is one `NightState` and the rules are functions over it (`stepEndless`, `bankEndless`, `digPush`, `nearestBorder`, and so on), driven by `NightRules`. A 3D game or a variant gets the same core by passing its own rules.
+  - **Pinned by tests:** an unbanked night lasts 50–80 s; the border never goes above its start; a push plays out over about a second rather than at once; the bank share rises with the multiplier up to a cap; dawn breaks only at `dawnOre`.
+  - **Still in the toy (step 2):** the road tree, the rail and grab rules, the dark's leak, and the seams. Those are next, in a second PR.
