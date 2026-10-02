@@ -8,7 +8,7 @@
 // in the packed format scripts/ingest-run.mjs reads.
 //
 // Lives outside src/three and src/toys so both can import it (the toys may
-// import nothing from src/game or src/three).
+// import nothing from src/three).
 
 export const MAIN_RUNS_KEY = 'mm3d-runs-v1';
 export const TOY_RUNS_KEY = 'mm-toy-runs-v1';
@@ -37,6 +37,9 @@ export interface AnyRun {
 type Store = Pick<Storage, 'getItem' | 'setItem'>;
 
 export const isToyRun = (r: AnyRun): boolean => String(r.mode).startsWith('toy:');
+// Endless Night in 3D (night.html) logs to the toys' store in the toy Endless
+// shape, under mode 'endless:3d'.
+export const isEndless3d = (r: AnyRun): boolean => String(r.mode).startsWith('endless:');
 
 function read(storage: Store | undefined, key: string): AnyRun[] {
   try {
@@ -88,6 +91,7 @@ export async function packRecords(records: AnyRun[]): Promise<string> {
 
 function what(r: AnyRun): string {
   if (isToyRun(r)) return String(r.mode).replace(/^toy:/, 'toy ').replace(':', ' ');
+  if (isEndless3d(r)) return 'Endless Night 3D';
   if (r.mode === 'levels') return `L${r.level} ${r.levelName ?? ''}`.trim();
   return `day ${r.day ?? '?'}`;
 }

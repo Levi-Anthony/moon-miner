@@ -2098,3 +2098,18 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **`src/game/random.ts`:** the seeded random source moved from the toy kit, which re-exports it, so the core makes the same maps.
   - **No behaviour change.** The toy smoke and the probes give the same numbers as step 2: border 1328 px after 20 s, banks pushing 203 px, dawn at banked 160, a turn-back grab within 1 px, an 88 degree crossing logged as a miss, and Hard logging `caught`.
   - **9 new tests** run whole nights headless: an unbanked night ends in 50 to 80 s; a bank scores, pushes and grows ore; dawn at 150; stranding; the leak and Hard's catch; the auto-bank; a contract night.
+- **Step 3b: Endless Night in 3D (2026-10-02, DEV-66):** `night.html` → `src/three/night/main.ts` plays Endless Night in Three.js. Per frame it calls `stepRun`, the same step the 2D toy calls, with the same `HOME_RUN` rules. The page holds no rules of its own.
+  - **A new page, not a mode inside `bootstrap.ts`.** The Levels app is a 1,670-line module that runs its whole setup when it loads. Threading a second mode through it would have touched the old road economy the owner chose to quarantine. A separate page leaves the Levels game byte-for-byte as it was, apart from a link in its corner. Making Endless the site's front page later is a one-line change.
+  - **Units:** the view draws the core's px as world units, 1:1. A 3D tuning, when playtests ask for one, is a different `RunRules`, not a change to the view.
+  - **What the view shows:**
+    - a chase camera that swings behind the rover and pulls back with speed
+    - your road as ribbons
+    - seams as glowing patches whose nuggets go as you dig
+    - the night as a wall on the border that flares pale while a push-back plays out, with the dark beyond it
+    - a beam at the nearest point of the border that brightens as the dark gets close
+    - faint distance rings every 250 px around home
+    - a purple vignette that creeps in with the border cues
+    - the same sounds, minimap and countdown as the toy
+  - **Input and the run log** reuse the toy kit's stick, sound and `logToyRun`. Runs log as mode `endless:3d`. Send names them "Endless Night 3D", and `npm run runs -- --toys` lists them with the toy runs, since the record shape is the same.
+  - **Covered by `smoke:toys`:** the 3D page draws every seam and road line, banks (x1, pushing the night back about 107 px), wins at dawn, drives out, and logs `quit` from END. `smoke:continuous` still passes on the Levels page.
+  - **Not done yet:** a playtest on the owner's phone, and any tuning that follows. The core's numbers came from the 2D toy's top-down view; a chase camera sees less of the field, so the clock may need more slack in 3D.

@@ -54,6 +54,9 @@
         font: 13px/1.2 ui-monospace, monospace; cursor: pointer; }
       #runs small { font-size: 11px; color: #8fa3ba; max-width: 88vw; }
       #banner.win h2 { color: #77f2ca; } #banner.lose h2 { color: #ff8491; }
+      /* Endless Night in 3D (night.html, DEV-66). This page is the Levels game, kept as it is. */
+      #to-night { position: fixed; left: 14px; bottom: 22px; z-index: 7; padding: 8px 12px; border-radius: 8px; border: 1px solid #4a3d7a;
+        background: rgba(12,16,24,0.8); color: #b8a8ff; font: 12px ui-monospace, monospace; text-decoration: none; }
       #launch { position: fixed; right: 14px; bottom: 22px; z-index: 7; padding: 12px 16px;
         border-radius: 12px; border: 1px solid #2f6b5c; background: rgba(18,56,47,0.8); color: #d7fff3;
         font: 14px/1.1 ui-monospace, monospace; text-align: center; }
@@ -75,6 +78,7 @@
     <div id="banner"><h2 id="banner-title"></h2><div id="banner-body"></div><div class="cta">Tap to run again</div>
       <div id="runs"><button id="send-runs" type="button">Send run data</button><small id="runs-note"></small></div></div>
     <div id="stick"><div class="knob"></div></div>
+    <a id="to-night" href="night.html">Endless Night 3D →</a>
     <button id="launch">Launch<small>drone · space</small></button>
     <div id="hint3d">drag anywhere to drive (or W/A/S/D)</div>
     <script type="module" src="/src/three/bootstrap.ts"></script>

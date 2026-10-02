@@ -25,7 +25,8 @@ if (!existsSync(RUNS_FILE)) {
 const all = readFileSync(RUNS_FILE, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 // Toy runs (mode 'toy:…') have their own shape; keep them out of main-game stats.
 const toys = argv.includes('--toys');
-const isToy = (r) => String(r.mode).startsWith('toy:');
+// Endless Night 3D ('endless:3d') shares the toy Endless shape, so it reports with the toys.
+const isToy = (r) => String(r.mode).startsWith('toy:') || String(r.mode).startsWith('endless:');
 const runs = all.filter((r) => isToy(r) === toys);
 const shown = runs.slice(-last);
 

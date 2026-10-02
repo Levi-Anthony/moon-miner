@@ -1,8 +1,9 @@
-// Browser smoke for the Home Run toy (toys/home-run.html). Boots the Vite dev
-// server, plays both modes through the toy's test hooks (window.__toy,
-// __toySkip, __toyGive) and fails on any page error or a rule that stops
-// holding. It guards the rules-core extraction (DEV-66): the toy must play the
-// same while its rules move into src/game.
+// Browser smoke for the Home Run toy (toys/home-run.html) and Endless Night in
+// 3D (night.html). Boots the Vite dev server, plays both through their test
+// hooks (window.__toy / __night, ...Skip, ...Give) and fails on any page error
+// or a rule that stops holding. It guards the rules core (DEV-66): the toy must
+// play the same while its rules move into src/game, and the 3D view must step
+// the same run.
 //
 //   npm run smoke:toys            (CHROME_PATH=... to pick a Chromium)
 import { spawn } from 'node:child_process';
@@ -60,10 +61,10 @@ try {
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
   const st = () => page.evaluate(() => window.__toy());
-  const waitFor = async (pred, what, ms = 8000) => {
+  const waitFor = async (pred, what, ms = 8000, read = st) => {
     const t0 = Date.now();
     for (;;) {
-      const s = await st();
+      const s = await read();
       if (pred(s)) return s;
       if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}: ${JSON.stringify({ phase: s.phase, banked: s.banked, carry: s.carry })}`);
       await delay(50);
@@ -132,8 +133,50 @@ try {
   check(s.mult === 1 && s.score === 0, `Contract has no multiplier or score: mult ${s.mult}, score ${s.score}`);
   console.log(`contract OK: night ${s.night}, banked ${s.banked}`);
 
+  // Endless Night 3D: the same run, drawn in Three.js.
+  const nt = () => page.evaluate(() => window.__night());
+  const waitN = (pred, what, ms = 8000) => waitFor(pred, what, ms, nt);
+  await page.goto(`${base}/night.html`);
+  await waitN((q) => q.phase === 'title', 'the 3D title screen', 15000);
+  await page.click('#start');
+  s = await waitN((q) => q.phase === 'play', 'the 3D run to start');
+  check(s.ringR === 1750 && s.seamViews === s.seams && s.seams === 16, `a fresh 3D run: ringR ${s.ringR}, seams ${s.seams}, drawn ${s.seamViews}`);
+  await start3d();
+  await page.evaluate(() => window.__nightSkip(20));
+  s = await nt();
+  check(s.ringR < 1500, `20 s should close the night: ringR ${s.ringR}`);
+  await page.evaluate(() => window.__nightGive(20));
+  s = await waitN((q) => q.banked >= 20, 'a bank at home in 3D');
+  check(s.mult === 2 && s.score === 20 && s.pushBank > 50 && s.seamViews === s.seams, `a 3D bank: mult ${s.mult}, score ${s.score}, pushBank ${s.pushBank}, seams ${s.seams} drawn ${s.seamViews}`);
+  const pushed = s.pushBank;
+  await page.evaluate(() => window.__nightGive(140));
+  await waitN((q) => q.phase === 'over', '3D dawn');
+  runs = await page.evaluate(() => JSON.parse(localStorage.getItem('mm-toy-runs-v1') || '[]'));
+  check(runs.at(-1)?.mode === 'endless:3d' && runs.at(-1)?.result === 'dawn', `3D dawn logged as ${runs.at(-1)?.mode} ${runs.at(-1)?.result}`);
+  // A second run: drive out laying road, then END.
+  await page.waitForSelector('#again', { state: 'visible' });
+  await page.click('#again');
+  await waitN((q) => q.phase === 'play' && !q.started, 'a second 3D run');
+  await page.keyboard.down('w');
+  await delay(1500);
+  await page.keyboard.up('w');
+  s = await waitN((q) => q.started && Math.hypot(q.x, q.y) > 60, 'the rover to drive out');
+  check(s.ribbons === s.lines, `every road line drawn: ${s.ribbons} of ${s.lines}`);
+  await page.click('#end');
+  await waitN((q) => q.phase === 'over', 'END in 3D');
+  runs = await page.evaluate(() => JSON.parse(localStorage.getItem('mm-toy-runs-v1') || '[]'));
+  check(runs.at(-1)?.result === 'quit', `3D END should log quit, logged ${runs.at(-1)?.result}`);
+  console.log(`endless 3d OK: bank pushed ${pushed.toFixed(0)} px, dawn logged, drove out ${Math.hypot(s.x, s.y).toFixed(0)} px, END logged quit`);
+
+  async function start3d() {
+    await page.keyboard.down('w');
+    await delay(80);
+    await page.keyboard.up('w');
+    await waitN((q) => q.started, 'the 3D run to start');
+  }
+
   check(errors.length === 0, `page errors: ${errors.join(' | ')}`);
-  console.log('TOY SMOKE OK — Home Run boots, Endless banks and wins at dawn, END logs quit, Contract banks.');
+  console.log('TOY SMOKE OK — Home Run boots, Endless banks and wins at dawn, END logs quit, Contract banks; Endless Night 3D drives, banks, wins at dawn and ends.');
   await browser.close();
   vite.kill('SIGTERM');
   process.exit(0);

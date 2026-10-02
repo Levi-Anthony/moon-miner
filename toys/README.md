@@ -55,6 +55,10 @@ Two outer loops now wrap that core. Pick one on the title screen:
 - **Daily map:** a toggle on both modes, seeded by the UTC date.
 - **The dark is not lethal (2026-09-30).** The owner's call after a contract ended on night 1 with quota already banked: the night border must not turn a prepared road deadly. Off your road in the dark, your load leaks away (35% a second, at least 2). On your road it's safe. Not home at nightfall = stranded: the load is lost, the banked ore counts, and a contract goes on if quota was met.
 
+### Endless Night in 3D (2026-10-02)
+
+The port has landed: `night.html` (linked first on the toys page, and from the corner of the Levels game) plays Endless Night in Three.js. It runs the same rules core as this toy (`src/game/run.ts`), so a rule change lands in both at once. The toy stays the parallel 2D version.
+
 ### Home Run v4: Endless Night, tuned for the port (2026-09-30)
 
 The owner's verdict on Endless Night: "I think we actually found something," and "this is the 3D port move for sure." The changes below answer their playtest notes (DEV-68); `DECISIONS.md` has the full trail.
