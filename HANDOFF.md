@@ -1,6 +1,6 @@
 # Moon Miner — Handoff
 
-Last updated: 2026-09-30, at `main` after PR #67. §0 and §4–§6 reflect PRs #53–#67. The 2026-09-24 rewrite came from DEV-58 and the state audit (`docs/audit/2026-09-24/STATE_AUDIT.md`).
+Last updated: 2026-10-02 (DEV-66 step 3b, Endless Night in 3D); before that 2026-09-30, at `main` after PR #67. §0 and §4–§6 reflect PRs #53–#84 and step 3b. The 2026-09-24 rewrite came from DEV-58 and the state audit (`docs/audit/2026-09-24/STATE_AUDIT.md`).
 
 This file is the cold start for a fresh agent: what the game is now, how we work on it and why, and where things live. The pre-rewrite handoff (Phaser-era §1–§8, written 2026-09-16) is archived at `docs/archive/HANDOFF_2026-09-16.md`. Keep it for intent, not for current facts.
 
@@ -10,14 +10,16 @@ The decision trail lives in `DECISIONS.md`; its newest entries (2026-09-27 to 20
 
 ## 0. Current substrate — read this first
 
-- **The app is `index.html` → `src/three/bootstrap.ts`.** It is a Three.js scene with a real perspective camera, a ground plane, and the rover and drone as meshes. The road is painted into a canvas texture on the ground (a raster decal), never vector geometry. Do not reintroduce per-frame vector road drawing. That was the Phaser build's whole class of bugs (flashing, bowties, pinch).
+- **Endless Night in 3D is `night.html` → `src/three/night/main.ts` (DEV-66, 2026-10-02).** It is a view of the rules core: each frame it calls `stepRun` (`src/game/run.ts`), the same step the 2D toy calls, and draws the result with a chase camera, the road as ribbons, the night as a wall, a HUD and a minimap. It renders the core's px 1:1 as world units; a 3D tuning is a different `RunRules`, not a change to the view. Runs log to the toys' store as mode `endless:3d` and go out with every other run on Send. New 3D work goes here.
+- **The Levels game is `index.html` → `src/three/bootstrap.ts`, quarantined (owner, 2026-10-02).** Kept playable and untouched, not deleted: its road economy (nanobots, drone reclaim, the eraser, slurp charge) stays behind the Levels mode. A link in its corner leads to Endless Night 3D.
+- **The Levels app in detail (`index.html` → `src/three/bootstrap.ts`).** It is a Three.js scene with a real perspective camera, a ground plane, and the rover and drone as meshes. The road is painted into a canvas texture on the ground (a raster decal), never vector geometry. Do not reintroduce per-frame vector road drawing. That was the Phaser build's whole class of bugs (flashing, bowties, pinch).
 - **The simulation is authoritative and engine-free.** `src/game/continuous.ts` and `continuousArena.ts` are pure TypeScript with their own tests. The 3D layer reads sim state and feeds input; it does not fork the rules.
 - **Phaser is gone** (PR #10). `src/main.ts`, `src/scenes/*`, the `#moon-miner-continuous-debug-state` snapshot and `window.__moonMinerContinuous` no longer exist. The debug hook is `window.__mm3d = { getState, road, keys, runs, pendingRuns, runIssue }` (`bootstrap.ts`).
 - **Run data (the owner's real runs) is in `data/runs/runs.jsonl` on `main`.** Read it before saying there is no run data: `git pull origin main && npm run runs`. The game saves every finished level locally. **Send run data** on the end banner (or ⚙ → **Send saved runs**) opens a pre-filled `[run-data]` GitHub issue, and `.github/workflows/ingest-run.yml` appends it to that file. `data/runs/README.md` has the fields and troubleshooting. Capture is guarded by `smoke:continuous` and `play:through` (DEV-61).
 - **Road and shadows.** The road is painted into the ground's emissive layer so daylight never changes its brightness (PR #34). three.js doesn't shadow emissive light, so `groundMat.onBeforeCompile` multiplies the emissive term by the sun's shadow factor, scaled by the Shadow on road knob and the sun's height (DEV-59). If the ground material is ever replaced, carry that patch over, or shadows will pass under the road again.
 - **Design direction (2026-09-30): read `DESIGN_THEORY.md` next.** It is the test for game ideas: twelve laws anchored in established game design, a concept card, and run-data metrics. It finds the main game failing L6 (the clock never binds: wins leave 46% of the sun) and L7 (no friction: ore ÷ quota quartiles 0.28 / 1.29 / 2.32). The plan is to port Home Run's **Endless Night** loop (reach dawn, rules as data) into the 3D game (DEV-66). The engine survey (DEV-65, 2026-09-30) keeps Three.js; the port starts by extracting one shared rules core. Its doc is the Claude Doc [Moon Miner: Engine and Toolkit Survey](https://claude.ai/code/artifact/736d748d-1b94-467c-a6b8-85be3b832c68). Design-only follow-ons wait for the port: DEV-70 (dual view, 3D chase and 2D top-down of one run, each with an inset) and DEV-71 (story campaign: Contract, Anomaly, Terminator as configs of one machine).
 - **The owner reads and comments in a Claude Doc:** [Moon Miner: Design Theory](https://claude.ai/code/artifact/72757fa6-a2e7-4550-a3f2-80b96b526f55), with a Design theory tab and a Port requirements tab. It is canonical for the requirements; `DESIGN_THEORY.md` and `PORT_REQUIREMENTS.md` are the repo copies. Keep them in step, and check the doc's comments at the start of a session. The owner reads on an iPhone: lists, not tables; checkboxes, not dropdowns.
-- **Toys (`toys/`, `src/toys/`).** 2D canvas games, isolated from `src/game` and `src/three`. **Home Run** has Contract and Endless modes; the owner ruled it the parallel 2D version, so each design change that lands in the 3D game lands there too. **Terminator** is parked, playable, no new work. The dark in Home Run leaks your load off-road instead of ending the run (PR #65). **Endless Night is the loop to port (owner, 2026-09-30, DEV-68):** its rules are one data object (`NightRules` in `src/toys/homeRun.ts`); the rail only lets go on purpose; digging and banking push the night back; the border has a seconds countdown, directional cues and a minimap; Hard brings back the lethal dark.
+- **Toys (`toys/`, `src/toys/`).** 2D canvas games. They import the rules core from `src/game` but nothing from `src/three`. **Home Run** has Contract and Endless modes; the owner ruled it the parallel 2D version, so each design change that lands in the 3D game lands there too. **Terminator** is parked, playable, no new work. The dark in Home Run leaks your load off-road instead of ending the run (PR #65). **Endless Night is the loop to port (owner, 2026-09-30, DEV-68):** its rules live in the core (`NightRules` in `src/game/night.ts`, the run in `src/game/run.ts`); the rail only lets go on purpose; digging and banking push the night back; the border has a seconds countdown, directional cues and a minimap; Hard brings back the lethal dark.
 - **One Send for all runs (PR #63).** Every Send button (end banner, ⚙ panel, toys page) sends every unsent run in that browser, game and toys together, through `src/runs/sendAll.ts`. `npm run runs` reports the main game; `npm run runs -- --toys` the toys.
 - **The 3D build reads no URL parameters.** `?mobile=1`, `?debug=1`, `?view=`, `?shift=` and `?sandbox=1` in older docs have no effect (DEV-52). The layout is the same on every screen, and drag-to-drive works with mouse or touch.
 
@@ -62,7 +64,8 @@ Presentation (`src/three/`), all used by the shipped build:
 
 | File | What it holds |
 |---|---|
-| `bootstrap.ts` | Renderer, camera, input (keys + stick), HUD, mining/drone/slurp/eraser visuals, wiring. Covered only by the smoke test. |
+| `night/main.ts` | Endless Night in 3D (`night.html`): a view of `stepRun` with a chase camera, road ribbons, seams, the night as a wall and the dark beyond it, HUD, minimap, sound and the run log. Covered by `smoke:toys`. |
+| `bootstrap.ts` | The Levels game (quarantined): renderer, camera, input (keys + stick), HUD, mining/drone/slurp/eraser visuals, wiring. Covered only by the smoke test. |
 | `road.ts` | The road model: free ribbon, rail lock and grip, corner braking, carry, slurp, junctions (PRs #35, #36, #38). |
 | `loop.ts` | `Campaign`: Levels and Sandbox modes, per-day economy, banked ore, road carried within a shift, persistence. |
 | `panel.ts` | The ⚙ control panel and quick-help. |
@@ -90,11 +93,11 @@ Simulation (`src/game/`):
 Measured 2026-10-02 on `main` after PR #81:
 
 - **Passing:**
-  - `npm test`: 277 tests in 26 files (`night`, `roadTree`, `rover`, `seams` and `run` tests in `src/game` hold the rules core).
+  - `npm test`: 278 tests in 26 files (`night`, `roadTree`, `rover`, `seams` and `run` tests in `src/game` hold the rules core).
   - Build: one 688 kB chunk (184 kB gzipped).
   - `npm audit`: 0 vulnerabilities.
   - `smoke:continuous`: boot, HUD, one drive, and the phone HUD layout. Needs `CHROME_PATH` in this container.
-  - `smoke:toys`: the Home Run toy. It boots, Endless banks and pushes the night back, dawn wins at 150, END logs `quit`, and Contract banks.
+  - `smoke:toys`: the Home Run toy and Endless Night 3D. The toy boots, Endless banks and pushes the night back, dawn wins at 150, END logs `quit`, and Contract banks. The 3D page draws every seam and road line, banks, wins at dawn, drives out, and logs `endless:3d` runs.
   - `report:last-light`: 5/5 routes won.
 - **CI** runs tests, build, both smoke tests and the last-light report on every push to `main` and every PR. `audit.yml` runs `npm audit` weekly on its own, so a new advisory can't turn a code change red.
 - **Not covered:** the smoke test checks far less than the old Phaser smoke did (DEV-53). `npm run play:through` plays full levels to their end state but is too slow for CI, so it runs by hand.
@@ -104,7 +107,7 @@ Measured 2026-10-02 on `main` after PR #81:
 | Ticket | Priority | Issue |
 |---|---|---|
 | DEV-65 | High | Engine and toolkit survey: done 2026-09-30, keep Three.js (Claude Doc linked in §0) |
-| DEV-66 | High | **Next.** Port Home Run's Endless Night loop into the 3D game. Steps 1–2 and 3a done (rules core and `stepRun` in `src/game`); 3b is the 3D Endless Night page |
+| DEV-66 | High | **Next.** Port Home Run's Endless Night loop into the 3D game. Steps 1–3 done: the rules core and `stepRun` in `src/game`, and Endless Night 3D at `night.html`. Next: playtest it, then tune a 3D `RunRules` from run data |
 | DEV-70 | Medium | Dual view: 3D chase and 2D top-down of one run, each with an inset (design only, after DEV-66) |
 | DEV-71 | Medium | Story campaign: modes as chapters of one machine (design only, after DEV-66) |
 | DEV-68 | High | Endless Night: reliable rail, a clock that answers mining, a readable border (toy pass done; port carries it) |

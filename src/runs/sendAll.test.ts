@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error plain .mjs script without types
 import { parseRunIssueBody } from '../../scripts/ingest-run.mjs';
-import { MAIN_RUNS_KEY, RUN_ISSUE_URL_MAX, TOY_RUNS_KEY, markSentAll, sendAllUrl, sendLabel, unsentAll, type AnyRun } from './sendAll';
+import { MAIN_RUNS_KEY, RUN_ISSUE_URL_MAX, TOY_RUNS_KEY, markSentAll, sendAllUrl, sendBody, sendLabel, unsentAll, type AnyRun } from './sendAll';
 
 function fakeStorage(init: Record<string, unknown>): Pick<Storage, 'getItem' | 'setItem'> & { data: Map<string, string> } {
   const data = new Map(Object.entries(init).map(([k, v]) => [k, JSON.stringify(v)]));
@@ -53,5 +53,12 @@ describe('one send for all runs', () => {
     expect(sendLabel(1, 1, 1)).toBe('Send 1 toy run');
     expect(sendLabel(5, 5, 3)).toBe('Send 5 runs (3 toy)');
     expect(sendLabel(60, 40, 3)).toBe('Send 40 of 60 runs (3 toy)');
+  });
+
+  it('names Endless Night 3D runs in the summary, sent from the toys store', () => {
+    const s = fakeStorage({ [TOY_RUNS_KEY]: [run('n1', '2026-10-02T11:00:00Z', 'endless:3d')] });
+    const records = unsentAll(s);
+    expect(records.map((r) => r.id)).toEqual(['n1']);
+    expect(sendBody(records, 'x')).toContain('Endless Night 3D · won · 10/8 ore');
   });
 });

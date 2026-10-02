@@ -48,8 +48,8 @@ jobs:
         if: '!cancelled()'
         run: npm run smoke:continuous
 
-      # The Home Run toy: both modes, banking, the dawn win, END, the run log.
-      # Guards the rules-core extraction (DEV-66).
+      # The Home Run toy (both modes, banking, the dawn win, END, the run log) and
+      # Endless Night 3D on the same rules core (DEV-66).
       - name: Toy smoke
         if: '!cancelled()'
         run: npm run smoke:toys

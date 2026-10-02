@@ -8,10 +8,12 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 1600,
-    // The main game plus the throwaway "find the fun" toys (toys/README.md).
+    // The Levels game, Endless Night in 3D (night.html, DEV-66), and the
+    // throwaway "find the fun" toys (toys/README.md).
     rollupOptions: {
       input: {
         main: 'index.html',
+        night: 'night.html',
         toys: 'toys/index.html',
         homeRun: 'toys/home-run.html',
         terminator: 'toys/terminator.html'
