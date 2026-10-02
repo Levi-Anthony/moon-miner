@@ -29,7 +29,7 @@ And, numbered as before:
 
 - **15 · Angled 3D camera, current look.** Neon-on-dark, bloom, heading-up camera.
 - **16 · Both toys stay.** Home Run follows the design as a parallel 2D version; Terminator is parked, still playable. Both are candidate mini-games.
-- **18 · Reuse what works.** About 12,000 lines and 241 tests (2026-10-02).
+- **18 · Reuse what works.** About 12,000 lines and 268 tests (2026-10-02).
 - **21 · A path to the App Store.** Not now, but the choice must not block it: wrap the web build as an iOS app, or use an engine with a native iOS export.
 
 ## Could-have

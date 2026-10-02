@@ -76,6 +76,9 @@ Simulation (`src/game/`):
 | `continuous.ts`, `continuousArena.ts` | The authoritative sim and arena generation. Used by the build. |
 | `level.ts` | Level specs and map-derived budgets. Used by the build. |
 | `night.ts` | Endless Night's rules, engine-free: the border, the clock, push-back, banking, dawn. Home Run draws it; the 3D game will too (DEV-66). Tested in `night.test.ts`. |
+| `roadTree.ts` | The road as a tree of polylines rooted at home, with a spatial grid: nearest road, riding along it (home through branch points, out to tips), tips for ore placement. Engine-free (DEV-66). Tested in `roadTree.test.ts`. |
+| `rover.ts` | The rover on its road, engine-free: driving and laying road, the rail and its grab and hop-off rules, the dark's leak, digging seams. Numbers in `RoverRules` and `RoverMods` per game (DEV-66). Tested in `rover.test.ts`. |
+| `seams.ts` | Ore seams, engine-free: seeded placement (including beyond the road's tips after a bank) and the in-seam test (DEV-66). Tested in `seams.test.ts`. |
 | `hex.ts` | The lattice the laid road lives on. |
 | `continuousSelfPlay.ts`, `continuousTrace.ts`, `routeAffordance.ts` | Self-play routes and analysis. Used by tests and `report:last-light`, not by the build. |
 | `rules.ts`, `world.ts`, `types.ts`, `keys.ts` | The V0 grid prototype. Not in the build; kept as prior art with its tests. |
@@ -85,7 +88,7 @@ Simulation (`src/game/`):
 Measured 2026-10-02 on `main` after PR #81:
 
 - **Passing:**
-  - `npm test`: 241 tests in 22 files (`src/game/night.test.ts` holds the Endless Night rules core).
+  - `npm test`: 268 tests in 25 files (`src/game/night.test.ts`, `roadTree.test.ts`, `rover.test.ts` and `seams.test.ts` hold the rules core).
   - Build: one 688 kB chunk (184 kB gzipped).
   - `npm audit`: 0 vulnerabilities.
   - `smoke:continuous`: boot, HUD, one drive, and the phone HUD layout. Needs `CHROME_PATH` in this container.
@@ -99,7 +102,7 @@ Measured 2026-10-02 on `main` after PR #81:
 | Ticket | Priority | Issue |
 |---|---|---|
 | DEV-65 | High | Engine and toolkit survey: done 2026-09-30, keep Three.js (Claude Doc linked in §0) |
-| DEV-66 | High | **Next.** Port Home Run's Endless Night loop into the 3D game: extract the rules core first |
+| DEV-66 | High | **Next.** Port Home Run's Endless Night loop into the 3D game. Steps 1–2 done (rules core in `src/game`); step 3 is the 3D port |
 | DEV-70 | Medium | Dual view: 3D chase and 2D top-down of one run, each with an inset (design only, after DEV-66) |
 | DEV-71 | Medium | Story campaign: modes as chapters of one machine (design only, after DEV-66) |
 | DEV-68 | High | Endless Night: reliable rail, a clock that answers mining, a readable border (toy pass done; port carries it) |
