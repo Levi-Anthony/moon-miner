@@ -48,6 +48,12 @@ jobs:
         if: '!cancelled()'
         run: npm run smoke:continuous
 
+      # The Home Run toy: both modes, banking, the dawn win, END, the run log.
+      # Guards the rules-core extraction (DEV-66).
+      - name: Toy smoke
+        if: '!cancelled()'
+        run: npm run smoke:toys
+
       # Deterministic, so it belongs on every change. npm audit does not, and
       # lives in audit.yml on a schedule instead.
       - name: Last Light route report

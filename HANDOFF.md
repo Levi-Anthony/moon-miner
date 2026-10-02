@@ -82,15 +82,16 @@ Simulation (`src/game/`):
 
 ## 4. Test and proof state
 
-Measured 2026-09-30 on `main` after PR #67:
+Measured 2026-10-02 on `main` after PR #81:
 
 - **Passing:**
-  - `npm test`: 218 tests in 21 files.
+  - `npm test`: 241 tests in 22 files (`src/game/night.test.ts` holds the Endless Night rules core).
   - Build: one 688 kB chunk (184 kB gzipped).
   - `npm audit`: 0 vulnerabilities.
   - `smoke:continuous`: boot, HUD, one drive, and the phone HUD layout. Needs `CHROME_PATH` in this container.
+  - `smoke:toys`: the Home Run toy. It boots, Endless banks and pushes the night back, dawn wins at 150, END logs `quit`, and Contract banks.
   - `report:last-light`: 5/5 routes won.
-- **CI** runs tests, build, smoke and the last-light report on every push to `main` and every PR. `audit.yml` runs `npm audit` weekly on its own, so a new advisory can't turn a code change red.
+- **CI** runs tests, build, both smoke tests and the last-light report on every push to `main` and every PR. `audit.yml` runs `npm audit` weekly on its own, so a new advisory can't turn a code change red.
 - **Not covered:** the smoke test checks far less than the old Phaser smoke did (DEV-53). `npm run play:through` plays full levels to their end state but is too slow for CI, so it runs by hand.
 
 ## 5. Open work (Linear, project Moon Miner)
