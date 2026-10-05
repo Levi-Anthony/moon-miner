@@ -5,7 +5,8 @@
 // Each rule here was settled against the owner's play and run data (DECISIONS,
 // 2026-09-30): the rail lets go only on purpose; turning back onto your road
 // grabs at once; the grab reaches 80 degrees; a hop-off keeps you off only while
-// you carry on the way you left; your own road keeps your load safe in the dark.
+// you carry on the way you left; your own road keeps your load safe in the dark
+// (Home Run's 2026-09-30 rules; RESERVE_RUN in run.ts replaces the leak with a reserve).
 
 import { addPoint, advanceRail, dropStubLine, nearestRoad, railPoint, startLine, type Rail, type RoadHit, type RoadTree, type Vec } from './roadTree';
 import { inSeam, type Seam } from './seams';

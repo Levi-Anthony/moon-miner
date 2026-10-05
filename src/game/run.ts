@@ -34,7 +34,7 @@ import {
 import { rng } from './random';
 import { createRoadTree, type RoadTree, type Vec } from './roadTree';
 import { HOME_RUN_MODS, HOME_RUN_ROVER, createRover, darkLeak, digSeams, homeRover, onOwnRoad, resetRoverRun, stepRover, type RoverEvent, type RoverMods, type RoverRules, type RoverState } from './rover';
-import { addSeams, addSeamsBeyondRoad, type Seam } from './seams';
+import { addSeamBesideRoad, addSeams, addSeamsBeyondRoad, type Seam } from './seams';
 
 export type RunMode = 'contract' | 'endless';
 
@@ -45,6 +45,16 @@ export interface RunRules {
   cell: number; // the road grid's cell size
   contractNight: number; // seconds for a contract night to reach home (before upgrades)
   firstSeams: number; // seams on a fresh map
+  // The dark. Home Run's rules (darkReserve 0): off your road the dark leaks
+  // your load, Hard ends the run there, and seams past the border go dead.
+  // With a reserve: the rover has this many seconds in the dark, on your road
+  // or off it, and refills in the light; at 0 it's caught. No leak.
+  darkReserve: number;
+  hardReserve: number; // the reserve on Hard
+  reserveRefill: number; // seconds of reserve back per second in the light
+  liveDarkSeams: boolean; // seams past the border keep their ore
+  sideOre: number; // share of the ore a bank grows that lands beside your road, not past its tips
+  sideOreFrom: number; // ...from this bank on (the first ones build your first road)
 }
 
 // Upgrades a contract can buy, on top of the rover's.
@@ -60,7 +70,31 @@ export const HOME_RUN: RunRules = {
   depotR: 46,
   cell: 64,
   contractNight: 60,
-  firstSeams: 16
+  firstSeams: 16,
+  darkReserve: 0,
+  hardReserve: 0,
+  reserveRefill: 0,
+  liveDarkSeams: false,
+  sideOre: 0,
+  sideOreFrom: 0
+};
+
+// Endless Night in 3D and Home Run from 2026-10-05 (DEV-66). The dark is a survival
+// clock: "when you're laying your road and choosing where to go ... I want the
+// calculation to be based on how long in the dark you think you can survive."
+// Riding your road through the dark is fast but still spends the reserve; out
+// in the light it comes back fast (full in 2 s). Seams in the dark keep their
+// ore, and digging one pushes the border back over you. After the first two
+// banks most new ore lands beside your road, so the road you built takes you
+// somewhere new.
+export const RESERVE_RUN: RunRules = {
+  ...HOME_RUN,
+  darkReserve: 8,
+  hardReserve: 3,
+  reserveRefill: 4,
+  liveDarkSeams: true,
+  sideOre: 0.7,
+  sideOreFrom: 2
 };
 
 // A contract's starting upgrades (none), as a fresh copy to change.
@@ -71,7 +105,7 @@ export function baseMods(): RunMods {
 export interface RunState {
   mode: RunMode;
   seed: number;
-  hard: boolean; // the dark takes the rover, not just its load
+  hard: boolean; // the dark ends the run: at once off your road, or on a short reserve
   rs: RoverState;
   road: RoadTree;
   ns: NightState;
@@ -86,6 +120,11 @@ export interface RunState {
   elapsed: number; // seconds of play this night
   started: boolean; // the clock waits for the first touch
   inDark: boolean;
+  reserve: number; // seconds left in the dark (0 max: no reserve rule)
+  reserveMax: number;
+  reserveLow: number; // the lowest it got this run
+  darkTime: number; // seconds spent in the dark this run
+  darkDips: number; // times you went into it
   stranded: boolean; // not home when the night fell
   strandLoad: number; // the load lost to it
   dawnBroke: boolean;
@@ -101,6 +140,8 @@ export type RunEvent =
   | { kind: 'nibble'; seam: Seam; take: number }
   | { kind: 'seamGone'; seam: Seam }
   | { kind: 'leak'; take: number }
+  | { kind: 'darkIn' }
+  | { kind: 'darkOut' }
   | { kind: 'bank'; auto: boolean; load: number; mult: number; won: number; dawn: boolean; at: Vec; wonAt: Vec }
   | { kind: 'strand'; load: number; at: Vec }
   | { kind: 'dawn' }
@@ -127,6 +168,11 @@ export function createRun(mode: RunMode, seed: number, hard: boolean, rules: Run
     elapsed: 0,
     started: false,
     inDark: false,
+    reserve: 0,
+    reserveMax: rules.darkReserve > 0 ? (hard ? rules.hardReserve : rules.darkReserve) : 0,
+    reserveLow: Infinity,
+    darkTime: 0,
+    darkDips: 0,
     stranded: false,
     strandLoad: 0,
     dawnBroke: false,
@@ -160,6 +206,7 @@ export function startNight(run: RunState): void {
   run.started = false;
   run.stranded = false;
   run.inDark = false;
+  run.reserve = run.reserveMax;
   run.lost = 0;
   run.elapsed = 0;
   run.over = null;
@@ -213,7 +260,7 @@ export function bank(run: RunState, rules: RunRules, mods: RunMods, auto: boolea
     const r = bankEndless(run.ns, rules.night, load, run.banked);
     mult = r.mult;
     won = r.won;
-    addSeamsBeyondRoad(run.seams, run.road, rng((run.seed ^ (run.trips * 40503)) >>> 0), 3, run.ns.ringR, (a) => ringAt(run.ns, a), rules.depotR);
+    growOre(run, rules);
     if (r.dawn) {
       ev.push({ kind: 'bank', auto, load, mult, won, dawn: true, at: { x: rs.rover.x, y: rs.rover.y }, wonAt });
       rs.carry = 0;
@@ -227,6 +274,18 @@ export function bank(run: RunState, rules: RunRules, mods: RunMods, auto: boolea
   ev.push({ kind: 'bank', auto, load, mult, won, dawn: false, at: { x: rs.rover.x, y: rs.rover.y }, wonAt });
   rs.carry = 0;
   if (!mods.chainKeeper) rs.chain = 0;
+}
+
+// A bank grows 3 seams: past the tips of your road, or (from `sideOreFrom` on)
+// mostly beside it.
+function growOre(run: RunState, rules: RunRules): void {
+  const r = rng((run.seed ^ (run.trips * 40503)) >>> 0);
+  const at = (a: number): number => ringAt(run.ns, a);
+  for (let k = 0; k < 3; k += 1) {
+    const beside = rules.sideOre > 0 && run.trips >= rules.sideOreFrom && r() < rules.sideOre;
+    if (beside && addSeamBesideRoad(run.seams, run.road, r, at, rules.depotR)) continue;
+    addSeamsBeyondRoad(run.seams, run.road, r, 1, run.ns.ringR, at, rules.depotR);
+  }
 }
 
 // One frame of the run. `ax` is the stick (x steer right +, y throttle forward
@@ -253,17 +312,38 @@ export function stepRun(run: RunState, ax: Vec, dt: number, rules: RunRules, mod
     return ev;
   }
   decayFlash(run.ns, dt);
-  for (const s of run.seams) {
-    if (s.ore > 0 && outsideRing(run.ns, s.x, s.y)) {
-      s.ore = 0;
-      s.gone = 0.8;
-      ev.push({ kind: 'seamGone', seam: s });
+  if (!rules.liveDarkSeams) {
+    for (const s of run.seams) {
+      if (s.ore > 0 && outsideRing(run.ns, s.x, s.y)) {
+        s.ore = 0;
+        s.gone = 0.8;
+        ev.push({ kind: 'seamGone', seam: s });
+      }
     }
   }
 
-  // The dark: off your own road it takes your load (Hard: it takes you).
+  const wasDark = run.inDark;
   run.inDark = outsideRing(run.ns, rs.rover.x, rs.rover.y);
-  if (run.inDark && !onOwnRoad(rs, run.road, rules.rover)) {
+  if (run.inDark !== wasDark) {
+    if (run.inDark) run.darkDips += 1;
+    ev.push({ kind: run.inDark ? 'darkIn' : 'darkOut' });
+  }
+  if (run.inDark) run.darkTime += dt;
+  if (run.reserveMax > 0) {
+    // The reserve: the dark spends it, on your road or off; the light refills it.
+    if (run.inDark) {
+      run.reserve = Math.max(0, run.reserve - dt);
+      run.reserveLow = Math.min(run.reserveLow, run.reserve);
+      if (run.reserve <= 0) {
+        strand(run, rules, mods, ev);
+        end(run, 'caught', ev);
+        return ev;
+      }
+    } else {
+      run.reserve = Math.min(run.reserveMax, run.reserve + rules.reserveRefill * dt);
+    }
+  } else if (run.inDark && !onOwnRoad(rs, run.road, rules.rover)) {
+    // Home Run's dark: off your own road it leaks your load (Hard: the run ends).
     if (run.hard) {
       strand(run, rules, mods, ev);
       end(run, 'caught', ev);

@@ -2113,3 +2113,29 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **Input and the run log** reuse the toy kit's stick, sound and `logToyRun`. Runs log as mode `endless:3d`. Send names them "Endless Night 3D", and `npm run runs -- --toys` lists them with the toy runs, since the record shape is the same.
   - **Covered by `smoke:toys`:** the 3D page draws every seam and road line, banks (x1, pushing the night back about 107 px), wins at dawn, drives out, and logs `quit` from END. `smoke:continuous` still passes on the Levels page.
   - **Not done yet:** a playtest on the owner's phone, and any tuning that follows. The core's numbers came from the 2D toy's top-down view; a chase camera sees less of the field, so the clock may need more slack in 3D.
+- **The dark reserve (2026-10-05, DEV-66):** the first four 3D runs (issues #86–#88, build `edb62c8`) went from a nightfall at 47 ore to three dawns in a row (155, 156, 159; the daily took 57 s). The owner said they were good runs. They named two changes they wanted straight away.
+  - **Out and back on one road.** The owner: out and back "is fine for once or maybe twice in a level ... but then I can reuse it to go somewhere else?" The cause was the 2026-09-30 rule that puts 70% of a bank's new ore past the tips of your road, so the best play was always to stretch one road farther.
+  - **Seams going dead in the dark.** The owner didn't want the dark to wipe seams. They asked for rover damage instead, but rejected a speed penalty: "I would be frustrated if coming out of the dark didn't restore my speed", and "the calculation [should] be based on how long in the dark you think you can survive. Do you draw the shorter safer loop, or lay down something riskier ..., then maybe you finally grind towards a branch and connect it to zoom home just in time."
+  - **Decided (owner):**
+    - **A dark reserve.** The rover has 8 s in the dark, on your road or off it, and the light refills it fast (full in 2 s). When it runs out, the rover is lost: the load is stranded, the run ends `caught`, and banked ore counts.
+    - **Hard** is a 3 s reserve.
+    - **The load leak is removed.** This reverses the 2026-09-30 "the dark is not lethal" call. The owner: "Correct. Reverse it."
+  - **With it:**
+    - Seams in the dark keep their ore, so digging one pushes the border back over you.
+    - From the second bank on, 70% of new ore lands beside your road: off a line's side by 160–280 px, partway out (35–85% of the road's reach), and clear of every road. Reaching it means hopping off to lay a branch. The first banks still grow ore past the tips, which builds your first road.
+  - **Rules as data:**
+    - `RESERVE_RUN` in `src/game/run.ts` holds the new numbers: `darkReserve`, `hardReserve`, `reserveRefill`, `liveDarkSeams`, `sideOre`, `sideOreFrom`.
+    - `HOME_RUN` keeps the 2026-09-30 rules, so the old behaviour stays testable.
+    - Both Endless Night 3D and the Home Run toy now run `RESERVE_RUN` (the toy is the parallel 2D version).
+    - The 3D title screen has three toggles (Dark reserve, Live seams in the dark, Ore beside your road) to switch each rule back for comparison. A run with any of them off logs them in `knobs`.
+  - **What you see and hear:**
+    - The 3D HUD pairs DARK IN with a RESERVE readout and bar, so the two numbers a route turns on sit side by side. The toy shows both in its centre line.
+    - In the dark, a low tick speeds up and drops in pitch as the reserve runs down, and the screen's rim warms to orange and pulses.
+    - Going in sounds a low thud; coming out plays a rising three-note chime with a burst.
+  - **Run data:** each run now logs `reserve` (its size), `reserveLow`, `darkSeconds` and `darkDips`.
+  - **Tests:**
+    - 8 new core tests cover the reserve draining on and off the road, running out at 8 s, refilling in 2 s, Hard's 3 s, live seams (Home Run still loses them), and ore beside the road from the second bank on.
+    - `smoke:toys` now runs a third 3D run into the dark until the reserve ends it as `caught`.
+  - **Not done:**
+    - **Connecting roads.** "Connect it to zoom home" works today: driving onto any road within 80 degrees grabs it. The connector is not a junction afterwards, though. The road is a tree, so riding along the connector later won't carry you across to the road you joined. Making the road a network is a separate step, after a playtest.
+    - **Landscape.** The owner noted part of the out-and-back feel comes from a field with nothing to steer around. Level generation research is in `docs/research/LEVEL_GENERATION.md`.

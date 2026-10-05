@@ -53,7 +53,8 @@ Two outer loops now wrap that core. Pick one on the title screen:
   - Every bank pushes it back 25%, raises the multiplier, and spawns ore in the ground you won back.
   - The run ends when the night reaches home. Not home then = stranded: the load is lost, the score stays.
 - **Daily map:** a toggle on both modes, seeded by the UTC date.
-- **The dark is not lethal (2026-09-30).** The owner's call after a contract ended on night 1 with quota already banked: the night border must not turn a prepared road deadly. Off your road in the dark, your load leaks away (35% a second, at least 2). On your road it's safe. Not home at nightfall = stranded: the load is lost, the banked ore counts, and a contract goes on if quota was met.
+- **The dark reserve (2026-10-05) replaces the leak below.** The rover lasts 8 s in the dark, on your road or off it, and refills in 2 s back in the light. When it runs out, the run ends `caught` (banked ore counts). Seams in the dark keep their ore, and from the second bank on most new ore lands beside your road. Same rules as Endless Night 3D (`RESERVE_RUN`, `src/game/run.ts`).
+- **Superseded: the dark is not lethal (2026-09-30).** The owner's call after a contract ended on night 1 with quota already banked: the night border must not turn a prepared road deadly. Off your road in the dark, your load leaks away (35% a second, at least 2). On your road it's safe. Not home at nightfall = stranded: the load is lost, the banked ore counts, and a contract goes on if quota was met.
 
 ### Endless Night in 3D (2026-10-02)
 
@@ -67,7 +68,7 @@ The owner's verdict on Endless Night: "I think we actually found something," and
 - **You can see and hear it coming.** A countdown in seconds, ground that darkens toward the border, a glow from the side it's on, an arrow when it's off screen, a rising drone and ticks, and a minimap of the border, your road and the ore.
 - **Strategy has room.** An unbanked night lasts about 65 s (was about 45). New ore after a bank lands mostly beyond the tips of your road, so extending a line toward the border pays off.
 - **You can win: reach dawn.** Bank 150 before the dark reaches home and dawn breaks. The top bar is the dawn bar, with what you carry drawn ahead of it, so you can see when banking now would win.
-- **Hard** (title toggle): the dark kills off your road.
+- **Hard** (title toggle): a 3 s dark reserve instead of 8 s.
 - **END** (top left, under the HUD) ends a run cleanly, and the run is logged as `quit`.
 - **Getting on is easy too.** Turning round onto the road you just laid grabs it at once, and driving onto any road within 80° of its line grabs it. Only a square crossing drives across. Each missed grab is logged with its reason.
 - The rules are one data object (`NightRules`), so a harder level or another mode is a change of numbers.

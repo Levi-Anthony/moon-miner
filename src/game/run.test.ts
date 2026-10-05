@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { addPoint } from './roadTree';
-import { HOME_RUN, baseMods, createRun, startNight, stepRun, timeToDark, type RunEvent, type RunState } from './run';
+import { HOME_RUN, RESERVE_RUN, baseMods, createRun, startNight, stepRun, timeToDark, type RunEvent, type RunState } from './run';
 
 const DT = 1 / 60;
 const kinds = (ev: RunEvent[]): string[] => ev.map((e) => e.kind);
@@ -153,5 +153,109 @@ describe('run: Contract', () => {
     expect(run.banked).toBe(0);
     expect(run.elapsed).toBe(0);
     expect(run.road.lines.length).toBe(2); // the old road stays, a fresh root line starts
+  });
+});
+
+describe('run: the dark reserve (RESERVE_RUN)', () => {
+  const R = RESERVE_RUN;
+  function inTheDark(hard = false): RunState {
+    const run = createRun('endless', 42, hard, R);
+    stepRun(run, touch, DT, R, baseMods());
+    run.rs.laying = -1;
+    run.rs.rover.x = 600;
+    run.ns.ringR = 300;
+    return run;
+  }
+
+  it('starts full; the dark spends it on your road or off, with no leak', () => {
+    const run = inTheDark();
+    const mods = baseMods();
+    expect(run.reserve).toBe(R.darkReserve);
+    run.rs.carry = 40;
+    const ev = stepRun(run, { x: 0, y: 0 }, DT, R, mods);
+    expect(kinds(ev)).toContain('darkIn');
+    expect(kinds(ev)).not.toContain('leak');
+    expect(run.rs.carry).toBe(40);
+    expect(run.reserve).toBeCloseTo(R.darkReserve - DT);
+    // On your own road too.
+    for (let x = 14; x <= 700; x += 14) addPoint(run.road, 0, { x, y: 0 });
+    stepRun(run, { x: 0, y: 0 }, DT, R, mods);
+    expect(run.reserve).toBeCloseTo(R.darkReserve - 2 * DT);
+    expect(run.darkDips).toBe(1);
+  });
+
+  it('runs out after darkReserve seconds: the load is lost and the run ends caught', () => {
+    const run = inTheDark();
+    const mods = baseMods();
+    run.rs.carry = 30;
+    let ev: RunEvent[] = [];
+    let t = 0;
+    for (; t < 20 && !run.over; t += DT) {
+      run.ns.ringR = 300; // hold the border where it is
+      ev = stepRun(run, { x: 0, y: 0 }, DT, R, mods);
+    }
+    expect(run.over).toBe('caught');
+    expect(t).toBeGreaterThan(R.darkReserve - 0.1);
+    expect(t).toBeLessThan(R.darkReserve + 0.1);
+    expect(kinds(ev).slice(-2)).toEqual(['strand', 'over']);
+    expect(run.lostTotal).toBe(30);
+    expect(run.reserveLow).toBe(0);
+  });
+
+  it('refills in the light, full from empty in 2 s', () => {
+    const run = inTheDark();
+    const mods = baseMods();
+    for (let k = 0; k < 6 * 60; k += 1) {
+      run.ns.ringR = 300;
+      stepRun(run, { x: 0, y: 0 }, DT, R, mods);
+    }
+    expect(run.reserve).toBeCloseTo(2, 1);
+    run.ns.ringR = 1500;
+    const ev = stepRun(run, { x: 0, y: 0 }, DT, R, mods);
+    expect(kinds(ev)).toContain('darkOut');
+    for (let k = 0; k < 30; k += 1) stepRun(run, { x: 0, y: 0 }, DT, R, mods);
+    expect(Math.abs(run.reserve - 4)).toBeLessThan(0.1); // +2 in half a second
+    for (let k = 0; k < 60; k += 1) stepRun(run, { x: 0, y: 0 }, DT, R, mods);
+    expect(run.reserve).toBe(R.darkReserve);
+    expect(run.darkTime).toBeCloseTo(6 + DT, 1);
+  });
+
+  it('is short on Hard', () => {
+    const run = inTheDark(true);
+    expect(run.reserveMax).toBe(R.hardReserve);
+  });
+
+  it('keeps seams in the dark live; Home Run still loses them', () => {
+    for (const rules of [R, HOME_RUN]) {
+      const run = createRun('endless', 42, false, rules);
+      stepRun(run, touch, DT, rules, baseMods());
+      run.seams.push({ x: 900, y: 0, a: 0, len: 80, w: 30, ore: 8, max: 8, gone: 0 });
+      run.ns.ringR = 400;
+      const ev = stepRun(run, { x: 0, y: 0 }, DT, rules, baseMods());
+      expect(run.seams[run.seams.length - 1].ore).toBe(rules.liveDarkSeams ? 8 : 0);
+      expect(kinds(ev).includes('seamGone')).toBe(!rules.liveDarkSeams);
+    }
+  });
+
+  it('grows ore beside your road from the second bank on (Home Run: past its tips)', () => {
+    const besideCount = (rules: typeof R): number => {
+      const run = createRun('endless', 42, false, rules);
+      const mods = baseMods();
+      stepRun(run, touch, DT, rules, mods);
+      for (let x = 14; x <= 1000; x += 14) addPoint(run.road, 0, { x, y: 0 });
+      let beside = 0;
+      for (let trip = 1; trip <= 4; trip += 1) {
+        const before = run.seams.length;
+        run.rs.carry = 5;
+        stepRun(run, { x: 0, y: 0 }, DT, rules, mods);
+        const grown = run.seams.slice(before);
+        expect(grown).toHaveLength(3);
+        // Beside the road: partway out along it, well off its line.
+        beside += grown.filter((s) => s.x > 300 && s.x < 900 && Math.abs(s.y) >= 150 && Math.abs(s.y) <= 290).length;
+      }
+      return beside;
+    };
+    expect(besideCount(R)).toBeGreaterThanOrEqual(5);
+    expect(besideCount(HOME_RUN)).toBeLessThanOrEqual(1);
   });
 });
