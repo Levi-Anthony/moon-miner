@@ -259,3 +259,27 @@ describe('run: the dark reserve (RESERVE_RUN)', () => {
     expect(besideCount(HOME_RUN)).toBeLessThanOrEqual(1);
   });
 });
+
+describe('run: Contract with the dark reserve (owner, 2026-10-05: "B for contract")', () => {
+  it('an empty reserve ends the night stranded, not the contract', () => {
+    const R = RESERVE_RUN;
+    const run = createRun('contract', 3, false, R);
+    const mods = baseMods();
+    stepRun(run, touch, DT, R, mods);
+    run.rs.laying = -1;
+    run.rs.rover.x = 600;
+    run.rs.carry = 30;
+    run.elapsed = 50; // the contract border is set by the clock: well inside the rover
+    let ev: RunEvent[] = [];
+    for (let k = 0; k < 20 * 60 && !ev.some((e) => e.kind === 'nightfall'); k += 1) ev = stepRun(run, { x: 0, y: 0 }, DT, R, mods);
+    expect(kinds(ev).slice(-2)).toEqual(['strand', 'nightfall']);
+    expect(run.over).toBeNull();
+    expect(run.stranded).toBe(true);
+    expect(run.reserveOut).toBe(true);
+    expect(run.lostTotal).toBe(30);
+    expect(stepRun(run, { x: 0, y: 1 }, DT, R, mods)).toEqual([]); // the night is over
+    startNight(run);
+    expect(run.reserveOut).toBe(false);
+    expect(run.reserve).toBe(R.darkReserve);
+  });
+});

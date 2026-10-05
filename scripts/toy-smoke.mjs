@@ -131,12 +131,12 @@ try {
   await page.evaluate(() => window.__toyGive(25));
   s = await waitFor((q) => q.banked >= 25, 'a contract bank');
   check(s.mult === 1 && s.score === 0, `Contract has no multiplier or score: mult ${s.mult}, score ${s.score}`);
-  // Caught mid-night: the run ends, and the night's banked ore is logged (issue #93 logged 0).
+  // The dark reserve runs out mid-night (owner, 2026-10-05: "B for contract"): the
+  // night ends stranded, and with quota met the contract goes on to the shop.
   await page.evaluate(() => window.__toyCatch());
-  await waitFor((q) => q.phase === 'over', 'a contract caught by the dark');
-  runs = await page.evaluate(() => JSON.parse(localStorage.getItem('mm-toy-runs-v1') || '[]'));
-  check(runs.at(-1)?.result === 'caught' && runs.at(-1)?.ore === 25, `a caught contract should log its banked ore: ${runs.at(-1)?.result} ${runs.at(-1)?.ore}`);
-  console.log(`contract OK: night ${s.night}, banked ${s.banked}, caught logged with ore ${runs.at(-1)?.ore}`);
+  s = await waitFor((q) => q.phase === 'shop', 'a stranded night with quota met to reach the shop');
+  check(s.strandedNights === 1 && s.totalBanked === 25, `an empty reserve should strand the night: stranded ${s.strandedNights}, banked ${s.totalBanked}`);
+  console.log(`contract OK: night ${s.night}, banked ${s.totalBanked}, an empty reserve stranded the night and the contract went on`);
 
   // Endless Night 3D: the same run, drawn in Three.js.
   const nt = () => page.evaluate(() => window.__night());
