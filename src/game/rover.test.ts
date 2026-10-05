@@ -317,3 +317,92 @@ describe('rover: junctions (owner, 2026-10-05: "lower speed road interchange")',
     expect(ev.filter((e) => e.kind === 'tip').length).toBeLessThan(3);
   });
 });
+
+describe('rover: switching on the rail (owner, 2026-10-05)', () => {
+  // A main road along +x to 900, a branch leaving it at x = 300 going up (to
+  // the left as you ride out), and a road whose end joins it at x = 600 from below.
+  function points(): { t: RoadTree; b: number; j: number } {
+    const t = createRoadTree(64);
+    startLine(t, null, { x: 0, y: 0 });
+    for (let x = 14; x <= 900; x += 14) addPoint(t, 0, { x, y: 0 });
+    const b = startLine(t, { line: 0, i: 21, t: 3 / 7 }, { x: 300, y: 0 });
+    for (let y = -14; y >= -400; y -= 14) addPoint(t, b, { x: 300, y });
+    const j = startLine(t, { line: 0, i: 7, t: 0 }, { x: 98, y: 0 });
+    for (let y = 14; y <= 300; y += 14) addPoint(t, j, { x: 98, y });
+    for (let x = 112; x <= 600; x += 14) addPoint(t, j, { x, y: 300 });
+    for (let y = 286; y >= 0; y -= 14) addPoint(t, j, { x: 600, y });
+    t.joins.push({ line: j, at: { line: 0, i: 42, t: 6 / 7 } });
+    return { t, b, j };
+  }
+  function riding(t: RoadTree, x: number, v: number, dir: 1 | -1 = 1): RoverState {
+    const s = createRover();
+    const i = Math.floor(x / 14);
+    s.rail = { line: 0, i, t: (x - i * 14) / 14, dir };
+    s.rover = { x, y: 0, h: dir > 0 ? 0 : Math.PI, v };
+    s.charge = 1;
+    return s;
+  }
+
+  it('holding toward a branch takes it as you pass, at speed, with no hop-off', () => {
+    for (const steer of [-0.5, -1]) {
+      const { t, b } = points();
+      const lines = t.lines.length;
+      const s = riding(t, 120, 400);
+      const ev = run(s, t, { x: steer, y: 1 }, 1, (e) => e.some((x) => x.kind === 'switch'));
+      expect(ev.map((e) => e.kind)).not.toContain('hopOff');
+      expect(ev[ev.length - 1]?.kind).toBe('switch');
+      expect(s.rail).toMatchObject({ line: b, dir: 1 });
+      expect(s.rover.v).toBeGreaterThan(380);
+      expect(t.lines.length).toBe(lines);
+      expect(s.switches).toBe(1);
+    }
+  });
+
+  it('holding the other way, or not at all, rides on past it', () => {
+    for (const steer of [0, 0.5]) {
+      const { t } = points();
+      const s = riding(t, 120, 400);
+      const ev = run(s, t, { x: steer, y: 1 }, 0.5);
+      expect(ev.map((e) => e.kind)).not.toContain('switch');
+      expect(s.rail?.line).toBe(0);
+      expect(s.rover.x).toBeGreaterThan(300);
+    }
+  });
+
+  it('shows the switch coming up, and whether the stick is set for it', () => {
+    const { t, b } = points();
+    const s = riding(t, 260, 100);
+    run(s, t, { x: 0, y: 1 }, DT);
+    expect(s.ahead).toMatchObject({ x: 300, y: 0, side: -1, set: false });
+    expect(s.ahead?.to.line).toBe(b);
+    run(s, t, { x: -0.6, y: 1 }, DT);
+    expect(s.ahead?.set).toBe(true);
+  });
+
+  it('takes a junction from the road it joins, onto the joined road heading back along it', () => {
+    const { t, j } = points();
+    const s = riding(t, 500, 300);
+    const ev = run(s, t, { x: 0.6, y: 1 }, 1, (e) => e.some((x) => x.kind === 'switch'));
+    expect(ev[ev.length - 1]?.kind).toBe('switch');
+    expect(s.rail).toMatchObject({ line: j, dir: -1 });
+  });
+
+  it('a full hold toward a branch coming up at slow speed waits for it instead of hopping off', () => {
+    // Riding at 120, the stick held hard toward the branch 90 px ahead. Before
+    // switching, the hold hopped off 0.35 s in, short of the branch, and you
+    // curled back onto the main road. A hard hold with no switch within reach
+    // (0.8 s of travel, at least 90 px) still means "off now".
+    const { t, b } = points();
+    const s = riding(t, 210, 120);
+    const ev = run(s, t, { x: -1, y: 0.5 }, 4, (e) => e.some((x) => x.kind === 'switch'));
+    expect(ev.map((e) => e.kind)).not.toContain('hopOff');
+    expect(s.rail?.line).toBe(b);
+  });
+
+  it('a full hold with no switch coming up still hops off', () => {
+    const { t } = points();
+    const s = riding(t, 700, 300);
+    const ev = run(s, t, { x: -1, y: 1 }, 1, (e) => e.some((x) => x.kind === 'hopOff'));
+    expect(ev.map((e) => e.kind)).toContain('hopOff');
+  });
+});

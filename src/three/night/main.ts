@@ -195,6 +195,28 @@ function syncRoad(): void {
   });
 }
 
+// The switch coming up on the rail (rover.ahead): a ring where it is, and the
+// road it leads to lit up when the stick is set to take it.
+const roadHot = new THREE.MeshBasicMaterial({ color: 0xbffff4, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false });
+const switchRing = new THREE.Mesh(new THREE.RingGeometry(16, 21, 32), new THREE.MeshBasicMaterial({ color: TEAL, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false }));
+switchRing.rotation.x = -Math.PI / 2;
+switchRing.position.y = 1.2;
+switchRing.renderOrder = 3;
+scene.add(switchRing);
+
+function syncSwitch(): void {
+  const a = phase === 'play' ? run.rs.ahead : null;
+  for (const [i, r] of ribbons.entries()) r.mesh.material = a?.set && a.to.line === i ? roadHot : roadMat;
+  switchRing.visible = !!a;
+  if (!a) return;
+  switchRing.position.x = a.x;
+  switchRing.position.z = a.y;
+  const m = switchRing.material as THREE.MeshBasicMaterial;
+  m.color.setHex(a.set ? 0xffffff : TEAL);
+  m.opacity = a.set ? 0.9 : 0.35 + 0.2 * Math.sin(time * 6);
+  switchRing.scale.setScalar(a.set ? 1.25 : 1);
+}
+
 // --- seams: a glowing patch and nuggets that go as you dig --------------------------
 const seamGroup = new THREE.Group();
 scene.add(seamGroup);
@@ -612,6 +634,7 @@ function logRun(result: string): void {
     roughSeconds: +run.roughTime.toFixed(1),
     bumps: rs.bumps,
     transfers: rs.transfers,
+    switches: rs.switches,
     terrain: run.terrain
       ? {
           ridges: run.terrain.ridges,
@@ -678,6 +701,12 @@ function effect(e: RunEvent): void {
       blip(520, 0.07, 'triangle', 0.18, 780);
       glide.x = rover.position.x - r.x;
       glide.y = rover.position.z - r.y;
+      break;
+    case 'switch':
+      // Took a branch from the rail: the points click, a touch brighter.
+      blip(990, 0.04, 'square', 0.14);
+      setTimeout(() => blip(740, 0.05, 'triangle', 0.14), 40);
+      burst(r.x, r.y, 10, 0xbffff4, 110, 0.45);
       break;
     case 'transfer':
       // Through a junction onto another road: a click of the points.
@@ -781,6 +810,7 @@ function syncView(dt: number): void {
   syncRoad();
   syncSeams();
   syncTerrain();
+  syncSwitch();
   const u = urgencyNow();
   syncNight(u);
   stepParticles(dt);
