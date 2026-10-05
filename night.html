@@ -12,6 +12,7 @@
       #hud { position: fixed; left: 0; right: 0; top: 0; z-index: 6; display: flex; gap: 6px 8px; flex-wrap: wrap; align-items: flex-end;
         padding: 8px 12px 8px 88px; background: linear-gradient(#05070ccc, #05070c00); font: 13px/1.2 ui-monospace, monospace; color: #dfe8f2; pointer-events: none; }
       #hud .v { flex: 1 1 48px; min-width: 0; }
+      #hud .pair { flex: 2 1 120px; display: flex; gap: 8px; min-width: 0; }
       #hud .v b { display: block; font-size: 10px; color: #8fa3ba; font-weight: 400; letter-spacing: 0.04em; }
       #hud .v span { font-size: 16px; }
       #hud .bar { height: 4px; border-radius: 2px; background: #263041; margin-top: 3px; overflow: hidden; }
@@ -40,15 +41,17 @@
       <div class="v"><b>CARRY</b><span id="h-carry">0</span></div>
       <div class="v"><b>MULT</b><span id="h-mult">x1</span></div>
       <div class="v"><b>SCORE</b><span id="h-score">0</span></div>
-      <div class="v"><b>DARK IN</b><span id="h-dark">–</span></div>
+      <div class="pair"><div class="v"><b>DARK IN</b><span id="h-dark">–</span></div>
+        <div class="v"><b>RESERVE</b><span id="h-res">–</span><div class="bar"><i id="h-res-bar"></i></div></div></div>
     </div>
     <button id="end" type="button">END</button>
     <div class="screen" id="title">
       <h1>ENDLESS NIGHT</h1>
       <p>The night closes in on home, faster and faster. Dig to push it back. Bank at home to push it back further and raise the multiplier. Bank 150 and dawn breaks.</p>
-      <p>Drag to drive (or W A S D). Ride your own road: it is fast and safe in the dark.</p>
+      <p>Drag to drive (or W A S D). Your rover lasts 8 s in the dark, on your road or off, and refills fast back in the light. Seams in the dark still pay, and digging them pushes the night back.</p>
       <div class="row"><button class="go" id="start" type="button">START</button></div>
       <div class="row"><button class="toggle" id="daily" type="button">Daily map: off</button><button class="toggle" id="hard" type="button">Hard: off</button></div>
+      <div class="row"><button class="toggle on" id="r-reserve" type="button">Dark reserve: on</button><button class="toggle on" id="r-seams" type="button">Live seams in the dark: on</button><button class="toggle on" id="r-side" type="button">Ore beside your road: on</button></div>
       <small id="best"></small>
       <div class="row"><a href="./">Levels (the old game)</a><a href="toys/">Toys</a></div>
     </div>

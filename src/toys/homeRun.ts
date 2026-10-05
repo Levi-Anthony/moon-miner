@@ -22,7 +22,7 @@ import {
   ringAt as coreRingAt
 } from '../game/night';
 import {
-  HOME_RUN,
+  RESERVE_RUN,
   baseMods,
   createRun,
   startNight as coreStartNight,
@@ -41,7 +41,7 @@ const TOY = 'home-run';
 // the rover in rover.ts, the night in night.ts. This file draws them, plays
 // their events and feeds input; Contract's quota and shop sit here.
 const RULES = HOME_RUN_ROVER;
-const DEPOT_R = HOME_RUN.depotR;
+const DEPOT_R = RESERVE_RUN.depotR;
 
 // Contract
 const QUOTAS = [20, 35, 55, 80, 110];
@@ -78,7 +78,7 @@ const darkHum = new Hum();
 
 // --- run state -------------------------------------------------------------------
 // The run: the rover on its road, the night, the seams, banking (src/game/run.ts).
-let run: RunState = createRun('contract', 1, false, HOME_RUN);
+let run: RunState = createRun('contract', 1, false, RESERVE_RUN);
 let pops: Pop[] = [];
 let strandedNights = 0;
 let time = 0;
@@ -142,7 +142,7 @@ function startMode(m: Mode): void {
   contractWon = false;
   quit = false;
   runLogged = false;
-  run = createRun(m, seed, hard, HOME_RUN);
+  run = createRun(m, seed, hard, RESERVE_RUN);
   resetView();
   blip(520, 0.1, 'triangle', 0.2, 780);
 }
@@ -158,7 +158,7 @@ function closingSpeed(): number {
 // Seconds until the dark reaches you where you stand (0 once you're in it,
 // Infinity when the night isn't moving).
 function secondsToDark(): number {
-  return timeToDark(run, HOME_RUN, mods);
+  return timeToDark(run, RESERVE_RUN, mods);
 }
 // On your own road, for the dark: locked on, or sitting on road laid before.
 function onOwnRoad(): boolean {
@@ -191,7 +191,8 @@ function logRun(result: string): void {
   if (runLogged) return;
   runLogged = true;
   const common = {
-    seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(run.dist), railShare: run.dist > 0 ? +(run.railDist / run.dist).toFixed(2) : 0, hopOffs: run.rs.hopOffs, grabs: run.rs.grabs, missedGrabs: { ...run.rs.missedGrabs }, misses: run.rs.misses.slice()
+    seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(run.dist), railShare: run.dist > 0 ? +(run.railDist / run.dist).toFixed(2) : 0, hopOffs: run.rs.hopOffs, grabs: run.rs.grabs, missedGrabs: { ...run.rs.missedGrabs }, misses: run.rs.misses.slice(),
+    reserve: run.reserveMax, reserveLow: +(Number.isFinite(run.reserveLow) ? run.reserveLow : run.reserveMax).toFixed(1), darkSeconds: +run.darkTime.toFixed(1), darkDips: run.darkDips
   };
   if (mode === 'contract') {
     logToyRun({
@@ -318,7 +319,7 @@ function update(dt: number): void {
   const ax = stick.axes();
   // The run (src/game/run.ts): the night, the rover on its road, digging,
   // banking, dawn. Its events drive the sounds, effects and logs here.
-  for (const e of stepRun(run, ax, dt, HOME_RUN, mods)) effect(e);
+  for (const e of stepRun(run, ax, dt, RESERVE_RUN, mods)) effect(e);
   if (phase !== 'play' || !run.started) return;
 
   // Border cues: they build as the dark gets closer in seconds, and come from
@@ -329,6 +330,12 @@ function update(dt: number): void {
   if (!run.inDark && urgency > 0) {
     const rate = 1 + 7 * urgency;
     if (Math.floor(time * rate) !== Math.floor((time - dt) * rate)) blip(520 + 520 * urgency, 0.04, 'square', 0.05 + 0.08 * urgency);
+  }
+  // In the dark: a low tick that speeds up and drops as the reserve runs down.
+  if (run.inDark && run.reserveMax > 0) {
+    const spent = 1 - run.reserve / run.reserveMax;
+    const rate = 1.5 + 8 * spent;
+    if (Math.floor(time * rate) !== Math.floor((time - dt) * rate)) blip(330 - 160 * spent, 0.06, 'square', 0.08 + 0.12 * spent);
   }
 
   if (run.rs.rail && run.rs.rover.v > 200 && Math.random() < 0.6) parts.trail(run.rs.rover.x - Math.cos(run.rs.rover.h) * 14, run.rs.rover.y - Math.sin(run.rs.rover.h) * 14, '#78f7df', 2, 0.35);
@@ -364,6 +371,13 @@ function effect(e: RunEvent): void {
       break;
     case 'leak':
       if (Math.random() < 0.4) parts.trail(rover.x + (Math.random() - 0.5) * 16, rover.y + (Math.random() - 0.5) * 16, '#b48cff', 2, 0.6);
+      break;
+    case 'darkIn':
+      blip(150, 0.25, 'sawtooth', 0.14, 90);
+      break;
+    case 'darkOut':
+      parts.burst(rover.x, rover.y, 24, '#e0d0ff', 160, 2, 0.6);
+      [392, 523, 659].forEach((f, i) => setTimeout(() => blip(f, 0.1, 'triangle', 0.16), i * 60));
       break;
     case 'bank': {
       if (mode === 'endless') {
@@ -458,7 +472,7 @@ function drawTitle(): void {
   card(L.contract, 'CONTRACT', ['5 nights, rising quota. Miss one: over.', 'Surplus buys upgrades; your road stays.', `best ${statsC.best} · played ${statsC.plays}`], '#ffd27a');
   card(L.endless, 'ENDLESS NIGHT', [`Bank ${ENDLESS.dawnOre} before the dark reaches home.`, 'Digging holds it; banks drive it back.', `best ${statsE.best} · played ${statsE.plays}`], '#b8a8ff');
   toggle(L.daily, daily, '#78f7df', '#12302c', daily ? `DAILY MAP ON · ${new Date().toISOString().slice(0, 10)}` : 'daily map: off (tap for today’s)');
-  toggle(L.hard, hard, '#ff8a5c', '#33170f', hard ? 'HARD ON · the dark kills off your road' : 'hard: off (tap: the dark kills)');
+  toggle(L.hard, hard, '#ff8a5c', '#33170f', hard ? `HARD ON · ${RESERVE_RUN.hardReserve} s in the dark` : `hard: off (tap: ${RESERVE_RUN.hardReserve} s in the dark)`);
 }
 
 function toggle(r: Rect, on: boolean, color: string, fill: string, text: string): void {
@@ -744,13 +758,15 @@ function drawWorld(dt: number): void {
     ctx.textAlign = 'center';
     ctx.font = 'bold 14px ui-monospace, monospace';
     ctx.fillStyle = ttd < 3 ? '#ff8a5c' : ttd < WARN_S ? '#d8b8ff' : '#8fa7ff';
+    // The two numbers the route turns on: seconds until the dark, and seconds you can last in it.
+    const left = run.reserve / run.reserveMax;
     if (run.inDark) {
-      const safe = onOwnRoad();
-      ctx.fillStyle = safe ? '#78f7df' : '#ff8a5c';
-      ctx.fillText(safe ? 'IN THE DARK · your road keeps your load' : run.rs.carry > 0 ? 'IN THE DARK · load leaking, find your road' : 'IN THE DARK', w / 2, 72);
+      ctx.fillStyle = left > 0.5 ? '#78f7df' : left > 0.25 ? '#ffd27a' : '#ff8a5c';
+      ctx.fillText(`IN THE DARK · reserve ${run.reserve.toFixed(1)} s`, w / 2, 72);
     } else {
       const push = mode === 'endless' && run.ns.ringPush > 1 ? '  ▲ pushing back' : '';
-      ctx.fillText(`dark in ${ttd > 30 ? '30+' : ttd.toFixed(1)} s${push}`, w / 2, 72);
+      const reserve = left < 1 ? `  · reserve ${run.reserve.toFixed(1)} s` : '';
+      ctx.fillText(`dark in ${ttd > 30 ? '30+' : ttd.toFixed(1)} s${push}${reserve}`, w / 2, 72);
     }
     if (run.rs.rail) {
       ctx.fillStyle = run.rs.charge >= RULES.scoopCharge ? '#fff1c4' : '#78f7df';
@@ -760,7 +776,7 @@ function drawWorld(dt: number): void {
   if (!run.started && phase === 'play') {
     const lines2 =
       mode === 'contract'
-        ? [`Night ${night} of ${QUOTAS.length}: bank ${quota()} before the dark reaches home.`, 'Off your road, the dark leaks your load. Surplus buys upgrades.', 'Push up to begin.']
+        ? [`Night ${night} of ${QUOTAS.length}: bank ${quota()} before the dark reaches home.`, `Your rover lasts ${RESERVE_RUN.darkReserve} s in the dark, road or not. Surplus buys upgrades.`, 'Push up to begin.']
         : [`Bank ${ENDLESS.dawnOre} ore before the dark reaches home, and dawn breaks.`, 'Digging holds the night off; banking drives it back and ups the x.', `A ${ENDLESS.autoBankChain}-scoop chain banks itself. Push up to begin.`];
     banner(ctx, w, h, mode === 'contract' ? `NIGHT ${night}` : 'ENDLESS NIGHT', lines2);
   }
@@ -853,7 +869,7 @@ function drawOver(): void {
   const { w, h } = screen;
   const again = time - phaseAt > 0.8 ? 'tap for the menu' : '';
   if (mode === 'contract') {
-    const title = contractWon ? 'CONTRACT COMPLETE' : quit ? 'CONTRACT ENDED' : `NIGHT ${night} SHORT`;
+    const title = contractWon ? 'CONTRACT COMPLETE' : quit ? 'CONTRACT ENDED' : run.over === 'caught' ? 'CAUGHT · reserve ran out' : `NIGHT ${night} SHORT`;
     banner(ctx, w, h, title, [
       `${contractWon ? QUOTAS.length : night - 1} of ${QUOTAS.length} nights · banked ${totalBanked.toFixed(0)} · credit ${credit.toFixed(0)}`,
       contractWon ? `ns.score ${(totalBanked + credit).toFixed(0)}` : `needed ${quota()}, banked ${run.banked.toFixed(0)}${run.lost > 0.5 ? ` · lost ${run.lost.toFixed(0)} in the dark` : ''}`,
@@ -869,7 +885,7 @@ function drawOver(): void {
         again
       ]);
     } else {
-      banner(ctx, w, h, quit ? 'RUN ENDED' : run.strandLoad > 0.5 ? 'STRANDED' : 'NIGHTFALL', [
+      banner(ctx, w, h, quit ? 'RUN ENDED' : run.over === 'caught' ? 'CAUGHT · reserve ran out' : run.strandLoad > 0.5 ? 'STRANDED' : 'NIGHTFALL', [
         `dawn ${run.banked.toFixed(0)}/${ENDLESS.dawnOre}${run.strandLoad > 0.5 ? ` · stranded with ${run.strandLoad.toFixed(0)}` : ''}`,
         `ns.score ${run.ns.score.toFixed(0)} · ${run.trips} trips · peak x${run.ns.multPeak} · ${Math.round(run.elapsed)} s`,
         `best ${statsE.best} · played ${statsE.plays}`,

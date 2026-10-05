@@ -166,7 +166,26 @@ try {
   await waitN((q) => q.phase === 'over', 'END in 3D');
   runs = await page.evaluate(() => JSON.parse(localStorage.getItem('mm-toy-runs-v1') || '[]'));
   check(runs.at(-1)?.result === 'quit', `3D END should log quit, logged ${runs.at(-1)?.result}`);
-  console.log(`endless 3d OK: bank pushed ${pushed.toFixed(0)} px, dawn logged, drove out ${Math.hypot(s.x, s.y).toFixed(0)} px, END logged quit`);
+  const droveOut = Math.hypot(s.x, s.y);
+  // A third run: drive out, put the border just inside the rover, and the dark
+  // reserve runs down (on your road or off) until the run ends caught.
+  await page.waitForSelector('#again', { state: 'visible' });
+  await page.click('#again');
+  await waitN((q) => q.phase === 'play' && !q.started, 'a third 3D run');
+  s = await nt();
+  check(s.reserveMax === 8 && s.reserve === 8, `the 3D run should start with an 8 s reserve, got ${s.reserve}/${s.reserveMax}`);
+  // Far enough out that the night can't reach home while the reserve runs down.
+  await page.keyboard.down('w');
+  await delay(5000);
+  await page.keyboard.up('w');
+  await waitN((q) => q.started && Math.hypot(q.x, q.y) > 300, 'the rover to drive out again');
+  await page.evaluate(() => window.__nightDarkHere());
+  s = await waitN((q) => q.inDark && q.reserve < 7.5, 'the reserve to run down in the dark');
+  s = await waitN((q) => q.phase === 'over', 'the reserve to run out', 15000);
+  check(s.over === 'caught' && s.darkTime > 7, `an empty reserve should end the run caught: ${s.over}, ${s.darkTime.toFixed(1)} s in the dark`);
+  runs = await page.evaluate(() => JSON.parse(localStorage.getItem('mm-toy-runs-v1') || '[]'));
+  check(runs.at(-1)?.result === 'caught' && runs.at(-1)?.reserveLow === 0 && runs.at(-1)?.darkSeconds > 7, `caught logged with the reserve: ${JSON.stringify(runs.at(-1))}`);
+  console.log(`endless 3d OK: bank pushed ${pushed.toFixed(0)} px, dawn logged, drove out ${droveOut.toFixed(0)} px, END logged quit, reserve ran out after ${s.darkTime.toFixed(1)} s in the dark`);
 
   async function start3d() {
     await page.keyboard.down('w');
@@ -176,7 +195,7 @@ try {
   }
 
   check(errors.length === 0, `page errors: ${errors.join(' | ')}`);
-  console.log('TOY SMOKE OK — Home Run boots, Endless banks and wins at dawn, END logs quit, Contract banks; Endless Night 3D drives, banks, wins at dawn and ends.');
+  console.log('TOY SMOKE OK — Home Run boots, Endless banks and wins at dawn, END logs quit, Contract banks; Endless Night 3D drives, banks, wins at dawn, ends, and runs out of dark reserve.');
   await browser.close();
   vite.kill('SIGTERM');
   process.exit(0);

@@ -5,7 +5,8 @@
 // sound, and the run log.
 //
 // The core works in the toy's px; this view draws 1 px as 1 world unit. A 3D
-// tuning is a different `RunRules` (RULES below), not a change here.
+// tuning is a different `RunRules` (RESERVE_RUN in run.ts), not a change here. The
+// title's toggles switch each 2026-10-05 rule back to Home Run's, to compare.
 //
 // The old 3D game (Levels and Sandbox, with nanobots, drone reclaim, the eraser
 // and slurp charge) is untouched at index.html: quarantined behind the Levels
@@ -16,7 +17,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { RING0, closingSpeed, ringAt } from '../../game/night';
-import { HOME_RUN, baseMods, createRun, stepRun, timeToDark, type RunEvent, type RunRules, type RunState } from '../../game/run';
+import { HOME_RUN, RESERVE_RUN, baseMods, createRun, stepRun, timeToDark, type RunEvent, type RunRules, type RunState } from '../../game/run';
 import type { Line, RoadTree } from '../../game/roadTree';
 import { onOwnRoad } from '../../game/rover';
 import type { Seam } from '../../game/seams';
@@ -25,7 +26,6 @@ import { markSentAll, sendAllUrl, sendLabel, unsentAll } from '../../runs/sendAl
 // the 2D toy with.
 import { Hum, Stick, blip, loadStats, logToyRun, loop, recordPlay } from '../../toys/kit';
 
-const RULES: RunRules = HOME_RUN;
 const GAME = 'night-3d';
 const WARN_S = 8; // border cues start this many seconds before the dark reaches you
 const TAU = Math.PI * 2;
@@ -45,6 +45,18 @@ let phase: Phase = 'title';
 let daily = false;
 let hard = false;
 let seed = 1;
+// The 2026-10-05 rules, each on by default: the dark reserve, seams that stay
+// live in the dark, and ore beside your road.
+const rulesOn = { reserve: true, liveSeams: true, sideOre: true };
+function rulesNow(): RunRules {
+  return {
+    ...RESERVE_RUN,
+    ...(rulesOn.reserve ? {} : { darkReserve: 0, hardReserve: 0, reserveRefill: 0 }),
+    ...(rulesOn.liveSeams ? {} : { liveDarkSeams: false }),
+    ...(rulesOn.sideOre ? {} : { sideOre: HOME_RUN.sideOre })
+  };
+}
+let RULES: RunRules = rulesNow();
 let run: RunState = createRun('endless', seed, hard, RULES);
 let mods = baseMods();
 let runLogged = false;
@@ -279,7 +291,7 @@ darkGeo.setIndex(stripIdx);
 const dark = new THREE.Mesh(darkGeo, new THREE.MeshBasicMaterial({ color: 0x020208, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }));
 dark.frustumCulled = false;
 // Drawn first among the see-through layers: your road and seams sit on top of
-// it, because your road is safe in the dark and should look it.
+// it, so you can see your way through the dark and the ore still in it.
 dark.renderOrder = -1;
 scene.add(dark);
 // The nearest point of the border: a beam that brightens as the dark gets close.
@@ -384,7 +396,7 @@ const darkHum = new Hum();
 const overlay = document.getElementById('overlay') as HTMLCanvasElement;
 const octx = overlay.getContext('2d') as CanvasRenderingContext2D;
 const el = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
-const hud = { dawn: el('h-dawn'), dawnBar: el('h-dawn-bar'), carry: el('h-carry'), mult: el('h-mult'), score: el('h-score'), dark: el('h-dark') };
+const hud = { dawn: el('h-dawn'), dawnBar: el('h-dawn-bar'), carry: el('h-carry'), mult: el('h-mult'), score: el('h-score'), dark: el('h-dark'), res: el('h-res'), resBar: el('h-res-bar') };
 const endBtn = el<HTMLButtonElement>('end');
 const titleScreen = el('title');
 const overScreen = el('over');
@@ -432,6 +444,7 @@ function showTitle(): void {
 function start(): void {
   seed = daily ? (dailySeed() ^ 0x3d3d3d3d) >>> 0 : (Math.random() * 1e9) | 0;
   mods = baseMods();
+  RULES = rulesNow();
   run = createRun('endless', seed, hard, RULES);
   runLogged = false;
   pops = [];
@@ -459,6 +472,12 @@ el('hard').addEventListener('click', (e) => {
   hard = !hard;
   toggleText(e.currentTarget as HTMLElement, 'Hard', hard);
 });
+for (const [id, key, name] of [['r-reserve', 'reserve', 'Dark reserve'], ['r-seams', 'liveSeams', 'Live seams in the dark'], ['r-side', 'sideOre', 'Ore beside your road']] as const) {
+  el(id).addEventListener('click', (e) => {
+    rulesOn[key] = !rulesOn[key];
+    toggleText(e.currentTarget as HTMLElement, name, rulesOn[key]);
+  });
+}
 endBtn.addEventListener('click', () => {
   if (phase === 'play') gameOver('quit');
 });
@@ -467,7 +486,7 @@ const RESULT_TEXT: Record<string, [string, string]> = {
   dawn: ['DAWN', 'You held out. The night lifts.'],
   stranded: ['STRANDED', 'The night reached home with you out in it.'],
   nightfall: ['NIGHTFALL', 'The night reached home.'],
-  caught: ['CAUGHT', 'Hard: the dark took you off your road.'],
+  caught: ['CAUGHT', 'Your dark reserve ran out.'],
   quit: ['ENDED', 'Run ended.']
 };
 
@@ -477,7 +496,7 @@ function gameOver(result: string): void {
   hum.mute();
   darkHum.mute();
   logRun(result);
-  const [title, line] = RESULT_TEXT[result] ?? [result.toUpperCase(), ''];
+  const [title, line] = result === 'caught' && run.reserveMax === 0 ? ['CAUGHT', 'Hard: off your road in the dark.'] : RESULT_TEXT[result] ?? [result.toUpperCase(), ''];
   const t = el('over-title');
   t.textContent = title;
   t.classList.toggle('win', result === 'dawn');
@@ -524,7 +543,12 @@ function logRun(result: string): void {
     autoBanks: run.autoBanks,
     pushMine: Math.round(run.ns.pushMine),
     pushBank: Math.round(run.ns.pushBank),
-    closingEnd: Math.round(closingSpeed(run.ns, RULES.night))
+    closingEnd: Math.round(closingSpeed(run.ns, RULES.night)),
+    reserve: run.reserveMax,
+    reserveLow: run.reserveMax > 0 ? +(Number.isFinite(run.reserveLow) ? run.reserveLow : run.reserveMax).toFixed(1) : null,
+    darkSeconds: +run.darkTime.toFixed(1),
+    darkDips: run.darkDips,
+    ...(Object.values(rulesOn).every(Boolean) ? {} : { knobs: { ...rulesOn } })
   });
   recordPlay(GAME, run.ns.score);
 }
@@ -588,6 +612,15 @@ function effect(e: RunEvent): void {
     case 'leak':
       if (Math.random() < 0.4) burst(r.x, r.y, 1, 0xb48cff, 50, 0.6);
       break;
+    case 'darkIn':
+      if (run.reserveMax > 0) blip(150, 0.25, 'sawtooth', 0.14, 90);
+      break;
+    case 'darkOut':
+      if (run.reserveMax > 0) {
+        burst(r.x, r.y, 24, PALE, 140);
+        [392, 523, 659].forEach((f, i) => setTimeout(() => blip(f, 0.1, 'triangle', 0.16), i * 60));
+      }
+      break;
     case 'bank':
       if (e.won > 1) pop(e.wonAt.x, e.wonAt.y, `+${e.won.toFixed(0)}m`, '#b8a8ff');
       blip(180, 0.5, 'sawtooth', 0.12, 520);
@@ -635,6 +668,12 @@ function update(dt: number): void {
   if (!run.inDark && u > 0) {
     const rate = 1 + 7 * u;
     if (Math.floor(time * rate) !== Math.floor((time - dt) * rate)) blip(520 + 520 * u, 0.04, 'square', 0.05 + 0.08 * u);
+  }
+  // In the dark on a reserve: a low tick that speeds up and drops as it runs down.
+  if (run.inDark && run.reserveMax > 0) {
+    const spent = 1 - run.reserve / run.reserveMax;
+    const rate = 1.5 + 8 * spent;
+    if (Math.floor(time * rate) !== Math.floor((time - dt) * rate)) blip(330 - 160 * spent, 0.06, 'square', 0.08 + 0.12 * spent);
   }
   const rs = run.rs;
   if (rs.rail && rs.rover.v > 200 && Math.random() < 0.5) burst(rs.rover.x - Math.cos(rs.rover.h) * 14, rs.rover.y - Math.sin(rs.rover.h) * 14, 1, TEAL, 30, 0.35);
@@ -687,8 +726,15 @@ function updateHud(): void {
   hud.score.textContent = `${Math.round(run.ns.score)}`;
   const ttd = timeToDark(run, RULES, mods);
   const safe = onOwnRoad(run.rs, run.road, RULES.rover);
-  hud.dark.textContent = run.inDark ? (safe ? 'ON ROAD' : 'IN IT') : Number.isFinite(ttd) && run.started ? `${Math.ceil(ttd)} s` : '–';
-  hud.dark.style.color = run.inDark ? (safe ? '#78f7df' : '#ff8a5c') : ttd < WARN_S ? '#b8a8ff' : '#dfe8f2';
+  const reserve = run.reserveMax > 0;
+  hud.dark.textContent = run.inDark ? (reserve ? 'IN IT' : safe ? 'ON ROAD' : 'IN IT') : Number.isFinite(ttd) && run.started ? `${Math.ceil(ttd)} s` : '–';
+  hud.dark.style.color = run.inDark ? (safe && !reserve ? '#78f7df' : '#ff8a5c') : ttd < WARN_S ? '#b8a8ff' : '#dfe8f2';
+  // The two numbers the route turns on: seconds until the dark, and seconds you can last in it.
+  const left = reserve ? run.reserve / run.reserveMax : 0;
+  hud.res.textContent = reserve ? `${run.reserve.toFixed(1)} s` : '–';
+  hud.res.style.color = !reserve ? '#6b7d92' : left > 0.5 ? '#78f7df' : left > 0.25 ? '#ffd27a' : '#ff8a5c';
+  hud.resBar.style.width = `${left * 100}%`;
+  hud.resBar.style.background = left > 0.5 ? '#78f7df' : left > 0.25 ? '#ffd27a' : '#ff8a5c';
 }
 
 const proj = new THREE.Vector3();
@@ -700,9 +746,13 @@ function drawOverlay(dt: number): void {
   // The dark's edge creeps in from the screen's rim as it gets closer.
   const u = urgencyNow();
   if (u > 0) {
-    const g = octx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.3, w / 2, h / 2, Math.max(w, h) * 0.75);
-    g.addColorStop(0, 'rgba(60,30,120,0)');
-    g.addColorStop(1, `rgba(60,30,120,${0.55 * u})`);
+    // In the dark on a reserve, the rim warms toward orange and pulses as it runs down.
+    const spent = run.inDark && run.reserveMax > 0 ? 1 - run.reserve / run.reserveMax : 0;
+    const pulse = spent > 0 ? 0.15 * spent * (0.5 + 0.5 * Math.sin(time * (4 + 10 * spent))) : 0;
+    const rgb = `${Math.round(60 + 160 * spent)},${Math.round(30 + 40 * spent)},${Math.round(120 - 90 * spent)}`;
+    const g = octx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * (0.3 - 0.1 * spent), w / 2, h / 2, Math.max(w, h) * 0.75);
+    g.addColorStop(0, `rgba(${rgb},0)`);
+    g.addColorStop(1, `rgba(${rgb},${0.55 * u + pulse})`);
     octx.fillStyle = g;
     octx.fillRect(0, 0, w, h);
   }
@@ -817,8 +867,15 @@ W.__night = () => ({
   phase, seed, daily, hard, started: run.started, over: run.over, inDark: run.inDark, onRail: run.rs.rail !== null,
   x: run.rs.rover.x, y: run.rs.rover.y, h: run.rs.rover.h, v: run.rs.rover.v, carry: run.rs.carry, banked: run.banked, score: run.ns.score,
   mult: run.ns.mult, trips: run.trips, ringR: run.ns.ringR, pushMine: run.ns.pushMine, pushBank: run.ns.pushBank, lines: run.road.lines.length,
-  seams: run.seams.length, ribbons: ribbons.length, seamViews: seamViews.length, toDark: timeToDark(run, RULES, mods)
+  seams: run.seams.length, ribbons: ribbons.length, seamViews: seamViews.length, toDark: timeToDark(run, RULES, mods),
+  reserve: run.reserve, reserveMax: run.reserveMax, darkTime: run.darkTime
 });
+// Put the border just inside the rover (it's then in the dark) without reaching home.
+W.__nightDarkHere = () => {
+  const d = Math.hypot(run.rs.rover.x, run.rs.rover.y);
+  run.ns.ringR = Math.max(RULES.depotR / run.ns.minFactor + 5, d / 1.4);
+  run.ns.ringPush = 0;
+};
 W.__nightSkip = (s: number) => {
   run.elapsed += s;
   run.ns.heat += s;
