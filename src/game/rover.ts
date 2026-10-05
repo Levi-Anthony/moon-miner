@@ -8,7 +8,7 @@
 // you carry on the way you left; your own road keeps your load safe in the dark
 // (Home Run's 2026-09-30 rules; RESERVE_RUN in run.ts replaces the leak with a reserve).
 
-import { addPoint, advanceRail, dropShortLine, joinAtTip, nearestRoad, railPoint, startLine, type Rail, type RoadHit, type RoadTree, type Vec } from './roadTree';
+import { addPoint, advanceRail, dropShortLine, joinAtTip, lineS, nearestRoad, railPoint, startLine, switchesOn, type Rail, type RoadHit, type RoadTree, type Switch, type Vec } from './roadTree';
 import { inSeam, type Seam } from './seams';
 
 // The numbers, all in one place: a variant (or the 3D game, in its own units)
@@ -34,6 +34,8 @@ export interface RoverRules {
   turnOnto: number; // steer at least this hard while meeting a road square on and you turn onto it
   tipGuard: number; // px after riding off a road's end before a different road can take you
   stubMax: number; // a hop-off stub that never got farther than this from its road goes when you get back on
+  switchAhead: number; // seconds ahead at rail speed that a switch counts as coming up (and holds a hop-off back)
+  switchAheadMin: number; // ...but never less than this many px
   darkLeak: number; // share of the load lost per second, off your road in the dark
   darkLeakMin: number; // ore per second, so a small load still drains
 }
@@ -74,6 +76,10 @@ export const HOME_RUN_ROVER: RoverRules = {
   // two stubs' ends could pass you back and forth every few frames.
   tipGuard: 24,
   stubMax: 40,
+  // Switching on the rail (owner, 2026-10-05): hold the stick toward a side
+  // and the next branch or junction on that side takes you, like points.
+  switchAhead: 0.8,
+  switchAheadMin: 90,
   // The dark is not lethal (owner, 2026-09-30): off your road your load leaks
   // away; on your road it's safe.
   darkLeak: 0.35,
@@ -124,6 +130,11 @@ export interface RoverState {
   tipFrom: number; // the line you last rode off the end of
   tipGuard: number; // px left before a different road can take you after that
   transfers: number; // junctions ridden through this run
+  switches: number; // branches taken from the rail this run
+  // The next switch coming up on the rail, for the view to show: where it is,
+  // where it goes, which side it's on (1 right, -1 left), and whether the
+  // stick is set to take it.
+  ahead: { x: number; y: number; to: Rail; side: 1 | -1; set: boolean } | null;
 }
 
 // The ground under the rover, off the rail (src/game/terrain.ts). The rail never
@@ -140,6 +151,7 @@ export type RoverEvent =
   | { kind: 'grab' }
   | { kind: 'bump' }
   | { kind: 'transfer' } // rode through a junction onto another road
+  | { kind: 'switch' } // took a branch from the rail, the way the stick was held
   | { kind: 'miss'; miss: Miss };
 
 const MAX_MISSES = 24;
@@ -175,7 +187,9 @@ export function createRover(): RoverState {
     bumps: 0,
     tipFrom: -1,
     tipGuard: 0,
-    transfers: 0
+    transfers: 0,
+    switches: 0,
+    ahead: null
   };
 }
 
@@ -205,6 +219,7 @@ export function resetRoverRun(s: RoverState): void {
   s.misses = [];
   s.bumps = 0;
   s.transfers = 0;
+  s.switches = 0;
 }
 
 export function nearestRoadTo(s: RoverState, tree: RoadTree, rules: RoverRules, p: Vec = s.rover, heading = s.rover.h): RoadHit | null {
@@ -232,6 +247,14 @@ export function pickDir(h: number, roadAng: number, steer: number, turnOnto: num
   }
   if (Math.abs(Math.abs(out) - Math.abs(back)) < 0.15) return -1;
   return Math.abs(out) < Math.abs(back) ? 1 : -1;
+}
+
+// Which side of the way you're travelling a switch leaves on: 1 right, -1 left,
+// 0 if it goes straight on or straight back.
+export function switchSide(travel: number, ang: number): 1 | -1 | 0 {
+  const d = angleTo(travel, ang);
+  if (Math.abs(d) < 0.25 || Math.abs(d) > Math.PI - 0.25) return 0;
+  return d > 0 ? 1 : -1;
 }
 
 export function darkLeak(rules: RoverRules, carry: number, dt: number): number {
@@ -263,9 +286,24 @@ function hopOff(s: RoverState, tree: RoadTree, side: number, mods: RoverMods): v
 export function stepRover(s: RoverState, tree: RoadTree, ax: Vec, dt: number, rules: RoverRules, mods: RoverMods, elapsed: number, ground?: Ground): RoverEvent[] {
   const ev: RoverEvent[] = [];
   const rover = s.rover;
+  s.ahead = null;
   if (s.rail) {
     const rail = s.rail;
-    s.steerHeld = Math.abs(ax.x) >= rules.leaveFull && ax.y > -0.3 ? s.steerHeld + dt : 0;
+    // Switches on this line ahead of you, and the side the stick is held to.
+    const travel = railPoint(tree, rail).ang;
+    const s0 = lineS(tree, rail.line, rail.i, rail.t);
+    const look = Math.max(rules.switchAheadMin, Math.abs(rover.v) * rules.switchAhead);
+    const held = Math.abs(ax.x) >= rules.turnOnto ? (Math.sign(ax.x) as 1 | -1) : 0;
+    const sw = switchesOn(tree, rail.line)
+      .map((w) => ({ w, side: switchSide(travel, w.ang), d: (w.s - s0) * rail.dir }))
+      .filter((x) => x.side !== 0 && x.d > 0.01);
+    const next = sw.filter((x) => x.d <= look).sort((a, b) => a.d - b.d);
+    const set = held ? next.find((x) => x.side === held) : undefined;
+    const show = set ?? next[0];
+    if (show) s.ahead = { x: show.w.x, y: show.w.y, to: show.w.to, side: show.side as 1 | -1, set: !!set };
+    // Holding toward a switch that's coming up means "take it", not "hop off".
+    const holdToHop = Math.abs(ax.x) >= rules.leaveFull && ax.y > -0.3 && !set;
+    s.steerHeld = holdToHop ? s.steerHeld + dt : 0;
     const stoppedSteer = rover.v < rules.stopped && Math.abs(ax.x) >= rules.stoppedSteer && ax.y > -0.3;
     if (s.steerHeld >= rules.leaveSeconds || stoppedSteer) {
       hopOff(s, tree, Math.sign(ax.x), mods);
@@ -282,12 +320,28 @@ export function stepRover(s: RoverState, tree: RoadTree, ax: Vec, dt: number, ru
       }
       if (rover.v > 100) s.charge = Math.min(1, s.charge + mods.chargeRate * dt);
       else if (rover.v < 20) s.charge = Math.max(0, s.charge - 0.25 * dt);
+      const fromLine = rail.line;
       const res = advanceRail(tree, rail, rover.v * dt);
-      const p = railPoint(tree, rail);
+      // Passed a switch on the side the stick is held to: take it, at speed.
+      let took: Switch | null = null;
+      if (held && res === 'ok' && rail.line === fromLine) {
+        const s1 = lineS(tree, rail.line, rail.i, rail.t);
+        const crossed = sw.filter((x) => x.side === held && x.d <= (s1 - s0) * rail.dir + 1e-6).sort((a, b) => a.d - b.d)[0];
+        if (crossed) took = crossed.w;
+      }
+      if (took) {
+        s.rail = { ...took.to };
+        s.switches += 1;
+        s.ahead = null;
+        ev.push({ kind: 'switch' });
+      }
+      const p = railPoint(tree, s.rail ?? rail);
       rover.x = p.x;
       rover.y = p.y;
       rover.h += angleTo(rover.h, p.ang) * Math.min(1, 16 * dt);
-      if (res === 'home') {
+      if (took) {
+        // (On the new road now; nothing more this step.)
+      } else if (res === 'home') {
         rover.v = 0;
       } else if (res === 'tip' && joinAtTip(tree, rail.line)) {
         // A junction: on to the road this one meets, the way you steer.

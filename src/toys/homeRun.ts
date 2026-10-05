@@ -200,7 +200,7 @@ function logRun(result: string): void {
   const common = {
     seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(run.dist), railShare: run.dist > 0 ? +(run.railDist / run.dist).toFixed(2) : 0, hopOffs: run.rs.hopOffs, grabs: run.rs.grabs, missedGrabs: { ...run.rs.missedGrabs }, misses: run.rs.misses.slice(),
     reserve: run.reserveMax, reserveLow: +(Number.isFinite(run.reserveLow) ? run.reserveLow : run.reserveMax).toFixed(1), darkSeconds: +run.darkTime.toFixed(1), darkDips: run.darkDips,
-    roughSeconds: +run.roughTime.toFixed(1), bumps: run.rs.bumps, transfers: run.rs.transfers, ...routeForLog(run),
+    roughSeconds: +run.roughTime.toFixed(1), bumps: run.rs.bumps, transfers: run.rs.transfers, switches: run.rs.switches, ...routeForLog(run),
     terrain: run.terrain ? { ridges: run.terrain.ridges, gates: run.terrain.gates, craters: run.terrain.craters, clusters: run.terrain.clusters, rough: run.terrain.rough.length, rocks: run.terrain.rocks.length, rubble: run.terrain.rocks.filter((k) => !k.block).length, blockShare: +run.terrain.profile.blockShare.toFixed(2), rubbleSlow: +run.terrain.profile.rubbleSlow.toFixed(2), roughSlow: +run.terrain.profile.roughSlow.toFixed(2) } : null
   };
   if (mode === 'contract') {
@@ -374,6 +374,12 @@ function effect(e: RunEvent): void {
       blip(520, 0.07, 'triangle', 0.18, 780);
       glide.x = drawnAt.x - rover.x;
       glide.y = drawnAt.y - rover.y;
+      break;
+    case 'switch':
+      // Took a branch from the rail: the points click, a touch brighter.
+      blip(990, 0.04, 'square', 0.14);
+      setTimeout(() => blip(740, 0.05, 'triangle', 0.14), 40);
+      parts.burst(rover.x, rover.y, 10, '#bffff4', 110, 2, 0.45);
       break;
     case 'transfer':
       // Through a junction onto another road: a click of the points.
@@ -624,6 +630,25 @@ function drawWorld(dt: number): void {
       for (let i = 1; i < line.pts.length; i += 1) ctx.lineTo(line.pts[i].x, line.pts[i].y);
       ctx.stroke();
     }
+  }
+
+  // The switch coming up on the rail: a ring where it is, and the road it leads
+  // to lit up when the stick is set to take it.
+  const ahead = phase === 'play' ? run.rs.ahead : null;
+  if (ahead) {
+    if (ahead.set) {
+      const pts = run.road.lines[ahead.to.line].pts;
+      ctx.strokeStyle = 'rgba(191,255,244,0.75)';
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      pts.forEach((p, j) => (j ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.stroke();
+    }
+    ctx.strokeStyle = ahead.set ? '#ffffff' : `rgba(120,247,223,${0.45 + 0.25 * Math.sin(time * 6)})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(ahead.x, ahead.y, ahead.set ? 22 : 17, 0, Math.PI * 2);
+    ctx.stroke();
   }
 
   // Rock blocks you; rubble only slows laying.

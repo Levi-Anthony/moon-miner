@@ -71,6 +71,49 @@ export function lineLength(tree: RoadTree, line: number): number {
   return L;
 }
 
+// Distance along a line to a point on it (segment i, fraction t).
+export function lineS(tree: RoadTree, line: number, i: number, t: number): number {
+  const p = tree.lines[line].pts;
+  let S = 0;
+  for (let k = 1; k <= i && k < p.length; k += 1) S += Math.hypot(p[k].x - p[k - 1].x, p[k].y - p[k - 1].y);
+  if (i + 1 < p.length) S += t * Math.hypot(p[i + 1].x - p[i].x, p[i + 1].y - p[i].y);
+  return S;
+}
+
+// A place along a line where you can switch onto another road while riding it
+// (owner, 2026-10-05): a branch that leaves it, or a road whose end joins it.
+export interface Switch {
+  s: number; // distance along this line
+  x: number;
+  y: number;
+  to: Rail; // where riding onto it puts you
+  ang: number; // the way the other road leaves, from here
+}
+
+export function switchesOn(tree: RoadTree, line: number): Switch[] {
+  const out: Switch[] = [];
+  const here = (p: Parent): { x: number; y: number } => {
+    const pts = tree.lines[p.line].pts;
+    const a = pts[p.i];
+    const b = pts[Math.min(p.i + 1, pts.length - 1)];
+    return { x: a.x + (b.x - a.x) * p.t, y: a.y + (b.y - a.y) * p.t };
+  };
+  tree.lines.forEach((l, k) => {
+    if (!l.parent || l.parent.line !== line || l.pts.length < 2) return;
+    const q = here(l.parent);
+    out.push({ s: lineS(tree, line, l.parent.i, l.parent.t), x: q.x, y: q.y, to: { line: k, i: 0, t: 0, dir: 1 }, ang: Math.atan2(l.pts[1].y - l.pts[0].y, l.pts[1].x - l.pts[0].x) });
+  });
+  for (const j of tree.joins) {
+    if (j.at.line !== line) continue;
+    const pts = tree.lines[j.line].pts;
+    if (pts.length < 2) continue;
+    const n = pts.length;
+    const q = here(j.at);
+    out.push({ s: lineS(tree, line, j.at.i, j.at.t), x: q.x, y: q.y, to: { line: j.line, i: n - 2, t: 1, dir: -1 }, ang: Math.atan2(pts[n - 2].y - pts[n - 1].y, pts[n - 2].x - pts[n - 1].x) });
+  }
+  return out.sort((a, b) => a.s - b.s);
+}
+
 // Remove the newest line if it never got more than `maxOff` px from the road
 // it branched off, and nothing hangs off it: the stub a hop-off leaves when you
 // swerve off and straight back on. True if it went.

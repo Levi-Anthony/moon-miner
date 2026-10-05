@@ -2220,3 +2220,21 @@ New merges add a row here. Decisions in this range that change what older entrie
     - a quick hop-off stub going
     - the slow held-stick case no longer bouncing
   - **Step 2, next:** switch branches on the rail (hold the stick toward a side to take the next branch there, like points, without hopping off), and a preview of the branch you'd take. The rerun still shows a held stick at 120 hopping off well before a branch and curling back onto the main road.
+- **Road junctions, step 2: switching on the rail (2026-10-05, DEV-66, owner: "Go"):** taking a branch used to mean holding the stick fully sideways for 0.35 s to hop off, which at rail speed is about 160 px of travel, then getting back on. At slow speed that hopped you off short of the branch, and you curled back onto the main road.
+  - **Real (rules, `rover.ts` / `roadTree.ts`):**
+    - **Switches** are the places along the line you're riding where another road leaves it: a branch that starts there, or a road whose end joins it there (`switchesOn`).
+    - **Taking one:** hold the stick toward a side (at least 0.3) and the next switch on that side takes you as you pass it. You go onto the branch, or back along the joined road, at full speed, with no hop-off and no stub.
+    - **Side:** decided by the way the other road leaves relative to the way you're travelling. Straight on or straight back counts as neither side.
+    - **Hold-back:** while a switch on the side you're holding is coming up (within 0.8 s of travel, at least 90 px), a hard hold waits for it instead of hopping off. With nothing coming up, a hard hold still hops off as before.
+    - **The rail is never slowed.**
+  - **Feel (both views):**
+    - The next switch within reach gets a ring: teal and pulsing when it's available, white and larger once the stick is set to take it. When set, the road it leads to lights up.
+    - Taking a switch plays a brighter points click.
+  - **Run data:** `switches` (branches taken from the rail).
+  - **Tests:** 6 new rover tests cover:
+    - taking a branch at 400 with a half or full hold, at speed, with no hop-off or new line
+    - holding the other way, or not at all, riding on past it
+    - the preview showing the switch and when the stick is set
+    - taking a junction from the road it joins
+    - a hard hold within reach waiting for the branch at 120
+    - a hard hold with nothing coming up still hopping off
