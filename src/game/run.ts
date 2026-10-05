@@ -35,6 +35,7 @@ import { rng } from './random';
 import { createRoadTree, type RoadTree, type Vec } from './roadTree';
 import { HOME_RUN_MODS, HOME_RUN_ROVER, createRover, darkLeak, digSeams, homeRover, onOwnRoad, resetRoverRun, stepRover, type RoverEvent, type RoverMods, type RoverRules, type RoverState } from './rover';
 import { addSeamBesideRoad, addSeams, addSeamsBeyondRoad, type Seam } from './seams';
+import { CARRYING, IN_DARK, ON_RAIL, ON_ROUGH, createPathLog, newNightPath, samplePath, type PathLog } from './pathLog';
 import { TERRAIN, collide, growTerrain, layFactor, newTerrain, type Terrain, type TerrainRules } from './terrain';
 
 export type RunMode = 'contract' | 'endless';
@@ -118,6 +119,12 @@ export interface RunState {
   seams: Seam[];
   terrain: Terrain | null;
   roughTime: number; // seconds laying road slowed by rough ground or rubble, this run
+  path: PathLog; // the route, sampled each second (src/game/pathLog.ts)
+  // One entry per bank: [seconds the trip took, px driven, farthest px from
+  // home, seconds in the dark]. Driven ÷ (2 × farthest) is about 1 for a
+  // straight out and back; more means the route bent.
+  tripLog: number[][];
+  tripStart: { t: number; dist: number; dark: number; far: number };
   banked: number; // this night (contract) / this run (endless)
   trips: number;
   autoBanks: number;
@@ -168,6 +175,9 @@ export function createRun(mode: RunMode, seed: number, hard: boolean, rules: Run
     seams: [],
     terrain: null,
     roughTime: 0,
+    path: createPathLog(),
+    tripLog: [],
+    tripStart: { t: 0, dist: 0, dark: 0, far: 0 },
     banked: 0,
     trips: 0,
     autoBanks: 0,
@@ -232,6 +242,8 @@ export function startNight(run: RunState): void {
   run.stranded = false;
   run.inDark = false;
   run.reserve = run.reserveMax;
+  newNightPath(run.path);
+  run.tripStart = { t: 0, dist: run.dist, dark: run.darkTime, far: 0 };
   run.lost = 0;
   run.elapsed = 0;
   run.over = null;
@@ -278,6 +290,9 @@ export function bank(run: RunState, rules: RunRules, mods: RunMods, auto: boolea
   const load = rs.carry;
   run.banked += load;
   run.trips += 1;
+  const ts = run.tripStart;
+  run.tripLog.push([Math.round(run.elapsed - ts.t), Math.round(run.dist - ts.dist), Math.round(ts.far), +(run.darkTime - ts.dark).toFixed(1)]);
+  run.tripStart = { t: run.elapsed, dist: run.dist, dark: run.darkTime, far: 0 };
   let mult = 1;
   let won = 0;
   const wonAt = { x: run.nearest.x, y: run.nearest.y };
@@ -299,6 +314,17 @@ export function bank(run: RunState, rules: RunRules, mods: RunMods, auto: boolea
   ev.push({ kind: 'bank', auto, load, mult, won, dawn: false, at: { x: rs.rover.x, y: rs.rover.y }, wonAt });
   rs.carry = 0;
   if (!mods.chainKeeper) rs.chain = 0;
+}
+
+// The route for the run log: the packed path, each banked trip, and the leg
+// still under way when the run ended (same shape as a trip).
+export function routeForLog(run: RunState): { path: { s: string; f: string }; tripLog: number[][]; lastLeg: number[] } {
+  const ts = run.tripStart;
+  return {
+    path: { s: run.path.steps, f: run.path.flags },
+    tripLog: run.tripLog,
+    lastLeg: [Math.round(run.elapsed - ts.t), Math.round(run.dist - ts.dist), Math.round(ts.far), +(run.darkTime - ts.dark).toFixed(1)]
+  };
 }
 
 // A bank grows 3 seams: past the tips of your road, or (from `sideOreFrom` on)
@@ -392,7 +418,10 @@ export function stepRun(run: RunState, ax: Vec, dt: number, rules: RunRules, mod
   const ground = t ? { layFactor: (x: number, y: number) => layFactor(t, x, y), collide: (p: { x: number; y: number; h: number; v: number }) => collide(t, p) } : undefined;
   ev.push(...stepRover(rs, run.road, ax, dt, rules.rover, mods, run.elapsed, ground));
   const moved = Math.hypot(rs.rover.x - px, rs.rover.y - py);
-  if (t && !rs.rail && moved > 0 && layFactor(t, rs.rover.x, rs.rover.y) < 1) run.roughTime += dt;
+  const rough = !!t && !rs.rail && moved > 0 && layFactor(t, rs.rover.x, rs.rover.y) < 1;
+  if (rough) run.roughTime += dt;
+  run.tripStart.far = Math.max(run.tripStart.far, Math.hypot(rs.rover.x, rs.rover.y));
+  samplePath(run.path, run.elapsed, rs.rover.x, rs.rover.y, (rs.rail ? ON_RAIL : 0) | (run.inDark ? IN_DARK : 0) | (rough ? ON_ROUGH : 0) | (rs.carry > 0.5 ? CARRYING : 0));
   run.dist += moved;
   if (rs.rail) run.railDist += moved;
 

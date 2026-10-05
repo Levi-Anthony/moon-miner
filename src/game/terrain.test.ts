@@ -4,7 +4,7 @@ import { addPoint, createRoadTree, startLine } from './roadTree';
 import { HOME_RUN_MODS, HOME_RUN_ROVER, createRover, stepRover, type Ground, type RoverEvent } from './rover';
 import { HOME_RUN, RESERVE_RUN, baseMods, createRun, stepRun } from './run';
 import { inSeam, type Seam } from './seams';
-import { TERRAIN, addRidge, allReachable, collide, emptyTerrain, growTerrain, layFactor, newTerrain, rollProfile, type Terrain } from './terrain';
+import { TERRAIN, addCrater, addGate, addRidge, allReachable, collide, emptyTerrain, growTerrain, layFactor, newTerrain, rollProfile, type Terrain } from './terrain';
 
 const DT = 1 / 60;
 
@@ -22,18 +22,18 @@ describe('terrain: each map rolls its own', () => {
       expect(p.blockShare).toBeLessThanOrEqual(TERRAIN.blockShare[1]);
       expect(p.roughSlow).toBeGreaterThanOrEqual(TERRAIN.roughSlow[0]);
       expect(p.roughSlow).toBeLessThanOrEqual(TERRAIN.roughSlow[1]);
-      expect(p.ridges).toBeGreaterThanOrEqual(TERRAIN.ridges[0]);
-      expect(p.ridges).toBeLessThanOrEqual(TERRAIN.ridges[1]);
+      expect(p.landmarks).toBeGreaterThanOrEqual(TERRAIN.landmarks[0]);
+      expect(p.landmarks).toBeLessThanOrEqual(TERRAIN.landmarks[1]);
       expect(p.clusters).toBeGreaterThanOrEqual(TERRAIN.clusters[0]);
       expect(p.clusters).toBeLessThanOrEqual(TERRAIN.clusters[1]);
-      seen.add(`${p.ridges}/${p.clusters}/${p.roughSlow.toFixed(2)}`);
+      seen.add(`${p.landmarks}/${p.clusters}/${p.roughSlow.toFixed(2)}`);
     }
     expect(seen.size).toBeGreaterThan(20);
     expect(field(9).t).toEqual(field(9).t);
   });
 
   it('keeps every seam reachable, home clear, and no rock in a seam', () => {
-    let ridges = 0;
+    let landmarks = 0;
     let rubble = 0;
     for (let seed = 1; seed <= 25; seed += 1) {
       const { seams, t } = field(seed);
@@ -42,10 +42,10 @@ describe('terrain: each map rolls its own', () => {
         expect(Math.hypot(k.x, k.y)).toBeGreaterThan(TERRAIN.clearHome);
         for (const s of seams) expect(inSeam(s, k, 0)).toBe(false);
       }
-      ridges += t.ridges;
+      landmarks += t.ridges + t.gates + t.craters;
       rubble += t.rocks.filter((k) => !k.block).length;
     }
-    expect(ridges).toBeGreaterThan(25); // about 2.5 a map
+    expect(landmarks).toBeGreaterThan(25 * 3); // at least 3 a map on average
     expect(rubble).toBeGreaterThan(0);
   });
 
@@ -87,7 +87,7 @@ describe('terrain: a ridge across the way', () => {
     const t = emptyTerrain(rollProfile(rng(3), TERRAIN));
     t.rocks.push({ x: 700, y: 0, r: 20, block: true, slow: 1 });
     const s: Seam = { x: 700, y: 0, a: 0, len: 80, w: 30, ore: 10, max: 10, gone: 0 };
-    growTerrain(t, rng(3), { ...TERRAIN, bankRidge: 0, bankRidgeStep: 0, bankClusters: [0, 0] }, [s], { seams: [s], road: createRoadTree(), rover: { x: 0, y: 0 }, clearHome: 170 }, 0, 1500);
+    growTerrain(t, rng(3), { ...TERRAIN, bankLandmark: 0, bankLandmarkStep: 0, bankClusters: [0, 0] }, [s], { seams: [s], road: createRoadTree(), rover: { x: 0, y: 0 }, clearHome: 170 }, 0, 1500);
     expect(t.rocks).toEqual([]);
   });
 });
@@ -152,12 +152,71 @@ describe('terrain: grows with each bank in Endless', () => {
     const mods = baseMods();
     stepRun(run, { x: 0.01, y: 0 }, DT, RESERVE_RUN, mods);
     const t = run.terrain as Terrain;
-    const start = t.ridges + t.clusters;
+    const start = t.ridges + t.gates + t.craters + t.clusters;
     for (let trip = 0; trip < 8; trip += 1) {
       run.rs.carry = 5;
       stepRun(run, { x: 0, y: 0 }, DT, RESERVE_RUN, mods);
     }
-    expect(t.ridges + t.clusters).toBeGreaterThan(start);
+    expect(t.ridges + t.gates + t.craters + t.clusters).toBeGreaterThan(start);
     expect(allReachable(t, run.seams)).toBe(true);
+  });
+});
+
+describe('terrain: gates and craters', () => {
+  const seam = (x: number, y: number): Seam => ({ x, y, a: 0, len: 80, w: 30, ore: 10, max: 10, gone: 0 });
+  const keepFor = (s: Seam) => ({ seams: [s], road: createRoadTree(), rover: { x: 0, y: 0 }, clearHome: 170 });
+
+  it('a gate walls off the straight line, with its one gap off to the side', () => {
+    for (let seed = 1; seed <= 10; seed += 1) {
+      const t = emptyTerrain(rollProfile(rng(seed), TERRAIN));
+      const s = seam(1000, 0);
+      expect(addGate(t, rng(seed), { x: 0, y: 0 }, s, keepFor(s))).toBe(true);
+      // The straight line is walled...
+      expect(t.rocks.some((k) => Math.abs(k.y) < k.r)).toBe(true);
+      // ...the gap isn't on it, and the seam is still reachable.
+      const ys = t.rocks.map((k) => k.y).sort((a, b) => a - b);
+      let widest = 0;
+      let at = 0;
+      for (let i = 1; i < ys.length; i += 1) if (ys[i] - ys[i - 1] > widest) [widest, at] = [ys[i] - ys[i - 1], (ys[i] + ys[i - 1]) / 2];
+      expect(widest).toBeGreaterThan(90);
+      expect(Math.abs(at)).toBeGreaterThan(60);
+      // Wall on both sides of the gap.
+      expect(ys[0]).toBeLessThan(at - 60);
+      expect(ys[ys.length - 1]).toBeGreaterThan(at + 60);
+      expect(allReachable(t, [s])).toBe(true);
+    }
+  });
+
+  it('a crater rings the seam, with one mouth, and the seam stays reachable', () => {
+    let away = 0;
+    for (let seed = 1; seed <= 20; seed += 1) {
+      const t = emptyTerrain(rollProfile(rng(seed), TERRAIN));
+      const s = seam(900, 0);
+      expect(addCrater(t, rng(seed), s, keepFor(s))).toBe(true);
+      for (const k of t.rocks) expect(inSeam(s, k, 0)).toBe(false);
+      expect(allReachable(t, [s])).toBe(true);
+      // Where's the mouth? The biggest angular gap between ring rocks.
+      const angs = t.rocks.map((k) => Math.atan2(k.y - s.y, k.x - s.x)).sort((a, b) => a - b);
+      let widest = 0;
+      let mid = 0;
+      for (let i = 0; i < angs.length; i += 1) {
+        const a = angs[i];
+        const b = i + 1 < angs.length ? angs[i + 1] : angs[0] + Math.PI * 2;
+        if (b - a > widest) [widest, mid] = [b - a, (a + b) / 2];
+      }
+      if (Math.cos(mid) > 0) away += 1; // facing +x: away from home
+    }
+    expect(away).toBeGreaterThan(10);
+  });
+
+  it('gives maps different characters', () => {
+    const lean = new Set<string>();
+    for (let seed = 1; seed <= 30; seed += 1) {
+      const t = field(seed).t;
+      const counts = { ridge: t.ridges, gate: t.gates, crater: t.craters };
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+      lean.add(top);
+    }
+    expect(lean.size).toBe(3);
   });
 });

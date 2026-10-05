@@ -13,12 +13,18 @@
 //   think these should all be stable variables"), and Endless adds terrain
 //   with each bank's new ore.
 //
-// Pieces:
+// Pieces. Three landmarks, each a different question about the way to a seam
+// (owner, 2026-10-05: "More variety in level design overall"):
 // - A ridge: a curved chain of overlapping rocks laid across the straight line
 //   to a seam, off-centre, so one end is a short way round and the other a long
 //   one. The part that crosses the line can be rubble you can lay through
 //   slowly: a short slow route against a long clear one (a cycle, after
-//   Unexplored's cyclic generation).
+//   Unexplored's cyclic generation). Question: which end?
+// - A gate: a long straight wall across the way with one narrow gap, off the
+//   straight line. Question: thread the gap, or go all the way round?
+// - A crater: a ring of rock round a seam with one mouth, often facing away
+//   from home. Question: where's the way in, and is it worth the trip round?
+// Each map rolls its own mix of the three, so one map is ridges, another craters.
 // - A boulder cluster: a few small rocks.
 // - A rough patch: an ellipse of ground that slows laying.
 
@@ -31,11 +37,11 @@ export interface TerrainRules {
   blockShare: Span; // share of rock pieces that block; the rest is rubble that slows laying
   rubbleSlow: Span; // laying speed on rubble, as a share of full speed
   roughSlow: Span; // laying speed on rough ground
-  ridges: Span; // ridges on a fresh map (landmarks)
+  landmarks: Span; // ridges, gates and craters on a fresh map
   clusters: Span; // boulder clusters on a fresh map (scatter)
   roughPatches: Span; // rough patches on a fresh map
-  bankRidge: number; // chance a bank's new ore comes with a ridge across its way...
-  bankRidgeStep: number; // ...plus this much per bank so far
+  bankLandmark: number; // chance a bank's new ore comes with a landmark in its way...
+  bankLandmarkStep: number; // ...plus this much per bank so far (at most 95%)
   bankClusters: Span; // boulder clusters a bank adds
   clearHome: number; // px around home kept clear
 }
@@ -44,11 +50,11 @@ export const TERRAIN: TerrainRules = {
   blockShare: [0.35, 1],
   rubbleSlow: [0.35, 0.6],
   roughSlow: [0.4, 0.8],
-  ridges: [1, 4],
+  landmarks: [3, 7],
   clusters: [3, 12],
   roughPatches: [2, 6],
-  bankRidge: 0.3,
-  bankRidgeStep: 0.12,
+  bankLandmark: 0.55,
+  bankLandmarkStep: 0.1,
   bankClusters: [0, 2],
   clearHome: 170
 };
@@ -58,10 +64,13 @@ export interface TerrainProfile {
   blockShare: number;
   rubbleSlow: number;
   roughSlow: number;
-  ridges: number;
+  landmarks: number;
   clusters: number;
   roughPatches: number;
+  mix: { ridge: number; gate: number; crater: number }; // this map's weights for each landmark
 }
+
+export type Landmark = 'ridge' | 'gate' | 'crater';
 
 export interface Rock {
   x: number;
@@ -85,6 +94,8 @@ export interface Terrain {
   rocks: Rock[];
   rough: Rough[];
   ridges: number; // pieces placed, for the run log
+  gates: number;
+  craters: number;
   clusters: number;
   dropped: number; // pieces dropped because they'd have sealed a seam off
 }
@@ -100,14 +111,16 @@ export function rollProfile(r: () => number, rules: TerrainRules): TerrainProfil
     blockShare: pick(r, rules.blockShare),
     rubbleSlow: pick(r, rules.rubbleSlow),
     roughSlow: pick(r, rules.roughSlow),
-    ridges: pickInt(r, rules.ridges),
+    landmarks: pickInt(r, rules.landmarks),
     clusters: pickInt(r, rules.clusters),
-    roughPatches: pickInt(r, rules.roughPatches)
+    roughPatches: pickInt(r, rules.roughPatches),
+    // Squared, so most maps lean one way rather than an even blend.
+    mix: { ridge: r() ** 2, gate: r() ** 2, crater: r() ** 2 }
   };
 }
 
 export function emptyTerrain(profile: TerrainProfile): Terrain {
-  return { profile, rocks: [], rough: [], ridges: 0, clusters: 0, dropped: 0 };
+  return { profile, rocks: [], rough: [], ridges: 0, gates: 0, craters: 0, clusters: 0, dropped: 0 };
 }
 
 // --- what the ground does to the rover -------------------------------------------
@@ -282,6 +295,78 @@ export function addRidge(t: Terrain, r: () => number, from: Vec, s: Seam, keep: 
   return kept;
 }
 
+// A long straight wall across the way from `from` to the seam, with one gap off
+// the straight line.
+export function addGate(t: Terrain, r: () => number, from: Vec, s: Seam, keep: Keep): boolean {
+  const dx = s.x - from.x;
+  const dy = s.y - from.y;
+  const D = Math.hypot(dx, dy);
+  if (D < 300) return false;
+  const ux = dx / D;
+  const uy = dy / D;
+  const f = 0.4 + r() * 0.25;
+  const L = 560 + r() * 300;
+  const rr = 20 + r() * 10;
+  const gap = 95 + r() * 25;
+  // Never on the straight line, and with wall on both sides of it (at least 70 px past it).
+  const gapAt = (r() < 0.5 ? -1 : 1) * (90 + r() * (L / 2 - 90 - gap / 2 - rr - 70));
+  const cx = from.x + dx * f;
+  const cy = from.y + dy * f;
+  const rocks: Rock[] = [];
+  for (let u = -L / 2; u <= L / 2; u += rr * 1.1) {
+    if (Math.abs(u - gapAt) < gap / 2 + rr) continue;
+    const x = cx - uy * u;
+    const y = cy + ux * u;
+    const size = rr * (0.85 + r() * 0.3);
+    if (clearFor(keep, x, y, size)) rocks.push({ x, y, r: size, block: true, slow: t.profile.rubbleSlow });
+  }
+  if (rocks.length < 6) return false;
+  const kept = commit(t, rocks, keep);
+  if (kept) t.gates += 1;
+  return kept;
+}
+
+// A ring of rock round the seam with one mouth. The mouth mostly faces away
+// from home, so getting in means going round.
+export function addCrater(t: Terrain, r: () => number, s: Seam, keep: Keep): boolean {
+  const R = Math.max(s.len, s.w) / 2 + 55 + r() * 30;
+  const rr = 18 + r() * 10;
+  const toHome = Math.atan2(-s.y, -s.x);
+  const mouth = r() < 0.65 ? toHome + Math.PI + (r() - 0.5) * 1.6 : r() * TAU;
+  const half = (55 + r() * 20) / R; // half the mouth's width, as an angle
+  const rocks: Rock[] = [];
+  const step = (rr * 1.1) / R;
+  for (let a = 0; a < TAU; a += step) {
+    let off = a - mouth;
+    while (off > Math.PI) off -= TAU;
+    while (off < -Math.PI) off += TAU;
+    if (Math.abs(off) < half) continue;
+    const x = s.x + Math.cos(a) * R;
+    const y = s.y + Math.sin(a) * R;
+    const size = rr * (0.85 + r() * 0.3);
+    if (clearFor(keep, x, y, size)) rocks.push({ x, y, r: size, block: true, slow: t.profile.rubbleSlow });
+  }
+  if (rocks.length < 8) return false;
+  const kept = commit(t, rocks, keep);
+  if (kept) t.craters += 1;
+  return kept;
+}
+
+// One landmark at the seam, of a kind drawn from this map's mix. If that kind
+// doesn't fit there, the others are tried.
+export function addLandmark(t: Terrain, r: () => number, from: Vec, s: Seam, keep: Keep): Landmark | null {
+  const m = t.profile.mix;
+  const total = m.ridge + m.gate + m.crater || 1;
+  let roll = r() * total;
+  const first: Landmark = (roll -= m.ridge) < 0 ? 'ridge' : (roll -= m.gate) < 0 ? 'gate' : 'crater';
+  const order: Landmark[] = [first, ...(['ridge', 'gate', 'crater'] as Landmark[]).filter((k) => k !== first)];
+  for (const kind of order) {
+    const ok = kind === 'ridge' ? addRidge(t, r, from, s, keep) : kind === 'gate' ? addGate(t, r, from, s, keep) : addCrater(t, r, s, keep);
+    if (ok) return kind;
+  }
+  return null;
+}
+
 // A few small rocks somewhere between dMin and dMax from home.
 export function addCluster(t: Terrain, r: () => number, dMin: number, dMax: number, keep: Keep): boolean {
   for (let tries = 0; tries < 20; tries += 1) {
@@ -329,8 +414,8 @@ export function nearestRoadPoint(road: RoadTree, p: Vec): Vec {
   return best;
 }
 
-// A fresh map's terrain: ridges across the way to some of the seams, clusters
-// and rough patches in the band out to `reach`.
+// A fresh map's terrain: landmarks at some of the seams, clusters and rough
+// patches in the band out to `reach`.
 export function newTerrain(r: () => number, rules: TerrainRules, seams: Seam[], road: RoadTree, reach: number): Terrain {
   const t = emptyTerrain(rollProfile(r, rules));
   const keep: Keep = { seams, road, rover: { x: 0, y: 0 }, clearHome: rules.clearHome };
@@ -339,21 +424,20 @@ export function newTerrain(r: () => number, rules: TerrainRules, seams: Seam[], 
     const j = Math.floor(r() * (i + 1));
     [targets[i], targets[j]] = [targets[j], targets[i]];
   }
-  for (let k = 0; k < t.profile.ridges && k < targets.length; k += 1) addRidge(t, r, { x: 0, y: 0 }, targets[k], keep);
+  for (let k = 0; k < t.profile.landmarks && k < targets.length; k += 1) addLandmark(t, r, { x: 0, y: 0 }, targets[k], keep);
   for (let k = 0; k < t.profile.clusters; k += 1) addCluster(t, r, rules.clearHome + 60, reach, keep);
   for (let k = 0; k < t.profile.roughPatches; k += 1) addRoughPatch(t, r, rules.clearHome, reach, rules.clearHome);
   return t;
 }
 
-// After a bank: maybe a ridge across the way to one of the new seams (likelier
-// with each bank), and a few clusters. New ore never sits in rock: rock under a
-// new seam goes.
+// After a bank: maybe a landmark at one of the new seams (likelier with each
+// bank), and a few clusters. New ore never sits in rock: rock under a new seam goes.
 export function growTerrain(t: Terrain, r: () => number, rules: TerrainRules, fresh: Seam[], keep: Keep, banks: number, reach: number): void {
   for (const s of fresh) t.rocks = t.rocks.filter((k) => !inSeam(s, k, k.r + 14));
-  const chance = Math.min(0.9, rules.bankRidge + rules.bankRidgeStep * banks);
+  const chance = Math.min(0.95, rules.bankLandmark + rules.bankLandmarkStep * banks);
   if (fresh.length && r() < chance) {
     const s = fresh[Math.floor(r() * fresh.length)];
-    addRidge(t, r, nearestRoadPoint(keep.road, s), s, keep);
+    addLandmark(t, r, nearestRoadPoint(keep.road, s), s, keep);
   }
   const n = pickInt(r, rules.bankClusters);
   for (let k = 0; k < n; k += 1) addCluster(t, r, rules.clearHome + 60, reach, keep);

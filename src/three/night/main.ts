@@ -17,7 +17,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { RING0, closingSpeed, ringAt } from '../../game/night';
-import { HOME_RUN, RESERVE_RUN, baseMods, createRun, stepRun, timeToDark, type RunEvent, type RunRules, type RunState } from '../../game/run';
+import { HOME_RUN, RESERVE_RUN, baseMods, createRun, routeForLog, stepRun, timeToDark, type RunEvent, type RunRules, type RunState } from '../../game/run';
 import type { Line, RoadTree } from '../../game/roadTree';
 import { onOwnRoad } from '../../game/rover';
 import type { Seam } from '../../game/seams';
@@ -603,11 +603,14 @@ function logRun(result: string): void {
     reserveLow: run.reserveMax > 0 ? +(Number.isFinite(run.reserveLow) ? run.reserveLow : run.reserveMax).toFixed(1) : null,
     darkSeconds: +run.darkTime.toFixed(1),
     darkDips: run.darkDips,
+    ...routeForLog(run),
     roughSeconds: +run.roughTime.toFixed(1),
     bumps: rs.bumps,
     terrain: run.terrain
       ? {
           ridges: run.terrain.ridges,
+          gates: run.terrain.gates,
+          craters: run.terrain.craters,
           clusters: run.terrain.clusters,
           rough: run.terrain.rough.length,
           rocks: run.terrain.rocks.length,

@@ -2176,3 +2176,22 @@ New merges add a row here. Decisions in this range that change what older entrie
     - 11 new tests cover the profile ranges and their variety, reachability, clearances, unchanged seams, a ridge across the line, a ridge dropped when it would seal a seam, clearing under new ore, slower laying, the rail never slowed, bumping and sliding, rough seconds, and growth over a run.
     - `smoke:toys` checks the 3D map draws its terrain.
   - **Not yet:** road junctions; per-night escalation of the ranges in Contract, which only grows pieces for now; set pieces beyond ridges and clusters (craters, canyons).
+- **Route logging and landmark variety (2026-10-05, DEV-66):** the first terrain runs (issue #91, 4 runs on `24b0b28`) went 2 dawns and 2 caught. The owner said the rocks "were few and far between, but also visible and I drove around them", asked for "more variety in level design overall ... slightly more fun an increment at a time", and asked why the route wasn't logged already. It should have been; the run record had only end-of-run totals.
+  - **The route (`src/game/pathLog.ts`):**
+    - Each second the core samples the rover's position, rounded to 20 px and stored as a two-character step, plus one flag character: on the rail, in the dark, on rough ground, carrying.
+    - About 180 characters for a 90 s run. A test confirms 14 such runs still fit one run issue.
+    - Contract nights mark the restart at home with an `n` flag, so the route doesn't drift.
+  - **Per trip:** each bank logs `[seconds, px driven, farthest px, seconds in the dark]` in `tripLog`. The unbanked leg at the end of the run goes in `lastLeg`.
+  - **Bend:** px driven ÷ (2 × farthest) is about 1 for a straight out and back, and more when the route went round something. `npm run runs -- --routes` prints it per trip.
+  - **Landmarks, three kinds:**
+    - **Ridge:** go round one end.
+    - **Gate:** a 560–860 px wall across the way with one 95–120 px gap off the straight line, and wall on both sides of the gap.
+    - **Crater:** a ring of rock round a seam with one mouth, which faces away from home 65% of the time.
+  - **Variety between maps:** each map rolls its own mix of the three, squared so most maps lean one way. Across 12 seeds, maps ranged from all gates to all craters to an even blend.
+  - **Density:**
+    - 3–7 landmarks on a fresh map (was 1–4 ridges).
+    - After a bank, a landmark comes with the new ore 55% of the time plus 10% per bank, up to 95% (was 30% plus 12%).
+    - Maps now hold 80–185 rocks (was 30–99). Generation takes about 49 ms.
+  - **Unchanged:** every seam stays reachable (the flood check), terrain never slows the rail, and seams don't move.
+  - **Run data:** `path` (`s` steps, `f` flags), `tripLog`, `lastLeg`; the `terrain` summary gains `gates` and `craters`.
+  - **Tests:** 8 new ones cover the path round trip, the contract night reset, the trip log, the issue size budget, a gate's off-line gap with wall on both sides, a crater's mouth facing away from home, and maps leaning different ways.

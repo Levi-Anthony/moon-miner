@@ -24,6 +24,7 @@ import {
 import {
   RESERVE_RUN,
   growTerrainFor,
+  routeForLog,
   baseMods,
   createRun,
   startNight as coreStartNight,
@@ -195,8 +196,8 @@ function logRun(result: string): void {
   const common = {
     seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(run.dist), railShare: run.dist > 0 ? +(run.railDist / run.dist).toFixed(2) : 0, hopOffs: run.rs.hopOffs, grabs: run.rs.grabs, missedGrabs: { ...run.rs.missedGrabs }, misses: run.rs.misses.slice(),
     reserve: run.reserveMax, reserveLow: +(Number.isFinite(run.reserveLow) ? run.reserveLow : run.reserveMax).toFixed(1), darkSeconds: +run.darkTime.toFixed(1), darkDips: run.darkDips,
-    roughSeconds: +run.roughTime.toFixed(1), bumps: run.rs.bumps,
-    terrain: run.terrain ? { ridges: run.terrain.ridges, clusters: run.terrain.clusters, rough: run.terrain.rough.length, rocks: run.terrain.rocks.length, rubble: run.terrain.rocks.filter((k) => !k.block).length, blockShare: +run.terrain.profile.blockShare.toFixed(2), rubbleSlow: +run.terrain.profile.rubbleSlow.toFixed(2), roughSlow: +run.terrain.profile.roughSlow.toFixed(2) } : null
+    roughSeconds: +run.roughTime.toFixed(1), bumps: run.rs.bumps, ...routeForLog(run),
+    terrain: run.terrain ? { ridges: run.terrain.ridges, gates: run.terrain.gates, craters: run.terrain.craters, clusters: run.terrain.clusters, rough: run.terrain.rough.length, rocks: run.terrain.rocks.length, rubble: run.terrain.rocks.filter((k) => !k.block).length, blockShare: +run.terrain.profile.blockShare.toFixed(2), rubbleSlow: +run.terrain.profile.rubbleSlow.toFixed(2), roughSlow: +run.terrain.profile.roughSlow.toFixed(2) } : null
   };
   if (mode === 'contract') {
     logToyRun({
