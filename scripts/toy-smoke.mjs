@@ -131,7 +131,12 @@ try {
   await page.evaluate(() => window.__toyGive(25));
   s = await waitFor((q) => q.banked >= 25, 'a contract bank');
   check(s.mult === 1 && s.score === 0, `Contract has no multiplier or score: mult ${s.mult}, score ${s.score}`);
-  console.log(`contract OK: night ${s.night}, banked ${s.banked}`);
+  // Caught mid-night: the run ends, and the night's banked ore is logged (issue #93 logged 0).
+  await page.evaluate(() => window.__toyCatch());
+  await waitFor((q) => q.phase === 'over', 'a contract caught by the dark');
+  runs = await page.evaluate(() => JSON.parse(localStorage.getItem('mm-toy-runs-v1') || '[]'));
+  check(runs.at(-1)?.result === 'caught' && runs.at(-1)?.ore === 25, `a caught contract should log its banked ore: ${runs.at(-1)?.result} ${runs.at(-1)?.ore}`);
+  console.log(`contract OK: night ${s.night}, banked ${s.banked}, caught logged with ore ${runs.at(-1)?.ore}`);
 
   // Endless Night 3D: the same run, drawn in Three.js.
   const nt = () => page.evaluate(() => window.__night());

@@ -217,7 +217,9 @@ function logRun(result: string): void {
   recordPlay(TOY, mode === 'contract' ? totalBanked : run.ns.score);
 }
 window.addEventListener('pagehide', () => {
-  if (phase === 'play' && run.started) logRun('abandoned');
+  if (phase !== 'play' || !run.started) return;
+  if (mode === 'contract') totalBanked += run.banked;
+  logRun('abandoned');
 });
 
 function gameOver(result: string): void {
@@ -417,6 +419,9 @@ function effect(e: RunEvent): void {
       nightfall();
       break;
     case 'over':
+      // Contract: only the dark reserve running out ends a night this way; the
+      // night's banked ore still counts (it logged 0 before, issue #93).
+      if (mode === 'contract') totalBanked += run.banked;
       gameOver(e.result);
       break;
   }
@@ -997,6 +1002,15 @@ W.__toySkip = (s: number) => {
     run.ns.heat += s;
     run.ns.ringR -= closingSpeed() * s;
   }
+};
+// Put the rover out in the dark with almost no reserve left: the next frame it's caught.
+W.__toyCatch = () => {
+  run.rs.rail = null;
+  run.rs.laying = -1;
+  run.rs.rover = { x: 600, y: 0, h: 0, v: 0 };
+  if (mode === 'contract') run.elapsed = 50; // the contract border is set by the clock
+  else run.ns.ringR = 300;
+  run.reserve = 0.05;
 };
 W.__toyGive = (n: number) => {
   run.rs.carry += n;
