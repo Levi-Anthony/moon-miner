@@ -141,6 +141,7 @@ export interface RunState {
   darkTime: number; // seconds spent in the dark this run
   darkDips: number; // times you went into it
   stranded: boolean; // not home when the night fell
+  reserveOut: boolean; // Contract: this night ended early because the dark reserve ran out
   strandLoad: number; // the load lost to it
   dawnBroke: boolean;
   nearest: NightHit; // the nearest point of the border
@@ -194,6 +195,7 @@ export function createRun(mode: RunMode, seed: number, hard: boolean, rules: Run
     darkTime: 0,
     darkDips: 0,
     stranded: false,
+    reserveOut: false,
     strandLoad: 0,
     dawnBroke: false,
     nearest: { gap: Infinity, x: 0, y: 0 },
@@ -240,6 +242,7 @@ export function startNight(run: RunState): void {
   run.nearest = { gap: Infinity, x: 0, y: 0 };
   run.started = false;
   run.stranded = false;
+  run.reserveOut = false;
   run.inDark = false;
   run.reserve = run.reserveMax;
   newNightPath(run.path);
@@ -345,7 +348,7 @@ function growOre(run: RunState, rules: RunRules): void {
 // +). Nothing moves until the first touch.
 export function stepRun(run: RunState, ax: Vec, dt: number, rules: RunRules, mods: RunMods): RunEvent[] {
   const ev: RunEvent[] = [];
-  if (run.over) return ev;
+  if (run.over || run.reserveOut) return ev;
   const rs = run.rs;
   if (ax.x !== 0 || ax.y !== 0) run.started = true;
   if (!run.started) return ev;
@@ -389,7 +392,13 @@ export function stepRun(run: RunState, ax: Vec, dt: number, rules: RunRules, mod
       run.reserveLow = Math.min(run.reserveLow, run.reserve);
       if (run.reserve <= 0) {
         strand(run, rules, mods, ev);
-        end(run, 'caught', ev);
+        // Contract (owner, 2026-10-05): an empty reserve ends the night like
+        // being stranded. The load is lost; the caller checks the quota and the
+        // contract goes on if it was met. Endless: the run ends, caught.
+        if (run.mode === 'contract') {
+          run.reserveOut = true;
+          ev.push({ kind: 'nightfall' });
+        } else end(run, 'caught', ev);
         return ev;
       }
     } else {
