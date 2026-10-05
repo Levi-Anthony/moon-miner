@@ -35,6 +35,7 @@ import { rng } from './random';
 import { createRoadTree, type RoadTree, type Vec } from './roadTree';
 import { HOME_RUN_MODS, HOME_RUN_ROVER, createRover, darkLeak, digSeams, homeRover, onOwnRoad, resetRoverRun, stepRover, type RoverEvent, type RoverMods, type RoverRules, type RoverState } from './rover';
 import { addSeamBesideRoad, addSeams, addSeamsBeyondRoad, type Seam } from './seams';
+import { TERRAIN, collide, growTerrain, layFactor, newTerrain, type Terrain, type TerrainRules } from './terrain';
 
 export type RunMode = 'contract' | 'endless';
 
@@ -55,6 +56,7 @@ export interface RunRules {
   liveDarkSeams: boolean; // seams past the border keep their ore
   sideOre: number; // share of the ore a bank grows that lands beside your road, not past its tips
   sideOreFrom: number; // ...from this bank on (the first ones build your first road)
+  terrain: TerrainRules | null; // rock and rough ground (null: an open field)
 }
 
 // Upgrades a contract can buy, on top of the rover's.
@@ -76,7 +78,8 @@ export const HOME_RUN: RunRules = {
   reserveRefill: 0,
   liveDarkSeams: false,
   sideOre: 0,
-  sideOreFrom: 0
+  sideOreFrom: 0,
+  terrain: null
 };
 
 // Endless Night in 3D and Home Run from 2026-10-05 (DEV-66). The dark is a survival
@@ -94,7 +97,10 @@ export const RESERVE_RUN: RunRules = {
   reserveRefill: 4,
   liveDarkSeams: true,
   sideOre: 0.7,
-  sideOreFrom: 2
+  sideOreFrom: 2,
+  // Rock and rough ground, rolled per map and grown with each bank (owner,
+  // 2026-10-05). Terrain slows only laying new road, never the rail.
+  terrain: TERRAIN
 };
 
 // A contract's starting upgrades (none), as a fresh copy to change.
@@ -110,6 +116,8 @@ export interface RunState {
   road: RoadTree;
   ns: NightState;
   seams: Seam[];
+  terrain: Terrain | null;
+  roughTime: number; // seconds laying road slowed by rough ground or rubble, this run
   banked: number; // this night (contract) / this run (endless)
   trips: number;
   autoBanks: number;
@@ -158,6 +166,8 @@ export function createRun(mode: RunMode, seed: number, hard: boolean, rules: Run
     road: createRoadTree(rules.cell),
     ns: createNight([0, 0]),
     seams: [],
+    terrain: null,
+    roughTime: 0,
     banked: 0,
     trips: 0,
     autoBanks: 0,
@@ -194,6 +204,21 @@ export function newMap(run: RunState, rules: RunRules): void {
   run.seams = [];
   run.ns = createNight([r() * Math.PI * 2, r() * Math.PI * 2]);
   addSeams(run.seams, r, rules.firstSeams, 230, run.mode === 'endless' ? RING0 * run.ns.minFactor * 0.9 : 1510);
+  // Its own random source, so terrain never changes where the seams go.
+  run.terrain = rules.terrain ? newTerrain(rng((run.seed ^ 0x7e44a1) >>> 0), rules.terrain, run.seams, run.road, terrainReach(run)) : null;
+}
+
+// How far out terrain goes: the band the ore is in.
+function terrainReach(run: RunState): number {
+  return run.mode === 'endless' ? RING0 * run.ns.minFactor * 0.95 : 1510;
+}
+
+// New seams just placed (Endless after a bank, or a contract's new night): rock
+// under them goes, and more terrain may grow around them.
+export function growTerrainFor(run: RunState, rules: RunRules, fresh: Seam[]): void {
+  if (!run.terrain || !rules.terrain) return;
+  const r = rng((run.seed ^ 0x51ed27 ^ (run.trips * 7919) ^ (run.seams.length * 104729)) >>> 0);
+  growTerrain(run.terrain, r, rules.terrain, fresh, { seams: run.seams, road: run.road, rover: run.rs.rover, clearHome: rules.terrain.clearHome }, run.trips, terrainReach(run));
 }
 
 // Back at home for a new night. The road, the seams and the outposts stay (a
@@ -279,6 +304,7 @@ export function bank(run: RunState, rules: RunRules, mods: RunMods, auto: boolea
 // A bank grows 3 seams: past the tips of your road, or (from `sideOreFrom` on)
 // mostly beside it.
 function growOre(run: RunState, rules: RunRules): void {
+  const before = run.seams.length;
   const r = rng((run.seed ^ (run.trips * 40503)) >>> 0);
   const at = (a: number): number => ringAt(run.ns, a);
   for (let k = 0; k < 3; k += 1) {
@@ -286,6 +312,7 @@ function growOre(run: RunState, rules: RunRules): void {
     if (beside && addSeamBesideRoad(run.seams, run.road, r, at, rules.depotR)) continue;
     addSeamsBeyondRoad(run.seams, run.road, r, 1, run.ns.ringR, at, rules.depotR);
   }
+  growTerrainFor(run, rules, run.seams.slice(before));
 }
 
 // One frame of the run. `ax` is the stick (x steer right +, y throttle forward
@@ -361,8 +388,11 @@ export function stepRun(run: RunState, ax: Vec, dt: number, rules: RunRules, mod
   // The rover on its road.
   const px = rs.rover.x;
   const py = rs.rover.y;
-  ev.push(...stepRover(rs, run.road, ax, dt, rules.rover, mods, run.elapsed));
+  const t = run.terrain;
+  const ground = t ? { layFactor: (x: number, y: number) => layFactor(t, x, y), collide: (p: { x: number; y: number; h: number; v: number }) => collide(t, p) } : undefined;
+  ev.push(...stepRover(rs, run.road, ax, dt, rules.rover, mods, run.elapsed, ground));
   const moved = Math.hypot(rs.rover.x - px, rs.rover.y - py);
+  if (t && !rs.rail && moved > 0 && layFactor(t, rs.rover.x, rs.rover.y) < 1) run.roughTime += dt;
   run.dist += moved;
   if (rs.rail) run.railDist += moved;
 

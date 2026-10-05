@@ -141,6 +141,7 @@ try {
   await page.click('#start');
   s = await waitN((q) => q.phase === 'play', 'the 3D run to start');
   check(s.ringR === 1750 && s.seamViews === s.seams && s.seams === 16, `a fresh 3D run: ringR ${s.ringR}, seams ${s.seams}, drawn ${s.seamViews}`);
+  check(s.rocks > 0 && s.terrainMeshes > 0, `a fresh 3D map should have terrain drawn: ${s.rocks} rocks, ${s.terrainMeshes} meshes`);
   await start3d();
   await page.evaluate(() => window.__nightSkip(20));
   s = await nt();
@@ -168,7 +169,9 @@ try {
   check(runs.at(-1)?.result === 'quit', `3D END should log quit, logged ${runs.at(-1)?.result}`);
   const droveOut = Math.hypot(s.x, s.y);
   // A third run: drive out, put the border just inside the rover, and the dark
-  // reserve runs down (on your road or off) until the run ends caught.
+  // reserve runs down (on your road or off) until the run ends caught. Terrain
+  // off for this one, so a rock in the way can't stop the drive out.
+  await page.evaluate(() => window.__nightRulesOn({ terrain: false }));
   await page.waitForSelector('#again', { state: 'visible' });
   await page.click('#again');
   await waitN((q) => q.phase === 'play' && !q.started, 'a third 3D run');

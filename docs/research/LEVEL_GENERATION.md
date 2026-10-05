@@ -99,6 +99,8 @@
 
 ## Proposal: the first landscape pass
 
+Built 2026-10-05 in `src/game/terrain.ts` (see DECISIONS). Steps 1–4 are done. Step 5 (road junctions) is next.
+
 1. **Two ground types in the core** (`src/game`, engine-free, as data in `RunRules`):
    - **Rock:** blocks you, or slows laying road through it. Which of the two varies (see "Owner's answers" below).
    - **Rough ground:** laying road is slower there. Riding road you've already laid is full speed, so building through rough ground pays off later.
