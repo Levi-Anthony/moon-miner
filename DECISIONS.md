@@ -2141,3 +2141,38 @@ New merges add a row here. Decisions in this range that change what older entrie
     - **Landscape.** The owner noted part of the out-and-back feel comes from a field with nothing to steer around. Level generation research is in `docs/research/LEVEL_GENERATION.md`.
       - **The owner's answers on terrain:** the terrain settings vary per map and across a run ("I don't think these should all be stable variables"). Rock can block or slow, and set pieces mix big and small.
       - **Rail speed is protected:** "Never slow the speed on the rail. That should only be like a special penalty or introduced in a later level maybe." Terrain slows only laying new road. Slowing the rail is reserved for a named later mechanic.
+- **Terrain, first pass (2026-10-05, DEV-66):** the owner approved building the landscape step after the dark reserve. Their rules for it: the settings vary per map and across a run ("I don't think these should all be stable variables"), and terrain never slows the rail ("Never slow the speed on the rail. That should only be like a special penalty or introduced in a later level maybe").
+  - **`src/game/terrain.ts`** (engine-free) has three kinds of ground:
+    - **Rock:** blocks you. You slide along its face rather than stopping dead.
+    - **Rubble:** you can lay road through it, slowly.
+    - **Rough ground:** ellipse patches that slow laying.
+  - **Speed rules:**
+    - Terrain only scales laying speed, passed to `stepRover` as an optional `Ground` that the rail branch never calls.
+    - A test runs the rail over "the worst ground there could be" and checks its speed matches open ground exactly.
+  - **Each map rolls its own profile** from `TERRAIN`'s ranges:
+    - share of rock that blocks: 35–100%
+    - rubble laying speed: 35–60%
+    - rough laying speed: 40–80%
+    - 1–4 ridges, 3–12 boulder clusters, 2–6 rough patches
+  - **Ridges** are the landmark pieces:
+    - a curved chain of rocks laid across the straight line to a seam, off-centre, so one end is a short way round and the other a long one
+    - when the roll says so, the stretch across the line is rubble: a short slow route against a long clear one (the cycle idea from Unexplored)
+  - **Endless grows terrain with each bank:**
+    - a ridge across the way to one of the new seams, at 30% plus 12% per bank, capped at 90%
+    - 0–2 clusters
+    - rock under new ore is cleared
+  - **Contract nights** grow terrain the same way when their new seams arrive.
+  - **Fairness, checked on every piece:**
+    - A 16 px grid flood from home confirms every live seam is still reachable by driving. A piece that would seal one off is dropped.
+    - Pieces keep clear of home (170 px), seams, your road and the rover.
+  - **Terrain has its own random source,** so the seams on a seed don't move.
+  - **Shown:**
+    - **3D:** rock stands as grey faceted boulders, rubble lies low and brown, and rough ground is a dark patch.
+    - **Both views:** terrain is on the minimap; laying through rough ground kicks up dust and shows "ROUGH · laying N%"; a bump plays a thud with a puff of grit.
+    - **Toy:** draws all of it top-down.
+    - **3D title:** a Terrain toggle.
+  - **Run data:** `roughSeconds`, `bumps`, and a `terrain` summary (pieces, rock and rubble counts, the rolled speeds).
+  - **Tests:**
+    - 11 new tests cover the profile ranges and their variety, reachability, clearances, unchanged seams, a ridge across the line, a ridge dropped when it would seal a seam, clearing under new ore, slower laying, the rail never slowed, bumping and sliding, rough seconds, and growth over a run.
+    - `smoke:toys` checks the 3D map draws its terrain.
+  - **Not yet:** road junctions; per-night escalation of the ranges in Contract, which only grows pieces for now; set pieces beyond ridges and clusters (craters, canyons).

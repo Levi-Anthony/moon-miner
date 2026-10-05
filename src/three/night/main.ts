@@ -21,6 +21,7 @@ import { HOME_RUN, RESERVE_RUN, baseMods, createRun, stepRun, timeToDark, type R
 import type { Line, RoadTree } from '../../game/roadTree';
 import { onOwnRoad } from '../../game/rover';
 import type { Seam } from '../../game/seams';
+import { layFactor, type Terrain } from '../../game/terrain';
 import { markSentAll, sendAllUrl, sendLabel, unsentAll } from '../../runs/sendAll';
 // The toys' input, sound and run log: the same stick and blips the owner played
 // the 2D toy with.
@@ -47,13 +48,14 @@ let hard = false;
 let seed = 1;
 // The 2026-10-05 rules, each on by default: the dark reserve, seams that stay
 // live in the dark, and ore beside your road.
-const rulesOn = { reserve: true, liveSeams: true, sideOre: true };
+const rulesOn = { reserve: true, liveSeams: true, sideOre: true, terrain: true };
 function rulesNow(): RunRules {
   return {
     ...RESERVE_RUN,
     ...(rulesOn.reserve ? {} : { darkReserve: 0, hardReserve: 0, reserveRefill: 0 }),
     ...(rulesOn.liveSeams ? {} : { liveDarkSeams: false }),
-    ...(rulesOn.sideOre ? {} : { sideOre: HOME_RUN.sideOre })
+    ...(rulesOn.sideOre ? {} : { sideOre: HOME_RUN.sideOre }),
+    ...(rulesOn.terrain ? {} : { terrain: null })
   };
 }
 let RULES: RunRules = rulesNow();
@@ -250,6 +252,59 @@ function syncSeams(): void {
       v.discMat.color.setHex(GOLD);
       v.discMat.opacity = s.ore > 0 ? 0.18 + 0.4 * left : 0.06;
     }
+  }
+}
+
+// --- terrain: rock you drive round, rubble and rough ground that slow laying --------
+// Rebuilt whenever the terrain changes (a fresh map, or a bank that grows more).
+const terrainGroup = new THREE.Group();
+scene.add(terrainGroup);
+const rockGeo = new THREE.DodecahedronGeometry(1, 0);
+const rockMat = new THREE.MeshLambertMaterial({ color: 0x8a93a3, flatShading: true });
+const rubbleMat = new THREE.MeshLambertMaterial({ color: 0x9a7b5c, flatShading: true });
+const roughMat = new THREE.MeshBasicMaterial({ color: 0x3a2c22, transparent: true, opacity: 0.55, depthWrite: false });
+let terrainOf: Terrain | null = null;
+let terrainKey = '';
+
+function syncTerrain(): void {
+  const t = run.terrain;
+  const key = t ? `${t.rocks.length}:${t.rough.length}:${t.ridges}:${t.clusters}` : '';
+  if (t === terrainOf && key === terrainKey) return;
+  terrainOf = t;
+  terrainKey = key;
+  for (const c of [...terrainGroup.children]) {
+    terrainGroup.remove(c);
+    if (c instanceof THREE.InstancedMesh) c.dispose();
+    else if (c instanceof THREE.Mesh) c.geometry.dispose();
+  }
+  if (!t) return;
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  for (const block of [true, false]) {
+    const rocks = t.rocks.filter((k) => k.block === block);
+    if (!rocks.length) continue;
+    const mesh = new THREE.InstancedMesh(rockGeo, block ? rockMat : rubbleMat, rocks.length);
+    rocks.forEach((k, i) => {
+      let h = Math.imul(Math.round(k.x * 13 + k.y * 7), 2654435761) >>> 0;
+      const rand = () => ((h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0) / 4294967296);
+      e.set(rand() * 3, rand() * 3, rand() * 3);
+      q.setFromEuler(e);
+      // Rock stands tall enough to read as a wall; rubble lies low.
+      const up = block ? k.r * (1.1 + rand() * 0.6) : k.r * 0.35;
+      m.compose(new THREE.Vector3(k.x, up * 0.45, k.y), q, new THREE.Vector3(k.r, up, k.r));
+      mesh.setMatrixAt(i, m);
+    });
+    terrainGroup.add(mesh);
+  }
+  for (const g of t.rough) {
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(1, 40), roughMat);
+    disc.rotation.x = -Math.PI / 2;
+    disc.rotation.z = -g.a;
+    disc.scale.set(g.rx, g.ry, 1);
+    disc.position.set(g.x, 0.25, g.y);
+    disc.renderOrder = -2;
+    terrainGroup.add(disc);
   }
 }
 
@@ -472,7 +527,7 @@ el('hard').addEventListener('click', (e) => {
   hard = !hard;
   toggleText(e.currentTarget as HTMLElement, 'Hard', hard);
 });
-for (const [id, key, name] of [['r-reserve', 'reserve', 'Dark reserve'], ['r-seams', 'liveSeams', 'Live seams in the dark'], ['r-side', 'sideOre', 'Ore beside your road']] as const) {
+for (const [id, key, name] of [['r-reserve', 'reserve', 'Dark reserve'], ['r-seams', 'liveSeams', 'Live seams in the dark'], ['r-side', 'sideOre', 'Ore beside your road'], ['r-terrain', 'terrain', 'Terrain']] as const) {
   el(id).addEventListener('click', (e) => {
     rulesOn[key] = !rulesOn[key];
     toggleText(e.currentTarget as HTMLElement, name, rulesOn[key]);
@@ -548,6 +603,20 @@ function logRun(result: string): void {
     reserveLow: run.reserveMax > 0 ? +(Number.isFinite(run.reserveLow) ? run.reserveLow : run.reserveMax).toFixed(1) : null,
     darkSeconds: +run.darkTime.toFixed(1),
     darkDips: run.darkDips,
+    roughSeconds: +run.roughTime.toFixed(1),
+    bumps: rs.bumps,
+    terrain: run.terrain
+      ? {
+          ridges: run.terrain.ridges,
+          clusters: run.terrain.clusters,
+          rough: run.terrain.rough.length,
+          rocks: run.terrain.rocks.length,
+          rubble: run.terrain.rocks.filter((k) => !k.block).length,
+          blockShare: +run.terrain.profile.blockShare.toFixed(2),
+          rubbleSlow: +run.terrain.profile.rubbleSlow.toFixed(2),
+          roughSlow: +run.terrain.profile.roughSlow.toFixed(2)
+        }
+      : null,
     ...(Object.values(rulesOn).every(Boolean) ? {} : { knobs: { ...rulesOn } })
   });
   recordPlay(GAME, run.ns.score);
@@ -598,6 +667,11 @@ function effect(e: RunEvent): void {
       break;
     case 'grab':
       blip(520, 0.07, 'triangle', 0.18, 780);
+      break;
+    case 'bump':
+      shake = Math.max(shake, 6);
+      burst(r.x + Math.cos(r.h) * 14, r.y + Math.sin(r.h) * 14, 10, 0xb7c0cc, 90, 0.5);
+      blip(110, 0.12, 'square', 0.2, 70);
       break;
     case 'scoop':
       burst(e.seam.x, e.seam.y, 40, 0xffcf5a, 260);
@@ -676,6 +750,8 @@ function update(dt: number): void {
     if (Math.floor(time * rate) !== Math.floor((time - dt) * rate)) blip(330 - 160 * spent, 0.06, 'square', 0.08 + 0.12 * spent);
   }
   const rs = run.rs;
+  // Laying through rough ground or rubble kicks up dust.
+  if (!rs.rail && run.terrain && Math.abs(rs.rover.v) > 10 && layFactor(run.terrain, rs.rover.x, rs.rover.y) < 1 && Math.random() < 0.5) burst(rs.rover.x, rs.rover.y, 1, 0x9a7b5c, 40, 0.5);
   if (rs.rail && rs.rover.v > 200 && Math.random() < 0.5) burst(rs.rover.x - Math.cos(rs.rover.h) * 14, rs.rover.y - Math.sin(rs.rover.h) * 14, 1, TEAL, 30, 0.35);
   hum.set(Math.min(1, Math.abs(rs.rover.v) / (mods.railBase + mods.railBonus)), 50, rs.rail ? 160 : 70);
 }
@@ -685,6 +761,7 @@ const want = new THREE.Vector3();
 function syncView(dt: number): void {
   syncRoad();
   syncSeams();
+  syncTerrain();
   const u = urgencyNow();
   syncNight(u);
   stepParticles(dt);
@@ -767,6 +844,15 @@ function drawOverlay(dt: number): void {
     octx.fillText(p.text, (proj.x * 0.5 + 0.5) * w, (-proj.y * 0.5 + 0.5) * h);
   }
   octx.globalAlpha = 1;
+  // Off the rail on rough ground or rubble: how fast you're laying here.
+  if (phase === 'play' && !run.rs.rail && run.terrain) {
+    const f = layFactor(run.terrain, run.rs.rover.x, run.rs.rover.y);
+    if (f < 1) {
+      octx.font = 'bold 14px ui-monospace, monospace';
+      octx.fillStyle = '#d9b48a';
+      octx.fillText(`ROUGH · laying ${Math.round(f * 100)}%`, w / 2, h - 90);
+    }
+  }
   drawMinimap(w, h);
   if (stick.down) {
     octx.save();
@@ -820,6 +906,22 @@ function drawMinimap(w: number, h: number): void {
   ctx.strokeStyle = run.ns.ringFlash > 0.05 ? '#e0d0ff' : '#9670ff';
   ctx.lineWidth = 1.5 + 2 * run.ns.ringFlash;
   ctx.stroke();
+  if (run.terrain) {
+    ctx.fillStyle = 'rgba(154,123,92,0.35)';
+    for (const g of run.terrain.rough) {
+      const q = at(g.x, g.y);
+      ctx.beginPath();
+      ctx.ellipse(q.x, q.y, Math.max(1, g.rx * k), Math.max(1, g.ry * k), g.a + rot, 0, TAU);
+      ctx.fill();
+    }
+    for (const rock of run.terrain.rocks) {
+      const q = at(rock.x, rock.y);
+      ctx.fillStyle = rock.block ? '#9aa3b2' : '#9a7b5c';
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, Math.max(1, rock.r * k), 0, TAU);
+      ctx.fill();
+    }
+  }
   ctx.strokeStyle = 'rgba(120,247,223,0.8)';
   ctx.lineWidth = 1.5;
   for (const line of run.road.lines) {
@@ -868,7 +970,8 @@ W.__night = () => ({
   x: run.rs.rover.x, y: run.rs.rover.y, h: run.rs.rover.h, v: run.rs.rover.v, carry: run.rs.carry, banked: run.banked, score: run.ns.score,
   mult: run.ns.mult, trips: run.trips, ringR: run.ns.ringR, pushMine: run.ns.pushMine, pushBank: run.ns.pushBank, lines: run.road.lines.length,
   seams: run.seams.length, ribbons: ribbons.length, seamViews: seamViews.length, toDark: timeToDark(run, RULES, mods),
-  reserve: run.reserve, reserveMax: run.reserveMax, darkTime: run.darkTime
+  reserve: run.reserve, reserveMax: run.reserveMax, darkTime: run.darkTime,
+  rocks: run.terrain?.rocks.length ?? 0, rough: run.terrain?.rough.length ?? 0, terrainMeshes: terrainGroup.children.length, bumps: run.rs.bumps, roughTime: run.roughTime
 });
 // Put the border just inside the rover (it's then in the dark) without reaching home.
 W.__nightDarkHere = () => {
@@ -880,6 +983,10 @@ W.__nightSkip = (s: number) => {
   run.elapsed += s;
   run.ns.heat += s;
   run.ns.ringR -= closingSpeed(run.ns, RULES.night) * s;
+};
+// Set the title's rule toggles (they apply from the next run).
+W.__nightRulesOn = (o: Partial<typeof rulesOn>) => {
+  Object.assign(rulesOn, o);
 };
 W.__nightGive = (n: number) => {
   run.rs.carry += n;

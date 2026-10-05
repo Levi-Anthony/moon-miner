@@ -109,6 +109,15 @@ export interface RoverState {
   hopOffs: number;
   missedGrabs: { angle: number; unarmed: number; recovered: number };
   misses: Miss[];
+  bumping: boolean; // up against rock right now
+  bumps: number; // times you ran into rock this run
+}
+
+// The ground under the rover, off the rail (src/game/terrain.ts). The rail never
+// asks: terrain doesn't slow the rail (owner, 2026-10-05).
+export interface Ground {
+  layFactor(x: number, y: number): number; // share of full laying speed here
+  collide(p: { x: number; y: number; h: number; v: number }): boolean; // push out of rock; true on contact
 }
 
 export type RoverEvent =
@@ -116,6 +125,7 @@ export type RoverEvent =
   | { kind: 'flip' }
   | { kind: 'tip' }
   | { kind: 'grab' }
+  | { kind: 'bump' }
   | { kind: 'miss'; miss: Miss };
 
 const MAX_MISSES = 24;
@@ -146,7 +156,9 @@ export function createRover(): RoverState {
     grabs: 0,
     hopOffs: 0,
     missedGrabs: { angle: 0, unarmed: 0, recovered: 0 },
-    misses: []
+    misses: [],
+    bumping: false,
+    bumps: 0
   };
 }
 
@@ -174,6 +186,7 @@ export function resetRoverRun(s: RoverState): void {
   s.hopOffs = 0;
   s.missedGrabs = { angle: 0, unarmed: 0, recovered: 0 };
   s.misses = [];
+  s.bumps = 0;
 }
 
 export function nearestRoadTo(s: RoverState, tree: RoadTree, rules: RoverRules, p: Vec = s.rover, heading = s.rover.h): RoadHit | null {
@@ -214,7 +227,7 @@ function hopOff(s: RoverState, tree: RoadTree, side: number, mods: RoverMods): v
 
 // One step of the rover. `ax` is the stick: x = steer (right +), y = throttle
 // (forward +). Returns what happened, for the caller's effects and logs.
-export function stepRover(s: RoverState, tree: RoadTree, ax: Vec, dt: number, rules: RoverRules, mods: RoverMods, elapsed: number): RoverEvent[] {
+export function stepRover(s: RoverState, tree: RoadTree, ax: Vec, dt: number, rules: RoverRules, mods: RoverMods, elapsed: number, ground?: Ground): RoverEvent[] {
   const ev: RoverEvent[] = [];
   const rover = s.rover;
   if (s.rail) {
@@ -264,11 +277,19 @@ export function stepRover(s: RoverState, tree: RoadTree, ax: Vec, dt: number, ru
     s.charge = Math.max(0, s.charge - 1.5 * dt);
     const turn = rover.v < 10 ? 1.8 : 2.9 - Math.min(1.3, rover.v / 150);
     rover.h += ax.x * turn * dt;
-    const target = ax.y >= 0 ? rules.laySpeed * ax.y : -rules.reverseSpeed * -ax.y;
+    const slow = ground ? ground.layFactor(rover.x, rover.y) : 1;
+    const target = ax.y >= 0 ? rules.laySpeed * slow * ax.y : -rules.reverseSpeed * slow * -ax.y;
     const accel = Math.abs(rover.v) > Math.abs(target) ? 320 : 240;
     rover.v += Math.sign(target - rover.v) * Math.min(Math.abs(target - rover.v), accel * dt);
     rover.x += Math.cos(rover.h) * rover.v * dt;
     rover.y += Math.sin(rover.h) * rover.v * dt;
+    // Rock stops you; you slide along its face.
+    const bump = ground ? ground.collide(rover) : false;
+    if (bump && !s.bumping) {
+      s.bumps += 1;
+      ev.push({ kind: 'bump' });
+    }
+    s.bumping = bump;
     if (s.laying >= 0 && rover.v > 0) {
       const pts = tree.lines[s.laying].pts;
       const last = pts[pts.length - 1];

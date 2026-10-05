@@ -23,6 +23,7 @@ import {
 } from '../game/night';
 import {
   RESERVE_RUN,
+  growTerrainFor,
   baseMods,
   createRun,
   startNight as coreStartNight,
@@ -34,6 +35,7 @@ import {
 } from '../game/run';
 import { farthestPoint, railPoint as coreRailPoint } from '../game/roadTree';
 import { addSeams as coreAddSeams } from '../game/seams';
+import { layFactor } from '../game/terrain';
 import { HOME_RUN_ROVER, onOwnRoad as coreOnOwnRoad, type RoverState } from '../game/rover';
 
 const TOY = 'home-run';
@@ -192,7 +194,9 @@ function logRun(result: string): void {
   runLogged = true;
   const common = {
     seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(run.dist), railShare: run.dist > 0 ? +(run.railDist / run.dist).toFixed(2) : 0, hopOffs: run.rs.hopOffs, grabs: run.rs.grabs, missedGrabs: { ...run.rs.missedGrabs }, misses: run.rs.misses.slice(),
-    reserve: run.reserveMax, reserveLow: +(Number.isFinite(run.reserveLow) ? run.reserveLow : run.reserveMax).toFixed(1), darkSeconds: +run.darkTime.toFixed(1), darkDips: run.darkDips
+    reserve: run.reserveMax, reserveLow: +(Number.isFinite(run.reserveLow) ? run.reserveLow : run.reserveMax).toFixed(1), darkSeconds: +run.darkTime.toFixed(1), darkDips: run.darkDips,
+    roughSeconds: +run.roughTime.toFixed(1), bumps: run.rs.bumps,
+    terrain: run.terrain ? { ridges: run.terrain.ridges, clusters: run.terrain.clusters, rough: run.terrain.rough.length, rocks: run.terrain.rocks.length, rubble: run.terrain.rocks.filter((k) => !k.block).length, blockShare: +run.terrain.profile.blockShare.toFixed(2), rubbleSlow: +run.terrain.profile.rubbleSlow.toFixed(2), roughSlow: +run.terrain.profile.roughSlow.toFixed(2) } : null
   };
   if (mode === 'contract') {
     logToyRun({
@@ -257,7 +261,10 @@ function nightfall(): void {
 function nextNight(): void {
   night += 1;
   // Fresh, rich seams appear farther out, just inside where the night starts.
+  const before = run.seams.length;
   coreAddSeams(run.seams, rng(seed ^ (night * 7919)), 3 + (night % 2), RING0 * 0.72, RING0 * 0.95);
+  // Rock under the new seams goes, and more terrain may grow round them.
+  growTerrainFor(run, RESERVE_RUN, run.seams.slice(before));
   startNight();
 }
 
@@ -358,6 +365,11 @@ function effect(e: RunEvent): void {
       break;
     case 'grab':
       blip(520, 0.07, 'triangle', 0.18, 780);
+      break;
+    case 'bump':
+      shake.kick(6);
+      parts.burst(rover.x + Math.cos(rover.h) * 14, rover.y + Math.sin(rover.h) * 14, 10, '#b7c0cc', 90, 2, 0.5);
+      blip(110, 0.12, 'square', 0.2, 70);
       break;
     case 'scoop':
       parts.burst(e.seam.x, e.seam.y, 40, '#ffcf5a', 320, 4, 0.8);
@@ -556,6 +568,16 @@ function drawWorld(dt: number): void {
     }
   }
 
+  // Rough ground: laying road is slower here (never the rail).
+  if (run.terrain) {
+    ctx.fillStyle = 'rgba(120,90,60,0.28)';
+    for (const g of run.terrain.rough) {
+      ctx.beginPath();
+      ctx.ellipse(g.x, g.y, g.rx, g.ry, g.a, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   // Depot and outposts.
   const pulse = 0.5 + 0.5 * Math.sin(time * 3);
   for (const b of [{ x: 0, y: 0 }, ...mods.outposts]) {
@@ -581,6 +603,19 @@ function drawWorld(dt: number): void {
       ctx.moveTo(line.pts[0].x, line.pts[0].y);
       for (let i = 1; i < line.pts.length; i += 1) ctx.lineTo(line.pts[i].x, line.pts[i].y);
       ctx.stroke();
+    }
+  }
+
+  // Rock blocks you; rubble only slows laying.
+  if (run.terrain) {
+    for (const k of run.terrain.rocks) {
+      ctx.fillStyle = k.block ? '#5d6675' : 'rgba(154,123,92,0.7)';
+      ctx.strokeStyle = k.block ? '#9aa3b2' : 'rgba(154,123,92,0.9)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(k.x, k.y, k.r, 0, Math.PI * 2);
+      ctx.fill();
+      if (k.block) ctx.stroke();
     }
   }
 
@@ -768,6 +803,11 @@ function drawWorld(dt: number): void {
       const reserve = left < 1 ? `  · reserve ${run.reserve.toFixed(1)} s` : '';
       ctx.fillText(`dark in ${ttd > 30 ? '30+' : ttd.toFixed(1)} s${push}${reserve}`, w / 2, 72);
     }
+    const f = !run.rs.rail && run.terrain ? layFactor(run.terrain, run.rs.rover.x, run.rs.rover.y) : 1;
+    if (f < 1) {
+      ctx.fillStyle = '#d9b48a';
+      ctx.fillText(`ROUGH · laying ${Math.round(f * 100)}%`, w / 2, 92);
+    }
     if (run.rs.rail) {
       ctx.fillStyle = run.rs.charge >= RULES.scoopCharge ? '#fff1c4' : '#78f7df';
       ctx.fillText(run.rs.charge >= RULES.scoopCharge ? (run.rs.rover.v >= RULES.scoopSpeed ? 'RAIL ⚡ SCOOP READY' : 'RAIL ⚡ speed up') : 'RAIL', w / 2, 92);
@@ -818,6 +858,23 @@ function drawMinimap(w: number): void {
   ctx.strokeStyle = run.ns.ringFlash > 0.05 ? '#e0d0ff' : '#9670ff';
   ctx.lineWidth = 1.5 + 2 * run.ns.ringFlash;
   ctx.stroke();
+  // Terrain.
+  if (run.terrain) {
+    ctx.fillStyle = 'rgba(154,123,92,0.35)';
+    for (const g of run.terrain.rough) {
+      const q = at(g.x, g.y);
+      ctx.beginPath();
+      ctx.ellipse(q.x, q.y, Math.max(1, g.rx * k), Math.max(1, g.ry * k), g.a + rot, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (const rock of run.terrain.rocks) {
+      const q = at(rock.x, rock.y);
+      ctx.fillStyle = rock.block ? '#9aa3b2' : '#9a7b5c';
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, Math.max(1, rock.r * k), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
   // Road.
   ctx.strokeStyle = 'rgba(120,247,223,0.8)';
   ctx.lineWidth = 1.5;
