@@ -2197,3 +2197,26 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **Tests:** 8 new ones cover the path round trip, the contract night reset, the trip log, the issue size budget, a gate's off-line gap with wall on both sides, a crater's mouth facing away from home, and maps leaning different ways.
 - **Fix: a contract caught by the dark logged 0 ore (2026-10-05):** the first routed runs (issue #93) included a Home Run contract that banked twice on night 1 and then ran out of dark reserve. The night's banked ore is only added to the contract's total at nightfall, so the run logged `ore: 0`. A caught contract, and an abandoned one, now add it. `smoke:toys` catches a contract after a bank and checks the logged ore. The stored record for that run still says 0. The fix applies from this build on.
 - **Contract: an empty dark reserve strands the night (2026-10-05, owner: "B for contract"):** a Contract night's border closes all the way to home, so anyone out in its last seconds ran out of reserve, and that ended the whole contract even with the night's quota met. Now in Contract an empty reserve ends the night like being stranded: the load is lost, the quota is checked, and the contract goes on if it was met. Endless is unchanged: the run ends `caught`. In the core this is `run.reserveOut` plus a `nightfall` event. `smoke:toys` checks that a stranded night with its quota met goes on to the shop.
+- **Road junctions, step 1 (2026-10-05, DEV-66):** the owner saw "a huge opportunity for a creative solution to lower speed road interchange and navigation. There are some real bugs there mixed in with the solid rail slide feel," and asked to sort "real solutions vs illusions." Headless scripts of the cases found three real bugs:
+  1. A connector you laid into another road wasn't a junction. Riding it later took you off its end and across the other road (the rover ended 257 px past it).
+  2. Taking a branch meant hopping off 160 px early.
+  3. Holding the stick over at slow speed left stubs, and the rover got stuck bouncing between two of them, 12 px each way every 0.1 s.
+
+  The 14 logged "missed grabs" were all 80–90° crossings, 11 recovered at once, so they look deliberate.
+  - **Real (rules, `rover.ts` / `roadTree.ts`):**
+    - **Junctions.** Laying road onto another road and getting on it records a junction (`tree.joins`), and the laid road now reaches the other one. Riding out to that road's end carries you onto the other road at full speed, with no slowdown and no dropping off.
+    - **Direction at a junction (`pickDir`):** the way you steer when the stick is held over (at least 0.3); otherwise the smaller turn; toward home when it's square either way.
+    - **Turning onto a road met square on.** Steering while meeting a road square on turns you onto it, which makes a T-junction. Not steering still drives across, as the owner wanted on 2026-09-30.
+    - **Stub cleanup.** A hop-off stub that never got more than 40 px from its road goes when you get back on.
+    - **The bounce trap is fixed.** For 24 px after riding off a road's end, only that road can take you back.
+  - **Feel only (both views):**
+    - **Glide.** Getting on a road snaps the rover up to 30 px (the rule); the model now glides there over about 0.1 s.
+    - **Junction feedback:** a junction plays a points click and a small teal burst.
+  - **Run data:** `transfers` (junctions ridden through).
+  - **Tests:** 5 new rover tests cover:
+    - steering onto a road met square on, which makes a junction (both ways)
+    - square on without steering still crossing
+    - riding through a junction the way you steer, at full speed
+    - a quick hop-off stub going
+    - the slow held-stick case no longer bouncing
+  - **Step 2, next:** switch branches on the rail (hold the stick toward a side to take the next branch there, like points, without hopping off), and a preview of the branch you'd take. The rerun still shows a held stick at 120 hopping off well before a branch and curling back onto the main road.

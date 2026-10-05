@@ -96,6 +96,10 @@ let phase: Phase = 'title';
 let mode: Mode = 'contract';
 let daily = false;
 let hard = false;
+// Where the rover was last drawn, and the gap the drawing still has to close
+// after a snap onto a road (see the rover drawing).
+const drawnAt = { x: 0, y: 0 };
+const glide = { x: 0, y: 0 };
 let seed = 1;
 let mods: Mods = baseMods();
 let night = 1;
@@ -196,7 +200,7 @@ function logRun(result: string): void {
   const common = {
     seed: `toy-home-run:${seed}${daily ? ':daily' : ''}`, daily, hard, distance: Math.round(run.dist), railShare: run.dist > 0 ? +(run.railDist / run.dist).toFixed(2) : 0, hopOffs: run.rs.hopOffs, grabs: run.rs.grabs, missedGrabs: { ...run.rs.missedGrabs }, misses: run.rs.misses.slice(),
     reserve: run.reserveMax, reserveLow: +(Number.isFinite(run.reserveLow) ? run.reserveLow : run.reserveMax).toFixed(1), darkSeconds: +run.darkTime.toFixed(1), darkDips: run.darkDips,
-    roughSeconds: +run.roughTime.toFixed(1), bumps: run.rs.bumps, ...routeForLog(run),
+    roughSeconds: +run.roughTime.toFixed(1), bumps: run.rs.bumps, transfers: run.rs.transfers, ...routeForLog(run),
     terrain: run.terrain ? { ridges: run.terrain.ridges, gates: run.terrain.gates, craters: run.terrain.craters, clusters: run.terrain.clusters, rough: run.terrain.rough.length, rocks: run.terrain.rocks.length, rubble: run.terrain.rocks.filter((k) => !k.block).length, blockShare: +run.terrain.profile.blockShare.toFixed(2), rubbleSlow: +run.terrain.profile.rubbleSlow.toFixed(2), roughSlow: +run.terrain.profile.roughSlow.toFixed(2) } : null
   };
   if (mode === 'contract') {
@@ -368,6 +372,16 @@ function effect(e: RunEvent): void {
       break;
     case 'grab':
       blip(520, 0.07, 'triangle', 0.18, 780);
+      glide.x = drawnAt.x - rover.x;
+      glide.y = drawnAt.y - rover.y;
+      break;
+    case 'transfer':
+      // Through a junction onto another road: a click of the points.
+      blip(880, 0.04, 'square', 0.14);
+      setTimeout(() => blip(660, 0.05, 'triangle', 0.14), 45);
+      glide.x = drawnAt.x - rover.x;
+      glide.y = drawnAt.y - rover.y;
+      parts.burst(rover.x, rover.y, 12, '#78f7df', 120, 2, 0.5);
       break;
     case 'bump':
       shake.kick(6);
@@ -687,7 +701,13 @@ function drawWorld(dt: number): void {
 
   // Rover.
   ctx.save();
-  ctx.translate(run.rs.rover.x, run.rs.rover.y);
+  // Getting on a road snaps the rover onto it (the rule); it's drawn gliding there (the feel).
+  const fade = Math.exp(-dt * 30);
+  glide.x *= fade;
+  glide.y *= fade;
+  drawnAt.x = run.rs.rover.x + glide.x;
+  drawnAt.y = run.rs.rover.y + glide.y;
+  ctx.translate(drawnAt.x, drawnAt.y);
   if (run.rs.rail) {
     ctx.strokeStyle = `rgba(120,247,223,${0.3 + 0.6 * run.rs.charge})`;
     ctx.lineWidth = 3;

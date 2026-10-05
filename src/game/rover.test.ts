@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { HOME_RUN_MODS, HOME_RUN_ROVER, createRover, darkLeak, digSeams, homeRover, onOwnRoad, resetRoverRun, stepRover, type RoverEvent, type RoverState } from './rover';
-import { addPoint, createRoadTree, startLine, type RoadTree } from './roadTree';
+import { addPoint, createRoadTree, joinAtTip, startLine, type RoadTree } from './roadTree';
 import type { Seam } from './seams';
 
 const R = HOME_RUN_ROVER;
@@ -226,5 +226,94 @@ describe('rover: nights and runs', () => {
     resetRoverRun(s);
     expect(s.grabs).toBe(0);
     expect(s.hopOffs).toBe(0);
+  });
+});
+
+describe('rover: junctions (owner, 2026-10-05: "lower speed road interchange")', () => {
+  // A main road from home along +x to 800, and a connector that branches at
+  // x = 100, goes up, across, and back down toward the main road at x = 400.
+  function town(): { t: RoadTree; s: RoverState; c: number } {
+    const t = createRoadTree(64);
+    startLine(t, null, { x: 0, y: 0 });
+    for (let x = 14; x <= 800; x += 14) addPoint(t, 0, { x, y: 0 });
+    const c = startLine(t, { line: 0, i: 7, t: 0.14 }, { x: 100, y: 0 });
+    for (let y = -14; y >= -300; y -= 14) addPoint(t, c, { x: 100, y });
+    for (let x = 114; x <= 400; x += 14) addPoint(t, c, { x, y: -300 });
+    for (let y = -286; y <= -44; y += 14) addPoint(t, c, { x: 400, y });
+    const s = createRover();
+    return { t, s, c };
+  }
+
+  it('meeting a road square on while steering turns onto it, and makes a junction', () => {
+    for (const [steer, dir] of [[0.6, -1], [-0.6, 1]] as const) {
+      const { t, s, c } = town();
+      s.laying = c; // laying the connector, heading down at the main road
+      s.rover = { x: 400, y: -44, h: Math.PI / 2, v: 120 };
+      const ev = run(s, t, { x: steer, y: 1 }, 1, (e) => e.some((x) => x.kind === 'grab'));
+      expect(ev.map((e) => e.kind)).toContain('grab');
+      expect(s.rail).toMatchObject({ line: 0, dir }); // steer right (facing down the screen) is toward home
+      expect(joinAtTip(t, c)?.at.line).toBe(0);
+      const tip = t.lines[c].pts[t.lines[c].pts.length - 1];
+      expect(tip.y).toBeCloseTo(0); // the connector now reaches the road
+    }
+  });
+
+  it('meeting a road square on without steering still drives across', () => {
+    const { t, s, c } = town();
+    s.laying = c;
+    s.rover = { x: 400, y: -44, h: Math.PI / 2, v: 120 };
+    run(s, t, { x: 0, y: 1 }, 1);
+    expect(s.rail).toBeNull();
+    expect(s.rover.y).toBeGreaterThan(40);
+    expect(joinAtTip(t, c)).toBeNull();
+  });
+
+  it('riding into a junction carries you onto the other road, the way you steer', () => {
+    for (const [steer, dir] of [[0, -1], [0.6, -1], [-0.6, 1]] as const) {
+      const { t, s, c } = town();
+      t.joins.push({ line: c, at: { line: 0, i: 28, t: 0.57 } });
+      s.laying = -1;
+      s.rail = { line: c, i: 40, t: 0, dir: 1 };
+      s.rover = { x: 400, y: -200, h: Math.PI / 2, v: 300 };
+      s.charge = 1;
+      const ev = run(s, t, { x: steer, y: 1 }, 1, (e) => e.some((x) => x.kind === 'transfer' || x.kind === 'tip'));
+      expect(ev[ev.length - 1]?.kind).toBe('transfer');
+      expect(s.rail).toMatchObject({ line: 0, dir });
+      expect(s.rover.v).toBeGreaterThan(250); // no slowdown through a junction
+      expect(s.transfers).toBe(1);
+    }
+  });
+
+  it('a hop-off stub you come straight back from goes', () => {
+    const { t, s } = setup();
+    onRail(t, s, 200, 120);
+    run(s, t, { x: 1, y: 0.6 }, 1, (e) => e.some((x) => x.kind === 'hopOff'));
+    expect(t.lines.length).toBe(2);
+    const ev = run(s, t, { x: -1, y: 1 }, 1.5, (e) => e.some((x) => x.kind === 'grab'));
+    expect(ev.map((e) => e.kind)).toContain('grab');
+    expect(t.lines.length).toBe(1);
+  });
+
+  it("holding the stick over at slow speed doesn't trap you between two stubs", () => {
+    // The scripted case behind this rule: a branch at x = 200, riding past at
+    // 120 with the stick held hard over. It used to pass the rover between two
+    // stubs' ends every few frames, 12 px each way, going nowhere.
+    const t = createRoadTree(64);
+    startLine(t, null, { x: 0, y: 0 });
+    for (let x = 14; x <= 900; x += 14) addPoint(t, 0, { x, y: 0 });
+    const b = startLine(t, { line: 0, i: 14, t: 0 }, { x: 200, y: 0 });
+    for (let y = -14; y >= -500; y -= 14) addPoint(t, b, { x: 200, y });
+    const s = createRover();
+    s.rail = { line: 0, i: 2, t: 0, dir: 1 };
+    s.rover = { x: 28, y: 0, h: 0, v: 120 };
+    const ev: RoverEvent[] = [];
+    let flips = 0;
+    for (let k = 0; k < 300; k += 1) {
+      const e = stepRover(s, t, { x: -1, y: 0.5 }, DT, R, M, 0);
+      if (e.some((x) => x.kind === 'tip') && e.some((x) => x.kind === 'grab')) flips += 1;
+      ev.push(...e);
+    }
+    expect(flips).toBe(0);
+    expect(ev.filter((e) => e.kind === 'tip').length).toBeLessThan(3);
   });
 });

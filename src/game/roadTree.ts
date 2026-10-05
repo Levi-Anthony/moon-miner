@@ -40,14 +40,62 @@ export interface RoadHit {
   py: number;
 }
 
+// Where the tip of one line meets another road: a junction. Laying a road
+// onto another and getting on it records one, so riding out to that tip later
+// carries you onto the other road instead of off into the open (owner,
+// 2026-10-05: "lower speed road interchange and navigation").
+export interface Join {
+  line: number; // the line whose tip ends here
+  at: Parent; // the point on the other road
+}
+
 export interface RoadTree {
   lines: Line[];
   grid: Map<string, { line: number; i: number }[]>;
   cell: number;
+  joins: Join[];
 }
 
 export function createRoadTree(cell = 64): RoadTree {
-  return { lines: [], grid: new Map(), cell };
+  return { lines: [], grid: new Map(), cell, joins: [] };
+}
+
+export function joinAtTip(tree: RoadTree, line: number): Join | null {
+  return tree.joins.find((j) => j.line === line) ?? null;
+}
+
+export function lineLength(tree: RoadTree, line: number): number {
+  const p = tree.lines[line].pts;
+  let L = 0;
+  for (let i = 1; i < p.length; i += 1) L += Math.hypot(p[i].x - p[i - 1].x, p[i].y - p[i - 1].y);
+  return L;
+}
+
+// Remove the newest line if it never got more than `maxOff` px from the road
+// it branched off, and nothing hangs off it: the stub a hop-off leaves when you
+// swerve off and straight back on. True if it went.
+export function dropShortLine(tree: RoadTree, line: number, maxOff: number): boolean {
+  if (line < 0 || line !== tree.lines.length - 1) return false;
+  const l = tree.lines[line];
+  if (!l.parent) return false;
+  const parent = tree.lines[l.parent.line].pts;
+  const off = (p: Vec): number => parent.reduce((m, q) => Math.min(m, Math.hypot(p.x - q.x, p.y - q.y)), Infinity);
+  if (l.pts.some((p) => off(p) > maxOff)) return false;
+  if (tree.joins.some((j) => j.line === line || j.at.line === line)) return false;
+  for (let i = 0; i + 1 < l.pts.length; i += 1) {
+    const a = l.pts[i];
+    const b = l.pts[i + 1];
+    for (const q of [a, b, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }]) {
+      const k = key(Math.floor(q.x / tree.cell), Math.floor(q.y / tree.cell));
+      const list = tree.grid.get(k);
+      if (!list) continue;
+      const kept = list.filter((e) => e.line !== line);
+      if (kept.length) tree.grid.set(k, kept);
+      else tree.grid.delete(k);
+    }
+  }
+  tree.lines.pop();
+  return true;
 }
 
 const key = (cx: number, cy: number): string => `${cx},${cy}`;
