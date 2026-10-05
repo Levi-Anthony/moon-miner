@@ -8,7 +8,7 @@
 // you carry on the way you left; your own road keeps your load safe in the dark
 // (Home Run's 2026-09-30 rules; RESERVE_RUN in run.ts replaces the leak with a reserve).
 
-import { addPoint, advanceRail, dropStubLine, nearestRoad, railPoint, startLine, type Rail, type RoadHit, type RoadTree, type Vec } from './roadTree';
+import { addPoint, advanceRail, dropShortLine, joinAtTip, nearestRoad, railPoint, startLine, type Rail, type RoadHit, type RoadTree, type Vec } from './roadTree';
 import { inSeam, type Seam } from './seams';
 
 // The numbers, all in one place: a variant (or the 3D game, in its own units)
@@ -31,6 +31,9 @@ export interface RoverRules {
   stoppedSteer: number; // a sideways push this hard while stopped hops off
   scoopCharge: number; // rail charge needed to scoop
   scoopSpeed: number; // and speed
+  turnOnto: number; // steer at least this hard while meeting a road square on and you turn onto it
+  tipGuard: number; // px after riding off a road's end before a different road can take you
+  stubMax: number; // a hop-off stub that never got farther than this from its road goes when you get back on
   darkLeak: number; // share of the load lost per second, off your road in the dark
   darkLeakMin: number; // ore per second, so a small load still drains
 }
@@ -64,6 +67,13 @@ export const HOME_RUN_ROVER: RoverRules = {
   stoppedSteer: 0.5,
   scoopCharge: 0.5,
   scoopSpeed: 230,
+  // Junctions (owner, 2026-10-05). Meeting a road square on still drives
+  // across it, unless you're steering: then you turn onto it, the way you steer.
+  turnOnto: 0.3,
+  // Riding off a road's end next to another road used to grab it at once, and
+  // two stubs' ends could pass you back and forth every few frames.
+  tipGuard: 24,
+  stubMax: 40,
   // The dark is not lethal (owner, 2026-09-30): off your road your load leaks
   // away; on your road it's safe.
   darkLeak: 0.35,
@@ -111,6 +121,9 @@ export interface RoverState {
   misses: Miss[];
   bumping: boolean; // up against rock right now
   bumps: number; // times you ran into rock this run
+  tipFrom: number; // the line you last rode off the end of
+  tipGuard: number; // px left before a different road can take you after that
+  transfers: number; // junctions ridden through this run
 }
 
 // The ground under the rover, off the rail (src/game/terrain.ts). The rail never
@@ -126,6 +139,7 @@ export type RoverEvent =
   | { kind: 'tip' }
   | { kind: 'grab' }
   | { kind: 'bump' }
+  | { kind: 'transfer' } // rode through a junction onto another road
   | { kind: 'miss'; miss: Miss };
 
 const MAX_MISSES = 24;
@@ -158,7 +172,10 @@ export function createRover(): RoverState {
     missedGrabs: { angle: 0, unarmed: 0, recovered: 0 },
     misses: [],
     bumping: false,
-    bumps: 0
+    bumps: 0,
+    tipFrom: -1,
+    tipGuard: 0,
+    transfers: 0
   };
 }
 
@@ -187,6 +204,7 @@ export function resetRoverRun(s: RoverState): void {
   s.missedGrabs = { angle: 0, unarmed: 0, recovered: 0 };
   s.misses = [];
   s.bumps = 0;
+  s.transfers = 0;
 }
 
 export function nearestRoadTo(s: RoverState, tree: RoadTree, rules: RoverRules, p: Vec = s.rover, heading = s.rover.h): RoadHit | null {
@@ -201,6 +219,21 @@ export function onOwnRoad(s: RoverState, tree: RoadTree, rules: RoverRules): boo
 }
 
 // Ore the dark takes this step, off your road.
+// Which way along a road to ride, meeting it with heading h: the way the stick
+// steers if it's held over, else the smaller turn, and toward home (-1) when
+// it's square on either way.
+export function pickDir(h: number, roadAng: number, steer: number, turnOnto: number): 1 | -1 {
+  const out = angleTo(h, roadAng);
+  const back = angleTo(h, roadAng + Math.PI);
+  if (Math.abs(steer) >= turnOnto) {
+    const outOk = Math.sign(out) === Math.sign(steer);
+    const backOk = Math.sign(back) === Math.sign(steer);
+    if (outOk !== backOk) return outOk ? 1 : -1;
+  }
+  if (Math.abs(Math.abs(out) - Math.abs(back)) < 0.15) return -1;
+  return Math.abs(out) < Math.abs(back) ? 1 : -1;
+}
+
 export function darkLeak(rules: RoverRules, carry: number, dt: number): number {
   return Math.min(carry, Math.max(rules.darkLeak * carry, rules.darkLeakMin) * dt);
 }
@@ -256,9 +289,22 @@ export function stepRover(s: RoverState, tree: RoadTree, ax: Vec, dt: number, ru
       rover.h += angleTo(rover.h, p.ang) * Math.min(1, 16 * dt);
       if (res === 'home') {
         rover.v = 0;
+      } else if (res === 'tip' && joinAtTip(tree, rail.line)) {
+        // A junction: on to the road this one meets, the way you steer.
+        const j = joinAtTip(tree, rail.line) as NonNullable<ReturnType<typeof joinAtTip>>;
+        const probe: Rail = { line: j.at.line, i: j.at.i, t: j.at.t, dir: 1 };
+        const q = railPoint(tree, probe);
+        probe.dir = pickDir(rover.h, q.ang, ax.x, rules.turnOnto);
+        s.rail = probe;
+        s.transfers += 1;
+        rover.x = q.x;
+        rover.y = q.y;
+        ev.push({ kind: 'transfer' });
       } else if (res === 'tip') {
         // Riding off the end of your road doesn't lock you out of the rail: the
         // road behind you is fresh and ignored while you head on outward.
+        s.tipFrom = rail.line;
+        s.tipGuard = rules.tipGuard;
         s.laying = rail.line;
         s.rail = null;
         s.leftAng = p.ang;
@@ -297,6 +343,7 @@ export function stepRover(s: RoverState, tree: RoadTree, ax: Vec, dt: number, ru
     }
     const road = nearestRoadTo(s, tree, rules);
     s.sinceLeft += Math.abs(rover.v) * dt;
+    s.tipGuard = Math.max(0, s.tipGuard - Math.abs(rover.v) * dt);
     if (!road || road.d >= rules.grab) s.clearOfLeft = true;
     if (!s.armed && (!road || road.d > rules.grab + 10 || s.sinceLeft >= rules.rearmDist)) s.armed = true;
     // Grab: driving onto your road within the grab angle of its line.
@@ -306,8 +353,10 @@ export function stepRover(s: RoverState, tree: RoadTree, ax: Vec, dt: number, ru
     // back (past about 100 degrees from the way you left) and the rail takes you
     // at once.
     const turnedBack = Math.cos(rover.h - s.leftAng) < -0.17;
-    const free = s.armed || turnedBack;
-    const grab = over && free && Math.abs(along) >= rules.grabAlign;
+    const free = (s.armed || turnedBack) && !(s.tipGuard > 0 && road !== null && road.line !== s.tipFrom);
+    // Square on, steering: turn onto it (a T-junction). Square on, not steering: drive across.
+    const turnOnto = Math.abs(along) < rules.grabAlign && Math.abs(ax.x) >= rules.turnOnto;
+    const grab = over && free && (Math.abs(along) >= rules.grabAlign || turnOnto);
     // A miss counts only once you'd pulled clear of the road you left.
     if (over && !grab && !s.missing && (free || s.clearOfLeft)) {
       s.missing = true;
@@ -329,8 +378,16 @@ export function stepRover(s: RoverState, tree: RoadTree, ax: Vec, dt: number, ru
       if (s.missing) s.missedGrabs.recovered += 1;
       s.missing = false;
       s.armed = true;
-      s.rail = { line: road.line, i: road.i, t: road.t, dir: along >= 0 ? 1 : -1 };
-      dropStubLine(tree, s.laying);
+      s.tipGuard = 0;
+      const dir = turnOnto ? pickDir(rover.h, Math.atan2(road.ty, road.tx), ax.x, rules.turnOnto) : along >= 0 ? 1 : -1;
+      s.rail = { line: road.line, i: road.i, t: road.t, dir };
+      // The road you were laying: a hop-off stub you came straight back from
+      // goes; anything longer now ends at a junction on this road.
+      const laid = s.laying;
+      if (laid >= 0 && laid !== road.line && !dropShortLine(tree, laid, rules.stubMax) && tree.lines[laid].pts.length >= 2 && !joinAtTip(tree, laid)) {
+        addPoint(tree, laid, { x: road.px, y: road.py });
+        tree.joins.push({ line: laid, at: { line: road.line, i: road.i, t: road.t } });
+      }
       s.laying = -1;
       rover.x = road.px;
       rover.y = road.py;

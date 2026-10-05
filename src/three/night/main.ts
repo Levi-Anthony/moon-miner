@@ -67,6 +67,9 @@ let shake = 0;
 let mapReach = RING0 * 1.3;
 let camYaw = -Math.PI / 2;
 let overAt = -1; // time the run ended
+// Getting on a road snaps the rover up to 30 px onto it (the rule). The model
+// glides there instead (the feel): this is the gap still to close, in px.
+const glide = { x: 0, y: 0 };
 
 function dailySeed(): number {
   const d = new Date().toISOString().slice(0, 10);
@@ -502,6 +505,8 @@ function start(): void {
   RULES = rulesNow();
   run = createRun('endless', seed, hard, RULES);
   runLogged = false;
+  glide.x = 0;
+  glide.y = 0;
   pops = [];
   mapReach = RING0 * 1.3;
   camYaw = run.rs.rover.h;
@@ -606,6 +611,7 @@ function logRun(result: string): void {
     ...routeForLog(run),
     roughSeconds: +run.roughTime.toFixed(1),
     bumps: rs.bumps,
+    transfers: rs.transfers,
     terrain: run.terrain
       ? {
           ridges: run.terrain.ridges,
@@ -670,6 +676,16 @@ function effect(e: RunEvent): void {
       break;
     case 'grab':
       blip(520, 0.07, 'triangle', 0.18, 780);
+      glide.x = rover.position.x - r.x;
+      glide.y = rover.position.z - r.y;
+      break;
+    case 'transfer':
+      // Through a junction onto another road: a click of the points.
+      blip(880, 0.04, 'square', 0.14);
+      setTimeout(() => blip(660, 0.05, 'triangle', 0.14), 45);
+      glide.x = rover.position.x - r.x;
+      glide.y = rover.position.z - r.y;
+      burst(r.x, r.y, 12, TEAL, 120, 0.5);
       break;
     case 'bump':
       shake = Math.max(shake, 6);
@@ -770,7 +786,10 @@ function syncView(dt: number): void {
   stepParticles(dt);
   const rs = run.rs;
   const r = rs.rover;
-  rover.position.set(r.x, 0, r.y);
+  const fade = Math.exp(-dt * 30); // about 0.1 s to close the gap
+  glide.x *= fade;
+  glide.y *= fade;
+  rover.position.set(r.x + glide.x, 0, r.y + glide.y);
   rover.rotation.y = -r.h;
   bodyMat.emissiveIntensity = rs.rail ? 0.25 + 0.6 * rs.charge : 0;
   const load = Math.min(1, rs.carry / 60);
