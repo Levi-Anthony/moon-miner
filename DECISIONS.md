@@ -2139,3 +2139,5 @@ New merges add a row here. Decisions in this range that change what older entrie
   - **Not done:**
     - **Connecting roads.** "Connect it to zoom home" works today: driving onto any road within 80 degrees grabs it. The connector is not a junction afterwards, though. The road is a tree, so riding along the connector later won't carry you across to the road you joined. Making the road a network is a separate step, after a playtest.
     - **Landscape.** The owner noted part of the out-and-back feel comes from a field with nothing to steer around. Level generation research is in `docs/research/LEVEL_GENERATION.md`.
+      - **The owner's answers on terrain:** the terrain settings vary per map and across a run ("I don't think these should all be stable variables"). Rock can block or slow, and set pieces mix big and small.
+      - **Rail speed is protected:** "Never slow the speed on the rail. That should only be like a special penalty or introduced in a later level maybe." Terrain slows only laying new road. Slowing the rail is reserved for a named later mechanic.

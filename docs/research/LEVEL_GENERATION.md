@@ -100,8 +100,9 @@
 ## Proposal: the first landscape pass
 
 1. **Two ground types in the core** (`src/game`, engine-free, as data in `RunRules`):
-   - **Rock:** you can't drive or lay road through it. Your rover stops against it.
-   - **Rough ground:** laying road is slower there (start at 55% of `laySpeed`). Riding road you've already laid is full speed, so building through rough ground pays off later.
+   - **Rock:** blocks you, or slows laying road through it. Which of the two varies (see "Owner's answers" below).
+   - **Rough ground:** laying road is slower there. Riding road you've already laid is full speed, so building through rough ground pays off later.
+   - **The rail is never slowed by terrain.** A core test should pin this when terrain lands.
 2. **Generation, per map and after each bank:**
    - **Set pieces:** ridges with gaps and rough patches between home and the ore band, from a small set of pieces, placed with spacing rules.
    - **A cycle per ore pool:** a short arc through rough ground and a long arc round a ridge end. The short arc is faster with full reserve and riskier when the border is close.
@@ -112,12 +113,23 @@
 4. **Run data:** log rough-ground seconds, ridge bumps and route length against straight-line distance, to see whether routes really bend.
 5. **Then road junctions:** let a branch join another road for real, so loops through a ridge gap become reusable shortcuts. That's the step after this one.
 
-## Questions for the owner
+## Owner's answers (2026-10-05)
 
-- **Rock:** impassable, or only very slow? Impassable reads clearest. Slow keeps every straight line possible, at a price.
-- **Rough ground:** slows only laying new road (my suggestion), or riding too?
-- **Set pieces:** a few large ones per map (each a landmark) or many small ones (texture)? Orienteering says a few good legs beat many even ones.
+- **The terrain settings vary; none is a fixed constant.** The owner: "I don't think these should all be stable variables." Each map draws its own terrain settings from ranges, and the ranges can widen as play goes on. Within a map, rock can be a mix of blocking and slow, and set pieces a mix of big landmarks and small scatter.
+- **Never slow the rail.** The owner: "Never slow the speed on the rail. That should only be like a special penalty or introduced in a later level maybe." Terrain only ever slows laying new road. Anything that slows the rail is a separate, named mechanic, saved for a later level or a special penalty, and never part of the base terrain.
 
+### What varies, and how
+
+A per-map terrain profile, drawn from the seed, holds:
+- **Rock:** the share of rock pieces that block, against those that only slow laying, and how much the slow ones slow it.
+- **Rough ground:** how much it slows laying (for example 40–80% of `laySpeed`), and how much of the field it covers.
+- **Set pieces:** how many and how big, from a few landmarks to many small ones, as a mix rather than one or the other.
+- **Escalation:** in Endless, each bank's new ore can arrive with new terrain in the band near the border, so the field gets harder through a run. In Contract, the ranges can widen night by night. Later levels can open wider ranges again.
+- **Fairness stays fixed:**
+  - every seam reachable
+  - two routes per pool
+  - everything visible on the minimap
+  - rail speed untouched
 ## Sources
 
 - Joris Dormans, cyclic generation in Unexplored: [Unexplored's Secret: 'Cyclic Dungeon Generation'](https://www.gamedeveloper.com/design/unexplored-s-secret-cyclic-dungeon-generation-) · [Boris the Brave, Dungeon Generation in Unexplored](https://www.boristhebrave.com/2021/04/10/dungeon-generation-in-unexplored/) · [Making Meaningful Dungeons with Cyclic Dungeon Generation](https://dicegoblin.blog/making-meaningful-dungeons-with-cyclic-dungeon-generation/)
